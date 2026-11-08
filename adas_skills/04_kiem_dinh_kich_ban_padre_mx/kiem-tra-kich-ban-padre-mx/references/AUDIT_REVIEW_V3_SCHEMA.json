@@ -1,0 +1,56 @@
+{
+  "audit_round": 1,
+  "focus": "LOGIC",
+  "score": 90,
+  "coverage": {
+    "total_ranges": 12,
+    "reviewed_ranges": 12,
+    "unread_ranges": [],
+    "reviewed_parts": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ]
+  },
+  "evidence_per_part": {
+    "1": "REPLACE WITH AT LEAST 18 CHARACTER EXACT SOURCE QUOTE FOR PART 1",
+    "2": "REPLACE WITH AT LEAST 18 CHARACTER EXACT SOURCE QUOTE FOR PART 2",
+    "3": "REPLACE WITH AT LEAST 18 CHARACTER EXACT SOURCE QUOTE FOR PART 3",
+    "4": "REPLACE WITH AT LEAST 18 CHARACTER EXACT SOURCE QUOTE FOR PART 4",
+    "5": "REPLACE WITH AT LEAST 18 CHARACTER EXACT SOURCE QUOTE FOR PART 5",
+    "6": "REPLACE WITH AT LEAST 18 CHARACTER EXACT SOURCE QUOTE FOR PART 6",
+    "7": "REPLACE WITH AT LEAST 18 CHARACTER EXACT SOURCE QUOTE FOR PART 7"
+  },
+  "issues": [
+    {
+      "id": "LG-001",
+      "severity": "P1",
+      "category": "DIALOGUE",
+      "part": 1,
+      "anchor": "REPLACE WITH REAL >=18-CHAR QUOTE FROM PART 1",
+      "problem": "Explain specifically why a spoken reply cannot follow the preceding turn",
+      "acceptance_tests": [
+        "Speaker turns and question/answer linkage are repaired"
+      ],
+      "status": "CONFIRMED",
+      "root_cause": "Missing line",
+      "affected_scenes": [
+        "SCENE_001"
+      ]
+    }
+  ],
+  "pass_spans": [
+    {
+      "id": "PASS-001",
+      "text": "REPLACE WITH REAL ALREADY-PASSING QUOTE"
+    }
+  ],
+  "chronology": {
+    "ages": [],
+    "events": []
+  }
+}
