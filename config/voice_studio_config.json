@@ -1,0 +1,10 @@
+{
+  "engine_mode": "voicestudio",
+  "active_gpu_server": "omnivoice_gpu",
+  "selected_preset_id": "04_mx_ong_gia_padre_implacable",
+  "ref_wav": "D:\\KEY NHẬT DRAMA\\Mexico ông già\\Kho_Voice\\04_mx_ong_gia_padre_implacable\\sample.wav",
+  "speedScale": 1.0,
+  "pitchScale": 0.0,
+  "language": "es",
+  "volumeScale": 1.0
+}

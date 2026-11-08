@@ -1,0 +1,37 @@
+================================================================================
+       HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG MEXICO ÔNG GIÀ STUDIO (DÀNH CHO KHÁCH HÀNG)
+================================================================================
+
+BƯỚC 1: GIẢI NÉN BỘ CÀI
+--------------------------------------------------------------------------------
+- Giải nén file "Mexico_Ong_Gia_Studio_Bo_Cai_Khach_Hang.zip" ra ổ đĩa còn trống
+  (Khuyên dùng ổ D:\ hoặc E:\, ví dụ: D:\Mexico_Ong_Gia_Studio).
+
+BƯỚC 2: CHẠY CÀI ĐẶT MÔI TRƯỜNG TỰ ĐỘNG (CHỈ CẦN CHẠY 1 LẦN ĐẦU TIÊN)
+--------------------------------------------------------------------------------
+- Bấm đúp vào file:  Cai_Dat_May_Moi.bat
+- Hệ thống sẽ TỰ ĐỘNG 100%:
+  1. Tự động tải và cài đặt Python 3.11 (nếu máy chưa có Python).
+  2. Tự động cài đặt PyTorch GPU (NVIDIA CUDA) và các thư viện AI.
+  3. Tự động tải bộ não giọng đọc AI Tây Ban Nha Mexico (OmniVoice) về máy.
+- Chờ đến khi hiện thông báo "[HOÀN TẤT 100%] CÀI ĐẶT THÀNH CÔNG".
+
+BƯỚC 3: KÍCH HOẠT KEY BẢN QUYỀN & MỞ ỨNG DỤNG
+--------------------------------------------------------------------------------
+- Từ những lần sau, chỉ cần bấm đúp vào file:  Mexico_Ong_Gia.exe
+  (hoặc Chay_App.bat).
+- Khi mở lần đầu, bảng "🔐 KÍCH HOẠT BẢN QUYỀN — MEXICO ÔNG GIÀ STUDIO" sẽ hiện lên:
+  1. Bấm nút "📋 Copy Mã Máy" (Ví dụ: MXG-2554-4AC2) và gửi mã này cho Admin.
+  2. Nhận Mã Key Bản Quyền chuyên biệt (MEXICO-...) từ Admin.
+  3. Dán Mã Key vào ô trống và bấm "🔓 KÍCH HOẠT BẢN QUYỀN & MỞ ỨNG DỤNG".
+
+BƯỚC 4: SẢN XUẤT KỊCH BẢN PADRE MX & DỰNG VIDEO BỐ CỤC KARAOKE 100% TỰ ĐỘNG
+--------------------------------------------------------------------------------
+- Bộ cài đặt đã TÍCH HỢP SẴN 100%:
+  + 5 Bàn ADAS AI PADRE MX V3.0 (Kịch bản tiếng Tây Ban Nha Mexico 7 Phần / 70k–80k ký tự).
+  + Giọng đọc chuẩn Ông Già Mexico (Padre Implacable / Padre_Mexico.wav).
+  + Kho hiệu ứng Green Screen (Kho_Green) & Bàn Dựng Video Tự Động (Karaoke Box căn giữa 100%).
+- Khi mới cài trên máy mới (kho STOOK chưa có video), bạn chỉ cần bấm nút:
+  "⚡ Tải Sẵn Đủ 10 Tiếng Stock Ngay" để hệ thống tự động tải và cắt các Part 30 phút
+  sẵn sàng sản xuất!
+================================================================================
