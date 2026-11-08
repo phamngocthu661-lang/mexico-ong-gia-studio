@@ -1,0 +1,13 @@
+PADRE MX V3.0 — HOÀN CHỈNH 5 SKILL, 2 VÒNG KIỂM ĐỊNH, TỐI ĐA 2 LẦN SỬA
+
+CÀI ĐẶT:
+1. Vào 01_INSTALL_5_SKILLS/ và cài cả 5 file ZIP ở đó (mỗi ZIP là một SKILL riêng).
+2. Dán hướng dẫn trong 02_CONTROLLER_AND_GUIDES/PADRE_MX_PROJECT_INSTRUCTIONS_COPY_PASTE.md vào Project.
+3. Đọc 02_CONTROLLER_AND_GUIDES/PADRE_MX_STEP_CONTROLLER_V3.md để gọi các bước.
+
+QUY TRÌNH: STEP1 TITLE → STEP2 OUTLINE → STEP3 DRAFT (A/B/C) → STEP4 ROUND1 LOGIC AUDIT → STEP5 REPAIR1 LOGIC → STEP4 ROUND2 FULL QUALITY AUDIT → STEP5 REPAIR2 SELECTIVE QUALITY → FINAL VERIFY → STEP6 SEO + 2 THUMBNAILS.
+
+Kịch bản: tổng 70.000–80.000 Unicode ký tự thân bài; 7 PART; A=20–24k, B=30–35k, C=20–25k; mỗi PART ≥8.500.
+Thumbnails: 2 ảnh cuối, THUMBNAIL.png và THUMBNAIL-NENXANH.png, chữ trái ~80%, nhân vật phải ~20%, nền xanh #00FF00, hình người cùng cutout.
+Mẫu ảnh trong SEO SKILL chỉ là tham chiếu layout. Giữ nguyên toàn bộ nội dung tốt, KHÔNG sửa những PASS zones chỉ vì sở thích.
+Các scripts đã được cập nhật và smoke-tested trên dữ liệu tổng hợp (không phải audit thực tế của một kịch bản người dùng).
