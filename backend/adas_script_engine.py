@@ -263,8 +263,53 @@ ID_LABEL_START_RE = re.compile(
 )
 
 
+def clean_single_title_line(raw_line: str) -> str:
+    """
+    Làm sạch 1 dòng tiêu đề:
+    - Tự động BỎ QUA mọi Mã dự án (Code/ID), cột Tab đầu dòng hoặc số thứ tự ở đầu dòng
+      (VD: 'Mexico-Ong-Gia-001\\tMi yerno...', 'P01 — Mi hijo...', '1. Mi hijo...', '[01] Mi hijo...').
+    - Chỉ giữ lại đúng nội dung câu tiêu đề trên dòng đó.
+    """
+    s = (raw_line or "").strip()
+    if not s or re.match(r"^[-=*#]{3,}$", s):
+        return ""
+    if FIELD_LINE_PREFIX_RE.match(s):
+        return ""
+
+    # 1. Nếu dòng có ký tự Tab (copy từ Excel/Sheet nhiều cột: Mã \t Tiêu đề hoặc STT \t Mã \t Tiêu đề)
+    if "\t" in s:
+        cols = [c.strip() for c in s.split("\t") if c.strip()]
+        if len(cols) >= 2:
+            # Chọn cột văn bản dài nhất hoặc cột cuối cùng làm tiêu đề, bỏ qua cột Mã ở đầu
+            best_col = cols[-1]
+            for c in reversed(cols):
+                if len(c) >= 12 and not re.match(r"^[A-Za-z0-9_\-]+$", c):
+                    best_col = c
+                    break
+            s = best_col
+
+    # 2. Nếu dòng có nhãn Tiêu đề: / Title: / LOCKED_TITLE:
+    if TITLE_LABEL_START_RE.match(s):
+        s = TITLE_LABEL_START_RE.sub("", s).strip()
+
+    # 3. Nếu dòng bắt đầu bằng Mã cố định (VD: Mexico-Ong-Gia-001 — ..., P01: ..., IDEA_01 - ...)
+    m_fixed = FIXED_PACK_HEADER_RE.match(s)
+    if m_fixed:
+        s = m_fixed.group("ja_title").strip()
+
+    # 4. Bỏ số thứ tự hoặc mã ngắn ở đầu dòng (VD: "1. ", "01) ", "#1 - ", "[01] ", "P01 - ")
+    s = re.sub(
+        r"^(?:(?:#|\*|\-|\•)\s*)?(?:\[\s*[A-Za-z0-9_\-]+\s*\]|(?:[A-Za-z]+[-_])?[A-Za-z]*\d{1,5}|(?:\d{1,4}))\s*(?:[\.\)\-—–:：|]+\s+|\s{2,})",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    ).strip()
+    s = re.sub(r"^(?:\d+[\.\)\-:]|\-|•|\*)\s*", "", s).strip()
+    return s.strip("`\"' ")
+
+
 def _is_new_idea_block_header(ln: str) -> bool:
-    """Kiểm tra xem dòng `ln` có phải là dòng mở đầu của một bộ tiêu đề mới (VD: 'P01 — ...') hay không."""
+    """Kiểm tra xem dòng `ln` có phải là dòng mở đầu của một bộ tiêu đề mới hay không."""
     s = (ln or "").strip()
     if not s:
         return False
@@ -282,8 +327,9 @@ def _is_new_idea_block_header(ln: str) -> bool:
 
 def split_raw_text_into_idea_blocks(raw_text: str) -> List[str]:
     """
-    Tự động nhận diện và tách văn bản khi người dùng dán 1 hoặc NHIỀU (SLL) bộ tiêu đề cùng lúc:
-    Hỗ trợ cả tiêu đề tiếng Tây Ban Nha Mexico (`es-MX`), tiếng Việt, tiếng Anh và tiếng Nhật.
+    Tự động nhận diện và tách văn bản khi người dùng dán danh sách tiêu đề:
+    - Mặc định: MỖI DÒNG 1 TIÊU ĐỀ (tự động bỏ qua mọi Mã ở đầu dòng).
+    - Nếu người dùng dán khối có dòng thuộc tính phụ (VI:, Keyword:, Evidence:...) thì gom các dòng thuộc tính đó vào tiêu đề phía trên.
     """
     text = (raw_text or "").strip()
     if not text:
@@ -294,22 +340,21 @@ def split_raw_text_into_idea_blocks(raw_text: str) -> List[str]:
         return []
 
     has_any_field_lines = any(bool(FIELD_LINE_PREFIX_RE.match(ln)) for ln in raw_lines)
-    has_any_pack_headers = any(_is_new_idea_block_header(ln) for ln in raw_lines)
 
-    # TRƯỜNG HỢP A: Chỉ dán danh sách các câu tiêu đề thuần (không có dòng VI:/Keyword:/Evidence:/Tóm tắt:)
-    if not has_any_field_lines and not has_any_pack_headers:
+    # TRƯỜNG HỢP CHUẨN (MỖI TIÊU ĐỀ 1 DÒNG — BỎ QUA MÃ ĐẦU DÒNG):
+    if not has_any_field_lines:
         plain_blocks: List[str] = []
         for ln in raw_lines:
-            if re.match(r"^[-=*#]{3,}$", ln):
+            if ID_LABEL_START_RE.match(ln) and len(ln) < 25:
                 continue
-            cleaned = re.sub(r"^(?:\d+[\.\)\-:]|\-|•|\*)\s*", "", ln).strip()
-            if len(cleaned) >= 12:
+            cleaned = clean_single_title_line(ln)
+            if len(cleaned) >= 4:
                 plain_blocks.append(cleaned)
         if plain_blocks:
             return plain_blocks
-        return [text]
+        return [clean_single_title_line(text) or text]
 
-    # TRƯỜNG HỢP B: Dán 1 hoặc nhiều bộ tiêu đề có cấu trúc (P01..P20 hoặc khối Tiêu đề / Tóm tắt)
+    # TRƯỜNG HỢP DÁN KHỐI CÓ THUỘC TÍNH PHỤ (VI:, Keyword:, Evidence:...):
     blocks: List[List[str]] = []
     current_block: List[str] = []
     current_has_header_or_content = False
@@ -323,30 +368,25 @@ def split_raw_text_into_idea_blocks(raw_text: str) -> List[str]:
                 current_has_header_or_content = False
             continue
 
-        is_fixed_header = bool(FIXED_PACK_HEADER_RE.match(ln) or NUMBERED_JA_TITLE_RE.match(ln)) and not bool(FIELD_LINE_PREFIX_RE.match(ln))
-        is_title_label = bool(TITLE_LABEL_START_RE.match(ln))
+        is_field = bool(FIELD_LINE_PREFIX_RE.match(ln))
         is_id_label = bool(ID_LABEL_START_RE.match(ln))
-
-        if (is_fixed_header or is_id_label) and current_has_header_or_content:
-            blocks.append(current_block)
-            current_block = [ln]
-            current_has_header_or_content = True
+        if is_id_label and not is_field:
+            # Bỏ qua dòng Mã ID riêng lẻ
             continue
 
-        if is_title_label and current_has_header_or_content:
-            already_has_title = any(
-                bool(TITLE_LABEL_START_RE.match(x) or FIXED_PACK_HEADER_RE.match(x))
-                for x in current_block
-            )
-            if already_has_title:
-                blocks.append(current_block)
-                current_block = [ln]
+        if not is_field:
+            cleaned_title = clean_single_title_line(ln)
+            if cleaned_title:
+                if current_has_header_or_content:
+                    blocks.append(current_block)
+                    current_block = [cleaned_title]
+                else:
+                    current_block.append(cleaned_title)
                 current_has_header_or_content = True
-                continue
+            continue
 
         current_block.append(ln)
-        if is_fixed_header or is_title_label or bool(FIELD_LINE_PREFIX_RE.match(ln)):
-            current_has_header_or_content = True
+        current_has_header_or_content = True
 
     if current_block:
         blocks.append(current_block)
@@ -448,10 +488,12 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
         for ln in raw_lines:
             if FIELD_LINE_PREFIX_RE.match(ln):
                 continue
-            cleaned_ln = re.sub(r"^(?:[A-Z]{1,6}\s*\d{1,4}|\d{1,3})\s*[—–\-:：\.]+\s*", "", ln, flags=re.IGNORECASE).strip()
-            if len(cleaned_ln) >= 12:
+            cleaned_ln = clean_single_title_line(ln)
+            if cleaned_ln:
                 draft_title_ja = cleaned_ln
                 break
+    else:
+        draft_title_ja = clean_single_title_line(draft_title_ja) or draft_title_ja.strip()
 
     vi_line = _pick_exact_or_contains("vi", "vn", "dịch ý", "05.")
     summary_raw = _pick_exact_or_contains("tóm tắt", "premise gốc", "10.", "premise", "nội dung")
@@ -520,8 +562,8 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
         default=f"{reveal_line} — Đòi lại công lý, quyền sở hữu hợp pháp và phẩm giá người cha qua '{proof_object}'" if reveal_line else "Giành lại toàn bộ tài sản hợp pháp, phẩm giá và sự bình yên tuổi già",
     )
 
-    raw_id_field = _pick_exact_or_contains("mã", "id", "00.")
-    ma_id = (custom_id or header_code_id or raw_id_field or f"Mexico-Ong-Gia-{int(time.time()) % 10000:04d}").strip()
+    # Bỏ qua mọi mã đầu dòng trong văn bản, luôn lấy Mã theo STT (custom_id truyền vào là STT "1", "2", "3"...)
+    ma_id = str(custom_id or "1").strip()
     ma_id = re.sub(r"[^A-Za-z0-9_\-]", "_", ma_id)
 
     boi_canh = _pick_exact_or_contains(
@@ -1313,12 +1355,16 @@ class ADASScriptEngine:
         found: Dict[str, Path] = {}
         ignore_names = {"renders", "assets", "sentences", "stook", "ssd_render_staging", "__pycache__"}
 
+        def _natural_dir_sort_key(d: Path):
+            nm = d.name.strip()
+            return (0, int(nm)) if nm.isdigit() else (1, nm.lower())
+
         f_dir = getattr(self, "final_video_dir", None)
         if f_dir and Path(f_dir).exists():
             try:
                 f_path = Path(f_dir)
                 if f_path.resolve() != self.projects_dir.resolve():
-                    for d in sorted(f_path.iterdir()):
+                    for d in sorted(f_path.iterdir(), key=_natural_dir_sort_key):
                         if d.is_dir():
                             nm = d.name.strip()
                             if (
@@ -1338,7 +1384,7 @@ class ADASScriptEngine:
 
         if self.projects_dir.exists():
             try:
-                for d in sorted(self.projects_dir.iterdir()):
+                for d in sorted(self.projects_dir.iterdir(), key=_natural_dir_sort_key):
                     if d.is_dir():
                         nm = d.name.strip()
                         if (
@@ -2698,43 +2744,33 @@ class ADASScriptEngine:
                 "Reveal: La casa y el taller mecánico nunca pasaron a nombre del hijo sin la firma del usufructuario\n"
                 "Capacity: PASS"
             )
-            parsed = parse_idea_input_block(sample_raw, custom_id="P01")
+            parsed = parse_idea_input_block(sample_raw, custom_id="1")
             self.save_ideas_list([parsed])
 
     def add_or_update_ideas_bulk_from_raw(self, raw_text: str, custom_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Phân tích 1 hoặc NHIỀU (SLL) bộ tiêu đề cố định (P01..P20) / khối ý tưởng người dùng dán cùng lúc
-        và lưu toàn bộ vào danh sách kho dự án theo đúng thứ tự.
+        Phân tích danh sách tiêu đề người dùng dán (MỖI TIÊU ĐỀ 1 DÒNG),
+        tự động bỏ qua mọi Mã đầu dòng và gán Mã dự án theo Số Thứ Tự (STT: 1, 2, 3...).
         """
         blocks = split_raw_text_into_idea_blocks(raw_text)
         if not blocks:
-            blocks = [raw_text]
+            cleaned_single = clean_single_title_line(raw_text)
+            blocks = [cleaned_single] if cleaned_single else [raw_text.strip()]
 
         ideas = self.load_saved_ideas()
-        existing_ids = {it.get("ma_id") for it in ideas if it.get("ma_id")}
+        existing_ids = {str(it.get("ma_id")).strip() for it in ideas if it.get("ma_id")}
         saved_items: List[Dict[str, Any]] = []
-        new_items_to_prepend: List[Dict[str, Any]] = []
+        new_items_to_append: List[Dict[str, Any]] = []
 
-        # Tìm số thứ tự tiếp theo an toàn cho IDEA_xxx
-        next_num = len(ideas) + 1
-        base_prefix = (custom_id or "").strip()
+        # Tìm STT lớn nhất hiện có trong Kho Dự Án để đánh tiếp theo STT (1, 2, 3...)
+        max_stt = max([int(x) for x in existing_ids if x.isdigit()], default=0)
+        next_num = max(max_stt + 1, len(ideas) + 1)
 
-        for idx, block_str in enumerate(blocks):
-            if len(blocks) == 1 and base_prefix:
-                assigned_id = base_prefix
-            elif len(blocks) > 1 and base_prefix:
-                assigned_id = f"{base_prefix}_{idx + 1:02d}"
-            else:
-                # Nếu trong block đã có mã P01..P20 hoặc Mã:/ID: thì ưu tiên dùng đúng mã đó
-                temp_parsed = parse_idea_input_block(block_str, custom_id=None)
-                inline_id = temp_parsed.get("ma_id", "")
-                if inline_id and not inline_id.startswith("DRAMA_"):
-                    assigned_id = inline_id
-                else:
-                    while f"IDEA_{next_num:03d}" in existing_ids:
-                        next_num += 1
-                    assigned_id = f"IDEA_{next_num:03d}"
-                    next_num += 1
+        for block_str in blocks:
+            while str(next_num) in existing_ids:
+                next_num += 1
+            assigned_id = str(next_num)
+            next_num += 1
 
             parsed = parse_idea_input_block(block_str, custom_id=assigned_id)
             mid_cur = parsed["ma_id"]
@@ -2764,7 +2800,7 @@ class ADASScriptEngine:
                     replaced = True
                     break
             if not replaced:
-                new_items_to_prepend.append(parsed)
+                new_items_to_append.append(parsed)
 
             proj_dir = self.projects_dir / mid_cur
             proj_dir.mkdir(parents=True, exist_ok=True)
@@ -2784,14 +2820,14 @@ class ADASScriptEngine:
         if saved_items:
             self._unmark_ids_deleted([it.get("ma_id", "") for it in saved_items])
 
-        if new_items_to_prepend:
-            ideas = new_items_to_prepend + ideas
+        if new_items_to_append:
+            ideas = ideas + new_items_to_append
 
         self.save_ideas_list(ideas)
         self._last_disk_sync_ts = 0.0
         self._sync_projects_disk_state()
-        ids_str = ", ".join([it.get("ma_id", "") for it in saved_items])
-        log_info("SCRIPT", f"📥 Đã phân tích và lưu {len(saved_items)} bộ tiêu đề vào Kho Dự Án: [{ids_str}]")
+        ids_str = ", ".join([f"#{it.get('ma_id', '')}" for it in saved_items])
+        log_info("SCRIPT", f"📥 Đã phân tích và lưu {len(saved_items)} tiêu đề theo STT vào Kho Dự Án: [{ids_str}]")
         return saved_items
 
     def add_or_update_idea_from_raw(self, raw_text: str, custom_id: Optional[str] = None) -> Dict[str, Any]:

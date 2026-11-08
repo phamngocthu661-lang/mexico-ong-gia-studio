@@ -2762,162 +2762,92 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    // 4. Nút Điền Mẫu Chuẩn 2 Cột (Mã [TAB] Tiêu Đề) & Đồng Bộ Bảng 2 Cột
-    const sampleCodes = `Mexico-Ong-Gia-001\nMexico-Ong-Gia-002\nMexico-Ong-Gia-003`;
-    const sampleTitles = `Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo\nMi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable\nMis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso`;
-    const sampleText = `Mexico-Ong-Gia-001\tMi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo\nMexico-Ong-Gia-002\tMi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable\nMexico-Ong-Gia-003\tMis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso`;
+    // 4. Nút Điền Mẫu Tiêu Đề (Mỗi tiêu đề 1 dòng — Tự động bỏ qua Mã và đánh STT 1, 2, 3...)
+    const sampleText = [
+      "Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo",
+      "Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable",
+      "Mis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso"
+    ].join("\n");
 
     const rawInputEl = document.getElementById("adas-raw-input");
-    const colCodeEl = document.getElementById("adas-col-code-input");
-    const colTitleEl = document.getElementById("adas-col-title-input");
-    const customIdEl = document.getElementById("adas-custom-id");
     const detectedBadgeEl = document.getElementById("adas-detected-count-badge");
 
     const fieldLinePrefixRe = /^(?:(?:\d{1,2}[\.\)\-:]|\-|•|\*)\s*)?(?:vi|vn|dịch\s*ý|tóm\s*tắt|premise|nội\s*dung|keyword|keywords|từ\s*khóa|evidence|proof|vật\s*chứng|bằng\s*chứng|reveal|reveals|ba\s*lớp\s*tiết\s*lộ|3\s*lớp\s*tiết\s*lộ|lớp\s*tiết\s*lộ|tiết\s*lộ|capacity|longform|đánh\s*giá|quan\s*hệ|nhân\s*vật|relation|relationship|trụ\s*cột|nhóm\s*chủ\s*đề|chủ\s*đề|không\s*gian|bối\s*cảnh|setting|xung\s*đột|conflict|câu\s*hỏi|payoff|hệ\s*quả|mức\s*ưu\s*tiên|ưu\s*tiên|priority|trạng\s*thái|status|mã\s*cơ\s*chế|cơ\s*chế|căn\s*cứ|lưu\s*ý|quy\s*tắc|góc\s*thumbnail|nguồn\s*gốc|research_source)\s*[:：]/i;
-    const fixedPackHeaderRe = /^(?:(?:#|\*|\-|\•)\s*)?(?:[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+|(?:P|ID|IDEA_?|PMX_?|M|T)\s*\d{1,4}|\d{1,3})\s*(?:\t|[—–\-:：\.]+|\s{2,})\s*.{8,}$/i;
     const titleLabelStartRe = /^(?:(?:\d+[\.\)\-:]|\-|•|\*|#+\s*)\s*)?(?:tiêu\s*đề\s*nhật\s*nháp|tiêu\s*đề\s*nháp|tiêu\s*đề|04\.\s*tiêu\s*đề|title|current_final_title|locked_title)\s*[:：]/i;
 
-    function syncTwoColumnsToRaw() {
-      if (!colCodeEl || !colTitleEl || !rawInputEl) return;
-      const codes = colCodeEl.value.split(/\r?\n/).map(s => s.trim());
-      const titles = colTitleEl.value.split(/\r?\n/).map(s => s.trim());
-      const maxLen = Math.max(codes.length, titles.length);
-      const prefix = (customIdEl && customIdEl.value.trim()) ? customIdEl.value.trim() : "Mexico-Ong-Gia";
-      const rows = [];
-      for (let i = 0; i < maxLen; i++) {
-        const c = codes[i] || "";
-        const t = titles[i] || "";
-        if (!c && !t) continue;
-        const finalCode = c || `${prefix}-${String(i + 1).padStart(3, "0")}`;
-        rows.push(t ? `${finalCode}\t${t}` : finalCode);
+    function cleanSingleTitleLine(rawLine) {
+      let ln = (rawLine || "").trim();
+      if (!ln || /^[-=*#]{3,}$/.test(ln)) return "";
+      if (fieldLinePrefixRe.test(ln)) return "";
+      if (titleLabelStartRe.test(ln)) {
+        ln = ln.replace(titleLabelStartRe, "").trim();
       }
-      rawInputEl.value = rows.join("\n");
-      refreshDetectedCountBadge();
+      if (ln.includes("\t")) {
+        const parts = ln.split("\t").map(p => p.trim()).filter(Boolean);
+        ln = parts.length >= 2 ? parts.slice(1).join(" ").trim() : (parts[0] || "");
+      }
+      ln = ln.replace(/^(?:(?:#|\*|\-|\•)\s*)?(?:[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+|(?:P|ID|IDEA_?|PMX_?|M|T|STT)\s*\d{1,5}|\d{1,5})\s*(?:[\.\)\-—–:：\|]+|\s{2,})\s*/i, "").trim();
+      ln = ln.replace(/^["'“”‘’«»]+|["'“”‘’«»]+$/g, "").trim();
+      return ln;
     }
 
-    function syncRawToTwoColumns() {
-      if (!rawInputEl || !colCodeEl || !colTitleEl) return;
-      const lines = rawInputEl.value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      const codes = [];
-      const titles = [];
-      let hasTabOrHeader = false;
-      lines.forEach((ln, idx) => {
-        if (ln.includes("\t")) {
-          hasTabOrHeader = true;
-          const parts = ln.split("\t");
-          codes.push(parts[0].trim());
-          titles.push(parts.slice(1).join(" ").trim());
-        } else {
-          const m = ln.match(/^([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+)\s*(?:[—–\-:：]+|\s{2,})\s*(.+)$/);
-          if (m) {
-            hasTabOrHeader = true;
-            codes.push(m[1].trim());
-            titles.push(m[2].trim());
-          } else {
-            const prefix = (customIdEl && customIdEl.value.trim()) ? customIdEl.value.trim() : "Mexico-Ong-Gia";
-            codes.push(`${prefix}-${String(idx + 1).padStart(3, "0")}`);
-            titles.push(ln);
-          }
+    function sanitizePastedTitlesText(text) {
+      const lines = (text || "").split(/\r?\n/);
+      const cleanedLines = [];
+      for (const line of lines) {
+        const cleaned = cleanSingleTitleLine(line);
+        if (cleaned) {
+          cleanedLines.push(cleaned);
         }
-      });
-      if (hasTabOrHeader || lines.length > 0) {
-        colCodeEl.value = codes.join("\n");
-        colTitleEl.value = titles.join("\n");
       }
+      return cleanedLines.join("\n");
     }
 
-    function handleSmartTwoColumnPaste(e) {
+    function handleTitlePasteClean(e) {
       const clip = (e.clipboardData || window.clipboardData)?.getData("text") || "";
-      if (clip && clip.includes("\t")) {
-        e.preventDefault();
-        const lines = clip.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-        const codes = [];
-        const titles = [];
-        const rawRows = [];
-        lines.forEach((ln, idx) => {
-          if (ln.includes("\t")) {
-            const parts = ln.split("\t");
-            const c = parts[0].trim();
-            const t = parts.slice(1).join(" ").trim();
-            codes.push(c);
-            titles.push(t);
-            rawRows.push(`${c}\t${t}`);
-          } else {
-            const prefix = (customIdEl && customIdEl.value.trim()) ? customIdEl.value.trim() : "Mexico-Ong-Gia";
-            const c = `${prefix}-${String(idx + 1).padStart(3, "0")}`;
-            codes.push(c);
-            titles.push(ln);
-            rawRows.push(`${c}\t${ln}`);
-          }
-        });
-        if (colCodeEl) colCodeEl.value = codes.join("\n");
-        if (colTitleEl) colTitleEl.value = titles.join("\n");
-        if (rawInputEl) rawInputEl.value = rawRows.join("\n");
-        refreshDetectedCountBadge();
-      }
-    }
-
-    if (colCodeEl) {
-      colCodeEl.addEventListener("input", syncTwoColumnsToRaw);
-      colCodeEl.addEventListener("paste", handleSmartTwoColumnPaste);
-    }
-    if (colTitleEl) {
-      colTitleEl.addEventListener("input", syncTwoColumnsToRaw);
-      colTitleEl.addEventListener("paste", handleSmartTwoColumnPaste);
+      if (!clip) return;
+      e.preventDefault();
+      const cleanedText = sanitizePastedTitlesText(clip);
+      if (!rawInputEl) return;
+      const start = rawInputEl.selectionStart || 0;
+      const end = rawInputEl.selectionEnd || 0;
+      const before = rawInputEl.value.slice(0, start);
+      const after = rawInputEl.value.slice(end);
+      const prefixNewline = (before && !before.endsWith("\n")) ? "\n" : "";
+      const suffixNewline = (after && !after.startsWith("\n")) ? "\n" : "";
+      rawInputEl.value = `${before}${prefixNewline}${cleanedText}${suffixNewline}${after}`.replace(/^\n+/, "");
+      refreshDetectedCountBadge();
     }
 
     function countDetectedIdeasInText(text) {
       const t = (text || "").trim();
       if (!t) return 0;
-      const lines = t.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      const nonFieldLines = lines.filter(l => !fieldLinePrefixRe.test(l));
-
-      // 1. Đếm theo dòng 2 cột Mã [TAB] Tiêu đề hoặc Header cố định
-      const packHeaders = nonFieldLines.filter(l => l.includes("\t") || fixedPackHeaderRe.test(l));
-      if (packHeaders.length > 0) {
-        return packHeaders.length;
-      }
-
-      // 2. Đếm theo nhãn Tiêu đề:
-      const titleLines = nonFieldLines.filter(l => titleLabelStartRe.test(l));
-      if (titleLines.length > 0) {
-        return titleLines.length;
-      }
-
-      // 3. Nếu có các dòng thuộc tính (VI:, Keyword:, Evidence:, Tóm tắt:...) thì đây là 1 bộ
-      const hasStruct = lines.some(l => fieldLinePrefixRe.test(l));
-      if (hasStruct) {
-        return 1;
-      }
-
-      // 4. Đếm các dòng tiêu đề rời (>= 12 ký tự)
-      const standaloneTitles = nonFieldLines.filter(l => l.length >= 12 && !/^[-=*#]{3,}$/.test(l));
-      return Math.max(1, standaloneTitles.length);
+      const lines = t.split(/\r?\n/).map(l => cleanSingleTitleLine(l)).filter(Boolean);
+      return lines.length;
     }
 
     function refreshDetectedCountBadge() {
       if (!rawInputEl || !detectedBadgeEl) return;
       const c = countDetectedIdeasInText(rawInputEl.value);
-      detectedBadgeEl.innerText = c > 1 ? `🔥 Nhận diện: ${c} kịch bản (2 cột)` : `Đã nhận diện: ${c} kịch bản`;
+      detectedBadgeEl.innerText = c > 0
+        ? `🔥 Đã nhận diện: ${c} tiêu đề (Mã STT #1 ➔ #${c})`
+        : `Đã nhận diện: 0 tiêu đề`;
     }
 
     if (rawInputEl) {
       rawInputEl.addEventListener("input", () => {
-        syncRawToTwoColumns();
         refreshDetectedCountBadge();
       });
-      rawInputEl.addEventListener("paste", handleSmartTwoColumnPaste);
+      rawInputEl.addEventListener("paste", handleTitlePasteClean);
       refreshDetectedCountBadge();
     }
 
     const fillSampleBtn = document.getElementById("btn-adas-fill-sample");
     if (fillSampleBtn && rawInputEl) {
       fillSampleBtn.addEventListener("click", () => {
-        if (colCodeEl) colCodeEl.value = sampleCodes;
-        if (colTitleEl) colTitleEl.value = sampleTitles;
         rawInputEl.value = sampleText;
         refreshDetectedCountBadge();
-        appendInstantLogToUI("📋 Đã điền mẫu 2 cột (Mã [TAB] Tiêu đề) vào bảng nhập liệu.", "SCRIPT", "INFO");
+        appendInstantLogToUI("📋 Đã điền 3 tiêu đề mẫu (mỗi dòng 1 tiêu đề, tự động đánh Mã theo STT #1, #2, #3).", "SCRIPT", "INFO");
       });
     }
 
@@ -2947,33 +2877,33 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    // 5. Nút Lưu Tiêu Đề & Thông Tin Vào Kho (Hỗ trợ cả Đơn & SLL Hàng Loạt)
+    // 5. Nút Lưu Tiêu Đề & Thông Tin Vào Kho (Mỗi dòng 1 tiêu đề — Mã tự động theo STT)
     const saveIdeaBtn = document.getElementById("btn-adas-save-idea");
     if (saveIdeaBtn && rawInputEl) {
       saveIdeaBtn.addEventListener("click", async () => {
         const raw = rawInputEl.value.trim();
         if (!raw) {
-          alert("Vui lòng dán 1 hoặc nhiều Tiêu đề Nhật nháp / Tóm tắt trước khi lưu!");
+          alert("Vui lòng dán 1 hoặc nhiều Tiêu đề (mỗi tiêu đề 1 dòng) trước khi lưu!");
           return;
         }
-        const cid = customIdEl ? customIdEl.value.trim() : "";
         const res = await fetch("/api/adas/ideas/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: raw, custom_id: cid || null })
+          body: JSON.stringify({ raw_text: raw, custom_id: null })
         });
         const data = await res.json();
         if (res.ok && data.success) {
           renderSavedIdeasList(data.ideas || []);
-          if (customIdEl) customIdEl.value = "";
+          rawInputEl.value = "";
+          refreshDetectedCountBadge();
           const orig = saveIdeaBtn.innerText;
           const cnt = data.saved_count || 1;
           saveIdeaBtn.innerText = cnt > 1
-            ? `✅ Đã Lưu Hàng Loạt ${cnt} Mã Vào Kho!`
-            : `✅ Đã Lưu Mã ${data.idea.ma_id}!`;
+            ? `✅ Đã Lưu ${cnt} Tiêu Đề Theo STT!`
+            : `✅ Đã Lưu STT #${data.idea.ma_id}!`;
           setTimeout(() => { saveIdeaBtn.innerText = orig; }, 2200);
         } else {
-          alert(data.detail || "Lỗi lưu ý tưởng!");
+          alert(data.detail || "Lỗi lưu tiêu đề!");
         }
       });
     }
@@ -2984,14 +2914,13 @@ document.addEventListener("DOMContentLoaded", () => {
       previewStep2Btn.addEventListener("click", async () => {
         const raw = rawInputEl.value.trim();
         if (!raw) {
-          alert("Vui lòng dán Tiêu đề Nhật nháp và Tóm tắt để xem lệnh Step 2!");
+          alert("Vui lòng dán Tiêu đề để xem trước lệnh Step 2!");
           return;
         }
-        const cid = customIdEl ? customIdEl.value.trim() : "IDEA_PREVIEW";
         const res = await fetch("/api/adas/ideas/preview-prompt", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: raw, custom_id: cid || "IDEA_PREVIEW" })
+          body: JSON.stringify({ raw_text: raw, custom_id: "1" })
         });
         if (res.ok) {
           const data = await res.json();
@@ -3006,7 +2935,7 @@ document.addEventListener("DOMContentLoaded", () => {
           };
           const modal = document.getElementById("adas-detail-modal");
           const titleEl = document.getElementById("adas-detail-modal-title");
-          if (titleEl) titleEl.innerText = `📋 XEM TRƯỚC LỆNH PROMPT STEP 2 — MÃ: ${data.parsed.ma_id}`;
+          if (titleEl) titleEl.innerText = `📋 XEM TRƯỚC LỆNH PROMPT STEP 2 — STT #${data.parsed.ma_id}`;
           switchDetailModalTab("step2_prompt");
           if (modal) modal.style.display = "flex";
         }
@@ -3019,23 +2948,23 @@ document.addEventListener("DOMContentLoaded", () => {
       saveAndScriptOnlyBtn.addEventListener("click", async () => {
         const raw = rawInputEl.value.trim();
         if (!raw) {
-          alert("Vui lòng dán 1 hoặc nhiều Tiêu đề Nhật nháp / Tóm tắt!");
+          alert("Vui lòng dán 1 hoặc nhiều Tiêu đề (mỗi tiêu đề 1 dòng)!");
           return;
         }
-        const cid = customIdEl ? customIdEl.value.trim() : "";
         const res = await fetch("/api/adas/ideas/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: raw, custom_id: cid || null })
+          body: JSON.stringify({ raw_text: raw, custom_id: null })
         });
         const data = await res.json();
         if (res.ok && data.success && data.idea) {
           renderSavedIdeasList(data.ideas || []);
-          if (customIdEl) customIdEl.value = "";
+          rawInputEl.value = "";
+          refreshDetectedCountBadge();
           const idsToRun = (data.saved_ids && data.saved_ids.length > 0) ? data.saved_ids : [data.idea.ma_id];
           await triggerRunADAS(idsToRun, false);
         } else {
-          alert(data.detail || "Không thể lưu ý tưởng!");
+          alert(data.detail || "Không thể lưu tiêu đề!");
         }
       });
     }
@@ -3046,23 +2975,23 @@ document.addEventListener("DOMContentLoaded", () => {
       saveAndRunBtn.addEventListener("click", async () => {
         const raw = rawInputEl.value.trim();
         if (!raw) {
-          alert("Vui lòng dán 1 hoặc nhiều Tiêu đề Nhật nháp / Tóm tắt!");
+          alert("Vui lòng dán 1 hoặc nhiều Tiêu đề (mỗi tiêu đề 1 dòng)!");
           return;
         }
-        const cid = customIdEl ? customIdEl.value.trim() : "";
         const res = await fetch("/api/adas/ideas/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: raw, custom_id: cid || null })
+          body: JSON.stringify({ raw_text: raw, custom_id: null })
         });
         const data = await res.json();
         if (res.ok && data.success && data.idea) {
           renderSavedIdeasList(data.ideas || []);
-          if (customIdEl) customIdEl.value = "";
+          rawInputEl.value = "";
+          refreshDetectedCountBadge();
           const idsToRun = (data.saved_ids && data.saved_ids.length > 0) ? data.saved_ids : [data.idea.ma_id];
           await triggerRunADAS(idsToRun, null);
         } else {
-          alert(data.detail || "Không thể lưu ý tưởng!");
+          alert(data.detail || "Không thể lưu tiêu đề!");
         }
       });
     }

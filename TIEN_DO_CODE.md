@@ -1,5 +1,25 @@
 # NHẬT KÝ TIẾN ĐỘ NÂNG CẬP & SỬA LỖI — MEXICO ÔNG GIÀ STUDIO
 
+## Cập nhật: 09/11/2026 (Lần 65 — V1.0.9 Build #129) — Sửa Phần Nhận Tiêu Đề: Mỗi Tiêu Đề 1 Dòng, Tự Động Bỏ Qua Mã Đầu Dòng & Đánh Mã Dự Án Tự Động Theo STT (`1`, `2`, `3`...)
+
+### 1. Yêu cầu của người dùng
+- Người dùng yêu cầu: *"sửa lại phần nhận tiêu đề đi / mỗi tiêu đề 1 dòng / bỏ qua mã đi . mã thì lấy theo stt"*
+
+### 2. Giải pháp đã thực hiện (Đồng bộ 100% giữa `d:\Mexico ông già\` và `d:\Mexico ông già\app\`)
+1. **Nhận diện Mỗi Tiêu Đề 1 Dòng & Tự động bỏ qua Mã đầu dòng ([`backend/adas_script_engine.py`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/backend/adas_script_engine.py#L266-L382))**:
+   - Bổ sung hàm [`clean_single_title_line()`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/backend/adas_script_engine.py#L317-L361) và nâng cấp [`split_raw_text_into_idea_blocks()`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/backend/adas_script_engine.py#L364-L381):
+     - Mỗi dòng văn bản khác rỗng được nhận diện là **1 tiêu đề kịch bản độc lập**.
+     - Tự động cắt bỏ mọi loại mã đầu dòng nếu người dùng copy-paste từ bảng/Excel (ví dụ: `Mexico-Ong-Gia-001[TAB]Mi yerno...`, `P01 — Mi hijo...`, `1. Mis hijos...`, `ID_05: ...`), chỉ giữ lại phần nội dung tiêu đề sạch.
+2. **Tự động đánh Mã dự án (`ma_id`) theo Số Thứ Tự (`1`, `2`, `3`...) ([`backend/adas_script_engine.py`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/backend/adas_script_engine.py#L2749-L2825))**:
+   - Trong [`add_or_update_ideas_bulk_from_raw()`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/backend/adas_script_engine.py#L2749-L2825): Bỏ qua toàn bộ mã tiền tố hoặc mã inline, tự động tìm số thứ tự tiếp theo trong Kho Dự Án (`next_num = max_stt + 1`) và gán `ma_id = "1"`, `"2"`, `"3"`... nối tiếp theo đúng thứ tự từ trên xuống dưới (`#1`, `#2`, `#3`...).
+   - Nâng cấp [`_list_all_existing_project_ids_on_disk()`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/backend/adas_script_engine.py#L1358-L1395) sắp xếp thư mục dự án theo thứ tự số tự nhiên (`1, 2, 3, ..., 10`).
+3. **Làm gọn Giao diện Nhập Tiêu Đề 1 Ô Duy Nhất ([`frontend/index.html`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/frontend/index.html#L295-L330), [`frontend/app.js`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/frontend/app.js#L2765-L2945))**:
+   - Gỡ bỏ bảng nhập 2 cột (`Cột Mã`, `Cột Tiêu Đề`) và ô `Mã Tiền Tố Dự Án`.
+   - Thay bằng 1 ô nhập tiêu đề rộng rãi (`#adas-raw-input`, `7 dòng`), tự động làm sạch mã đầu dòng ngay khi dán (`handleTitlePasteClean`) và hiển thị trực quan số lượng tiêu đề kèm dải STT (`🔥 Đã nhận diện: N tiêu đề (Mã STT #1 ➔ #N)`).
+4. **Đẩy bản cập nhật `V1.0.9 (Build #129)` lên GitHub (`phamngocthu661-lang/mexico-ong-gia-studio`) & Đóng gói lại bộ file `.zip` gửi khách (`D:\Mexico_Ong_Gia_Studio_Bo_Cai_Khach_Hang.zip`)**.
+
+---
+
 ## Cập nhật: 09/11/2026 (Lần 64 — V1.0.8 Build #128) — Dọn Sạch 100% File/Thư Mục Thừa, Tách Biệt Hoàn Toàn Hệ Thống Bản Quyền & Launcher (`Mexico_Ong_Gia.exe`, Key `MEXICO-...`, Mã Máy `MXG-XXXX-XXXX`), Khởi Tạo Project GitHub Mới (`phamngocthu661-lang/mexico-ong-gia-studio`) & Đóng Gói File ZIP Gửi Khách (`D:\Mexico_Ong_Gia_Studio_Bo_Cai_Khach_Hang.zip`)
 
 ### 1. Yêu cầu của người dùng
