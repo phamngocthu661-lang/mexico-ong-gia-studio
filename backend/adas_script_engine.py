@@ -2992,7 +2992,8 @@ class ADASScriptEngine:
         """Đọc nguyên văn 100% nội dung file SKILL.md của Agent PADRE MX V3.0 tương ứng."""
         alias_map = {
             "01_tieu_de_padre_mx": ["01_tieu_de_padre_mx"],
-            "02_dan_y_padre_mx": ["02_dan_y_padre_mx"],
+            "02_dan_y_padre_mx": ["02_gian_y_padre_mx", "02_dan_y_padre_mx"],
+            "02_gian_y_padre_mx": ["02_gian_y_padre_mx", "02_dan_y_padre_mx"],
             "03_viet_kich_ban_padre_mx": ["03_viet_kich_ban_padre_mx"],
             "04_kiem_dinh_kich_ban_padre_mx": ["04_kiem_dinh_kich_ban_padre_mx"],
             "05_seo_thumbnail_padre_mx": ["05_seo_thumbnail_padre_mx"],
@@ -3011,11 +3012,16 @@ class ADASScriptEngine:
                         pass
         return ""
 
-    def _build_step3_prompt(self, ma_id: str, locked_title: str, step2_context: str = "") -> str:
-        skill_md = self._load_skill_markdown("02_dan_y_padre_mx")
+    def _build_step3_prompt(self, ma_id: str, locked_title: str, step2_context: str = "", in_same_chat: bool = False) -> str:
+        skill_md = self._load_skill_markdown("02_gian_y_padre_mx")
         skill_block = f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 02 (PADRE MX OUTLINE WRITER V3.0) ==========\n{skill_md}\n====================================================================================" if skill_md else ""
-        ctx_block = f"\n\n========== DỮ LIỆU ĐẦU RA & HANDOFF TỪ STEP 1/2 ==========\n{step2_context[-8000:]}\n==========================================================" if step2_context else ""
-        return f"""Chạy STEP 2 (OUTLINE 7 PHẦN — `padre-mx-outline-writer` V3.0.0) cho mã {ma_id} theo đúng tiêu đề đã khóa từ STEP 1.
+        ctx_block = (
+            ""
+            if in_same_chat
+            else (f"\n\n========== DỮ LIỆU ĐẦU RA & HANDOFF TỪ STEP 1/2 ==========\n{step2_context[-8000:]}\n==========================================================" if step2_context else "")
+        )
+        return f"""[NEW CHAT #1 — TIẾP TỤC CHẠY SKILL 02 NGAY TRÊN CÙNG ĐOẠN CHAT VỚI SKILL 01]
+Chạy STEP 2 (OUTLINE 7 PHẦN — `padre-mx-outline-writer` V3.0.0) cho mã {ma_id} theo đúng tiêu đề đã khóa từ STEP 1 ở trên.
 CURRENT_FINAL_TITLE: {locked_title}{ctx_block}{skill_block}
 
 YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` — 7 PARTS `[PART 1]`..`[PART 7]`):
@@ -3063,11 +3069,16 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
         target_c: int,
         step3_context: str = "",
         prev_part_tail: str = "",
+        in_same_writer_chat: bool = False,
     ) -> str:
-        skill_md = self._load_skill_markdown("03_viet_kich_ban_padre_mx")
+        skill_md = "" if in_same_writer_chat else self._load_skill_markdown("03_viet_kich_ban_padre_mx")
         compact_s3 = self._extract_compact_step3_for_part(step3_context, part_letter)
         skill_block = f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 03 (PADRE MX SCRIPT WRITER V3.0) ==========\n{skill_md}\n===================================================================================" if (skill_md and compact_s3) else ""
-        ctx_block = f"\n\n========== DÀN Ý 7 PHẦN & CANON CONTINUITY TỪ BƯỚC TRƯỚC ==========\n{compact_s3}\n===================================================================" if compact_s3 else ""
+        ctx_block = (
+            f"\n\n========== NHẮC LẠI DÀN Ý TRỌNG TÂM CỦA STAGE {part_letter.upper()} ==========\n{compact_s3[-10000:]}\n======================================================================"
+            if in_same_writer_chat and compact_s3
+            else (f"\n\n========== DÀN Ý 7 PHẦN & CANON CONTINUITY TỪ BƯỚC TRƯỚC ==========\n{compact_s3}\n===================================================================" if compact_s3 else "")
+        )
         prev_block = (
             f"\n\n========== ĐOẠN KẾT CỦA STAGE TRƯỚC (ĐỂ NỐI MẠCH TRUYỆN LIỀN MẠCH 100%, TUYỆT ĐỐI KHÔNG LẶP LẠI) ==========\n"
             f"«...{prev_part_tail[-450:]}»\n"
@@ -3080,13 +3091,13 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
             stage_desc = "STAGE A — Viết trọn vẹn `[PART 1]` và `[PART 2]` (Mỗi Part >= 8.500 ký tự; Tổng Stage A: 20.000–24.000 ký tự)"
             headings_rule = "BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 1]`, viết hết Phần 1 (>= 9.500 ký tự), sau đó xuống dòng ghi `[PART 2]` và viết hết Phần 2 (>= 9.500 ký tự)."
         elif p_up == "B":
-            stage_desc = "STAGE B — Viết trọn vẹn `[PART 3]`, `[PART 4]` và `[PART 5]` (Mỗi Part >= 8.500 ký tự; Tổng Stage B: 30.000–35.000 ký tự)"
+            stage_desc = "STAGE B — Viết nối tiếp trọn vẹn `[PART 3]`, `[PART 4]` và `[PART 5]` ngay trên cùng đoạn chat New Chat #2 (Mỗi Part >= 8.500 ký tự; Tổng Stage B: 30.000–35.000 ký tự)"
             headings_rule = "BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 3]`, viết hết Phần 3 (>= 10.000 ký tự), sau đó xuống dòng ghi `[PART 4]` (>= 10.000 ký tự) và `[PART 5]` (>= 10.000 ký tự)."
         else:
-            stage_desc = "STAGE C — Viết trọn vẹn `[PART 6]` và `[PART 7]` (Mỗi Part >= 8.500 ký tự; Tổng Stage C: 20.000–25.000 ký tự)"
+            stage_desc = "STAGE C — Viết nối tiếp trọn vẹn `[PART 6]` và `[PART 7]` ngay trên cùng đoạn chat New Chat #2 (Mỗi Part >= 8.500 ký tự; Tổng Stage C: 20.000–25.000 ký tự)"
             headings_rule = "BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 6]`, viết hết Phần 6 (>= 10.000 ký tự), sau đó xuống dòng ghi `[PART 7]` và viết hết Phần 7 (>= 10.000 ký tự) khép lại toàn bộ câu chuyện."
 
-        return f"""CHẠY NGAY STEP 3 ({stage_desc}) CHO MÃ {ma_id}
+        return f"""[NEW CHAT #2 — SKILL 03 STAGE {p_up}] CHẠY NGAY STEP 3 ({stage_desc}) CHO MÃ {ma_id}
 CURRENT_FINAL_TITLE: {locked_title}{ctx_block}{prev_block}{skill_block}
 
 QUY TẮC BẮT BUỘC (`padre-mx-script-writer` V3.0.0 — TIẾNG TÂY BAN NHA MEXICO `es-MX`):
@@ -3186,16 +3197,26 @@ YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG TÂY BAN NHA MEXICO (
         part_b_text: str = "",
         part_c_text: str = "",
         round1_report: str = "",
+        in_same_audit_chat: bool = True,
     ) -> str:
-        r1_excerpt = f"\n\n========== TÓM TẮT KẾT QUẢ AUDIT VÒNG 1 (LOGIC & REPAIR 1) ==========\n{round1_excerpt if (round1_excerpt := round1_report[:3000]) else 'PASS'}\n======================================================================"
-        script_payload = (
-            f"\n\n========== KỊCH BẢN SAU VÒNG 1 CẦN KIỂM ĐỊNH VÒNG 2 (HOLISTIC QUALITY / PACING / EMOTIONAL PAYOFF) ==========\n"
-            f"--- [BẮT ĐẦU STAGE A: PART 1 & PART 2 ({count_a:,} chars)] ---\n{part_a_text}\n--- [KẾT THÚC STAGE A] ---\n\n"
-            f"--- [BẮT ĐẦU STAGE B: PART 3, PART 4 & PART 5 ({count_b:,} chars)] ---\n{part_b_text}\n--- [KẾT THÚC STAGE B] ---\n\n"
-            f"--- [BẮT ĐẦU STAGE C: PART 6 & PART 7 ({count_c:,} chars)] ---\n{part_c_text}\n--- [KẾT THÚC STAGE C] ---\n"
-            f"============================================================================================================="
+        r1_excerpt = (
+            ""
+            if in_same_audit_chat
+            else f"\n\n========== TÓM TẮT KẾT QUẢ AUDIT VÒNG 1 (LOGIC & REPAIR 1) ==========\n{round1_excerpt if (round1_excerpt := round1_report[:3000]) else 'PASS'}\n======================================================================"
         )
-        return f"""CHẠY NGAY STEP 5 (VÒNG 2 — HOLISTIC FULL-SCRIPT QUALITY, PACING, ANTI-REPETITION & VOICE-READABILITY AUDIT + REPAIR 2) CHO MÃ {ma_id}
+        script_payload = (
+            "\n\n(Sử dụng trực tiếp kịch bản 7 Phần `[PART 1]`..`[PART 7]` và bản sửa Vòng 1 đã có ngay phía trên trong cùng đoạn chat New Chat #3 này để kiểm định Vòng 2)."
+            if in_same_audit_chat
+            else (
+                f"\n\n========== KỊCH BẢN SAU VÒNG 1 CẦN KIỂM ĐỊNH VÒNG 2 (HOLISTIC QUALITY / PACING / EMOTIONAL PAYOFF) ==========\n"
+                f"--- [BẮT ĐẦU STAGE A: PART 1 & PART 2 ({count_a:,} chars)] ---\n{part_a_text}\n--- [KẾT THÚC STAGE A] ---\n\n"
+                f"--- [BẮT ĐẦU STAGE B: PART 3, PART 4 & PART 5 ({count_b:,} chars)] ---\n{part_b_text}\n--- [KẾT THÚC STAGE B] ---\n\n"
+                f"--- [BẮT ĐẦU STAGE C: PART 6 & PART 7 ({count_c:,} chars)] ---\n{part_c_text}\n--- [KẾT THÚC STAGE C] ---\n"
+                f"============================================================================================================="
+            )
+        )
+        return f"""[NEW CHAT #3 — TIẾP TỤC CHẠY SKILL 04 VÒNG 2 NGAY TRÊN CÙNG ĐOẠN CHAT VỚI VÒNG 1]
+CHẠY NGAY STEP 5 (VÒNG 2 — HOLISTIC FULL-SCRIPT QUALITY, PACING, ANTI-REPETITION & VOICE-READABILITY AUDIT + REPAIR 2) CHO MÃ {ma_id}
 - CURRENT_FINAL_TITLE: {locked_title}
 - Đếm ký tự sau Vòng 1:
   + STAGE A (`[PART 1]`–`[PART 2]`): {count_a:,} chars
@@ -3723,6 +3744,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         idea: Dict[str, Any],
         proj_dir: Path,
         renders_dir: Path,
+        reuse_current_chat: bool = False,
     ) -> List[str]:
         """
         BƯỚC MỚI (STEP 7 — PADRE MX V3.0):
@@ -3791,15 +3813,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             acc_lbl = getattr(session, "cfg", {}).get("label", getattr(session, "acc_id", "AI"))
             self._update_idea_record(
                 ma_id,
-                current_step=f"STEP 7: Đang tạo cặp Thumbnail 80/20 + Ảnh Nền Xanh trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
+                current_step=f"New Chat #4 (Vẽ Thumbnail): Đang tạo cặp Thumbnail 80/20 + Ảnh Nền Xanh trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
             )
             self._emit(
-                current_step="STEP 7 — Tạo Thumbnail 80/20 + Ảnh Nhân Vật Nền Xanh",
+                current_step="New Chat #4 — Vẽ Thumbnail 80/20 + Ảnh Nhân Vật Nền Xanh",
                 progress=94.0,
-                message=f"[{ma_id}] 🎨 Mở đoạn chat mới trên {acc_lbl} tạo Thumbnail 80/20 + Ảnh Nền Xanh (Lượt {attempt}/{max_attempts})...",
+                message=f"[{ma_id}] 🎨 [New Chat #4] Đang vẽ Thumbnail 80/20 + Ảnh Nền Xanh trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
             )
 
-            session.start_fresh_chat(f"STEP7_THUMB_1_TRY_{attempt}")
+            # Lượt 1: Nếu đang đứng sẵn ở New Chat #4 (vừa chạy xong Skill 05 SEO) thì vẽ trực tiếp trong cùng New Chat #4!
+            if not (attempt == 1 and reuse_current_chat):
+                session.start_fresh_chat(f"STEP7_THUMB_1_TRY_{attempt}")
 
             prompt_to_send = prompts_list[min(attempt - 1, len(prompts_list) - 1)]
             if attempt > 1:
@@ -4106,17 +4130,16 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         step3_context: str = "",
         prev_part_tail: str = "",
         min_acceptable_chars: int = 9500,
+        in_same_writer_chat: bool = False,
     ) -> str:
         """
-        Điều khiển ChatGPT viết 1 Part (A, B hoặc C) và tự động nối thêm cho đến khi đủ ngưỡng độ dài.
-        - BẮT BUỘC mỗi Part phải đạt tối thiểu `min_acceptable_chars` (mặc định >= 9.500–10.000 chữ thuần).
-        - Nếu một lượt chat bị nghẽn ngữ cảnh (trả về rỗng hoặc không tăng ký tự), tự động mở ĐOẠN CHAT MỚI
-          kèm `step3_context` + đoạn kết hiện tại để viết tiếp thay vì dừng sớm (tránh lỗi thiếu Part như P16, P17).
+        Điều khiển ChatGPT viết 1 Stage (A, B hoặc C) ngay trên cùng New Chat #2 và tự động nối thêm cho đến khi đủ ngưỡng độ dài.
+        - BẮT BUỘC mỗi Stage phải đạt tối thiểu `min_acceptable_chars`.
         """
         self._emit(
-            current_step=f"STEP 4 — Đang viết PART {part_letter}",
+            current_step=f"New Chat #2 — Đang viết Skill 03 STAGE {part_letter}",
             progress=base_progress,
-            message=f"[{ma_id}] Đang viết kịch bản PART {part_letter} (Mục tiêu: {min_chars:,}–{max_chars:,} chữ thuần)...",
+            message=f"[{ma_id}] 💬 [New Chat #2] Đang viết kịch bản Skill 03 STAGE {part_letter} (Mục tiêu: {min_chars:,}–{max_chars:,} chữ thuần)...",
         )
 
         p_init = self._build_step4_part_initial_prompt(
@@ -4128,13 +4151,14 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             target_chars,
             step3_context=step3_context,
             prev_part_tail=prev_part_tail,
+            in_same_writer_chat=in_same_writer_chat,
         )
         raw_resp = session.send_prompt_and_wait(
             p_init,
             step_label=f"STEP4_PART_{part_letter}_1",
             timeout_sec=900,
             progress_cb=lambda st, ch: self._emit(
-                message=f"[{ma_id}] Đang nhận văn bản PART {part_letter} (Lượt 1: {ch:,} ký tự)..."
+                message=f"[{ma_id}] [New Chat #2] Đang nhận văn bản STAGE {part_letter} (Lượt 1: {ch:,} ký tự)..."
             ),
             should_stop_cb=lambda: self.should_stop,
         )
@@ -4157,15 +4181,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             tail_ja = combined_clean[-180:].replace("\n", "") if combined_clean else prev_part_tail[-180:].replace("\n", "")
             self._emit(
                 progress=min(base_progress + turn_idx * 2.2, base_progress + 14.0),
-                message=f"[{ma_id}] PART {part_letter} đạt {curr_pure:,}/{min_chars:,} chữ thuần -> Đang viết nối tiếp lượt {turn_idx}...",
+                message=f"[{ma_id}] [New Chat #2] STAGE {part_letter} đạt {curr_pure:,}/{min_chars:,} chữ thuần -> Đang viết nối tiếp lượt {turn_idx}...",
             )
 
-            # Nếu lượt trước chưa sinh được chữ nào (curr_pure == 0) hoặc bị kẹt, mở đoạn chat mới tinh để cứu hộ
-            need_fresh_recovery = (curr_pure == 0) or (stalled_retries >= 1)
+            # Giữ nguyên trên cùng New Chat #2, chỉ mở chat cứu hộ khi hoàn toàn bị kẹt liên tiếp >= 2 lần
+            need_fresh_recovery = (curr_pure == 0 and stalled_retries >= 2) or (stalled_retries >= 2)
             if need_fresh_recovery:
                 session.start_fresh_chat(f"STEP_4_RECOVERY_PART_{part_letter}_T{turn_idx}")
                 self._emit(
-                    message=f"[{ma_id}] 🔄 Mở đoạn chat cứu hộ mới cho PART {part_letter} (Lượt {turn_idx}, hiện có {curr_pure:,} chữ)..."
+                    message=f"[{ma_id}] 🔄 Mở đoạn chat cứu hộ cho STAGE {part_letter} (Lượt {turn_idx}, hiện có {curr_pure:,} chữ)..."
                 )
 
             if curr_pure == 0:
@@ -4534,7 +4558,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 )
 
             # ------------------------------------------------------------------
-            # ĐOẠN CHAT #1 (STEP 2): IDEA / TITLE / THUMBNAIL 6 DÒNG
+            # NEW CHAT #1: CHẠY SKILL 01 (TIÊU ĐỀ) VÀ SKILL 02 (GIÀN Ý 7 PHẦN) TRÊN CÙNG 1 ĐOẠN CHAT
             # ------------------------------------------------------------------
             step2_file = proj_dir / "step2_title_thumbnail.txt"
             step2_valid = False
@@ -4554,19 +4578,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 except Exception:
                     pass
 
+            ran_skill01_in_chat1 = False
             if step2_valid:
                 self._emit(
-                    current_step="STEP 2 — Idea / Title / Thumbnail (Chat #1)",
+                    current_step="New Chat #1 — Skill 01: Tiêu đề & Thumbnail",
                     progress=16.0,
-                    message=f"[{ma_id}] ♻️ Khôi phục kết quả STEP 2 có sẵn ({len(step2_out):,} ký tự)...",
+                    message=f"[{ma_id}] ♻️ Khôi phục kết quả Skill 01 có sẵn ({len(step2_out):,} ký tự)...",
                 )
             else:
-                # open_session_tab() ở trên đã mở sẵn Tab mới tinh cho STEP 2
-                self._update_idea_record(ma_id, current_step="STEP 2 (Chat #1): Chấm Idea, Khóa Title & Thumbnail 6 dòng")
+                # open_session_tab() ở trên đã mở sẵn New Chat #1 cho Skill 01 & Skill 02
+                self._update_idea_record(ma_id, current_step="New Chat #1 (Skill 01): Khóa Tiêu đề & 6 dòng chữ Thumbnail")
                 self._emit(
-                    current_step="STEP 2 — Idea / Title / Thumbnail (Chat #1)",
+                    current_step="New Chat #1 — Skill 01: Tiêu đề & Thumbnail",
                     progress=10.0,
-                    message=f"[{ma_id}] 💬 [Đoạn Chat #1] Đang gửi lệnh STEP 2 (Tạo 3 Title Nhật + Khóa LOCKED_TITLE + Thumbnail 6 dòng)...",
+                    message=f"[{ma_id}] 💬 [New Chat #1 — Skill 01] Đang tạo 5 Tiêu đề es-MX + Khóa LOCKED_TITLE + 6 dòng chữ Thumbnail...",
                 )
                 step2_prompt = build_step2_prompt_from_idea(idea, self.get_step2_template())
                 (proj_dir / "step2_prompt_sent.txt").write_text(step2_prompt, encoding="utf-8")
@@ -4575,25 +4600,24 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step2_prompt,
                     step_label="STEP_2",
                     timeout_sec=600,
-                    progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [Chat #1] STEP 2 đang phản hồi ({ch:,} ký tự)..."),
+                    progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #1 — Skill 01] Đang phản hồi ({ch:,} ký tự)..."),
                     should_stop_cb=lambda: self.should_stop,
                 )
                 step2_file.write_text(step2_out, encoding="utf-8")
+                ran_skill01_in_chat1 = True
 
             locked_title = extract_locked_title_from_step2(step2_out, fallback_title=idea.get("draft_title_ja", ""))
             self._update_idea_record(
                 ma_id,
                 locked_title=locked_title,
-                current_step="STEP 2 Hoàn tất (Đã khóa LOCKED_TITLE)",
+                current_step="New Chat #1: Xong Skill 01 -> Tiếp tục chạy Skill 02 (Giàn ý 7 Phần)",
             )
             self._emit(
                 progress=20.0,
-                message=f"[{ma_id}] ✅ STEP 2 xong! LOCKED_TITLE: {locked_title[:55]}...",
+                message=f"[{ma_id}] ✅ Skill 01 xong! LOCKED_TITLE: {locked_title[:55]}...",
             )
 
-            # ------------------------------------------------------------------
-            # ĐOẠN CHAT #2 (STEP 3): STORY ARCHITECTURE & LOGIC PREFLIGHT
-            # ------------------------------------------------------------------
+            # --- Vẫn trên New Chat #1: Chạy tiếp Skill 02 (Giàn ý 7 Phần) ---
             step3_file = proj_dir / "step3_architecture.txt"
             part_a_precheck = proj_dir / "part_a.txt"
             has_existing_parts = not force_rewrite_script and part_a_precheck.exists() and part_a_precheck.stat().st_size > 15000
@@ -4601,7 +4625,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             if step3_file.exists() and (step3_file.stat().st_size > 2500 or has_existing_parts) and not force_rewrite_script:
                 try:
                     s3_probe = step3_file.read_text(encoding="utf-8", errors="ignore")
-                    if has_existing_parts or any(k in s3_probe.upper() for k in ("STORY BIBLE", "SCENE", "PART_A", "PART A", "LOGIC LEDGER", "APPROVED_FOR_DRAFTING")):
+                    if has_existing_parts or any(k in s3_probe.upper() for k in ("STORY BIBLE", "SCENE", "PART_A", "PART A", "PART 1", "LOGIC LEDGER", "APPROVED_FOR_DRAFTING")):
                         step3_out = s3_probe
                         step3_valid = True
                     else:
@@ -4616,34 +4640,35 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
             if step3_valid:
                 self._emit(
-                    current_step="STEP 3 — Story Architecture (Chat #2)",
+                    current_step="New Chat #1 — Skill 02: Giàn ý 7 Phần",
                     progress=30.0,
-                    message=f"[{ma_id}] ♻️ Khôi phục kết quả STEP 3 có sẵn ({len(step3_out):,} ký tự)...",
+                    message=f"[{ma_id}] ♻️ Khôi phục kết quả Skill 02 có sẵn ({len(step3_out):,} ký tự)...",
                 )
             else:
-                session.start_fresh_chat("STEP_3_ARCHITECTURE")
-                self._update_idea_record(ma_id, current_step="STEP 3 (Chat #2): Thiết kế Story Bible & 24 Cảnh A/B/C")
+                # KHÔNG gọi start_fresh_chat: Chạy Skill 02 ngay trong cùng New Chat #1 với Skill 01!
+                self._update_idea_record(ma_id, current_step="New Chat #1 (Skill 02): Thiết kế Giàn ý 7 Phần & Canon Continuity")
                 self._emit(
-                    current_step="STEP 3 — Story Architecture (Chat #2)",
+                    current_step="New Chat #1 — Skill 02: Giàn ý 7 Phần",
                     progress=24.0,
-                    message=f"[{ma_id}] 💬 [Đoạn Chat #2 Mới] Đang chạy STEP 3 (Thiết kế Story Bible, Logic Ledger & Kế hoạch 24 cảnh A/B/C)...",
+                    message=f"[{ma_id}] 💬 [New Chat #1 — Skill 02] Đang thiết kế Giàn ý 7 Phần ([PART 1]..[PART 7]) ngay trên cùng đoạn chat...",
                 )
                 step3_prompt = self._build_step3_prompt(
                     ma_id,
                     locked_title,
                     step2_context=step2_out,
+                    in_same_chat=ran_skill01_in_chat1,
                 )
                 step3_out = session.send_prompt_and_wait(
                     step3_prompt,
                     step_label="STEP_3",
                     timeout_sec=600,
-                    progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [Chat #2] STEP 3 đang thiết kế cấu trúc ({ch:,} ký tự)..."),
+                    progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #1 — Skill 02] Đang lập Giàn ý 7 Phần ({ch:,} ký tự)..."),
                     should_stop_cb=lambda: self.should_stop,
                 )
                 step3_file.write_text(step3_out, encoding="utf-8")
 
             # ------------------------------------------------------------------
-            # ĐOẠN CHAT #3A / #3B / #3C (STEP 3 PADRE MX V3.0): VIẾT KỊCH BẢN ĐỦ 3 STAGE = 7 PARTS (`[PART 1]`..`[PART 7]`)
+            # NEW CHAT #2: CHẠY SKILL 03 STAGE A + STAGE B + STAGE C TRÊN CÙNG 1 ĐOẠN CHAT
             # - STAGE A (`part_a.txt`): `[PART 1]` + `[PART 2]` (20.000–24.000 ký tự, target 22.000)
             # - STAGE B (`part_b.txt`): `[PART 3]` + `[PART 4]` + `[PART 5]` (30.000–35.000 ký tự, target 32.500)
             # - STAGE C (`part_c.txt`): `[PART 6]` + `[PART 7]` (20.000–25.000 ký tự, target 22.500)
@@ -4701,6 +4726,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         except Exception:
                             pass
 
+            chat2_writer_opened = False
+
             # --- 4.1: STAGE A ([PART 1] & [PART 2]) ---
             if not need_write_a:
                 part_a_clean = ensure_part_headings_for_stage(part_a_file.read_text(encoding="utf-8", errors="ignore"), "A")
@@ -4710,12 +4737,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     message=f"[{ma_id}] ♻️ Khôi phục STAGE A ([PART 1]–[PART 2]: {count_a:,} ký tự) -> Chuyển sang kiểm tra STAGE B...",
                 )
             else:
-                session.start_fresh_chat("STEP_4_WRITE_PART_A")
+                session.start_fresh_chat("NEW_CHAT_2_SKILL_03_WRITER")
+                chat2_writer_opened = True
                 self._update_idea_record(
                     ma_id,
                     has_script=False,
                     status="RUNNING",
-                    current_step="STEP 3A (Chat #3A): Đang viết STAGE A ([PART 1] & [PART 2] — 20k–24k chữ)...",
+                    current_step="New Chat #2 (Skill 03 Stage A): Đang viết [PART 1] & [PART 2] (20k–24k chữ)...",
                 )
                 part_a_clean = self._write_part_with_length_gate(
                     session,
@@ -4729,6 +4757,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step3_context=step3_out,
                     prev_part_tail="",
                     min_acceptable_chars=accept_a,
+                    in_same_writer_chat=False,
                 )
                 part_a_file.write_text(part_a_clean, encoding="utf-8")
                 count_a = pure_char_count(part_a_clean)
@@ -4739,7 +4768,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 has_script=False,
                 completed_parts_count=1,
                 missing_parts=["B", "C"],
-                current_step=f"STEP 3A: Xong STAGE A ([PART 1]–[PART 2]: {count_a:,} chữ) -> Đang chuẩn bị STAGE B...",
+                current_step=f"New Chat #2: Xong STAGE A ([PART 1]–[PART 2]: {count_a:,} chữ) -> Tiếp tục STAGE B...",
             )
 
             # --- 4.2: STAGE B ([PART 3], [PART 4] & [PART 5]) ---
@@ -4751,12 +4780,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     message=f"[{ma_id}] ♻️ Khôi phục STAGE B ([PART 3]–[PART 5]: {count_b:,} ký tự) -> Chuyển sang kiểm tra STAGE C...",
                 )
             else:
-                session.start_fresh_chat("STEP_4_WRITE_PART_B")
+                reuse_chat2_for_b = chat2_writer_opened
+                if not chat2_writer_opened:
+                    session.start_fresh_chat("NEW_CHAT_2_SKILL_03_WRITER")
+                    chat2_writer_opened = True
                 self._update_idea_record(
                     ma_id,
                     has_script=False,
                     status="RUNNING",
-                    current_step=f"STEP 3B (Chat #3B Mới): Đang viết STAGE B ([PART 3]–[PART 5] — Đã có {count_a:,} chữ)...",
+                    current_step=f"New Chat #2 (Skill 03 Stage B): Đang viết nối tiếp [PART 3]–[PART 5] (Đã có {count_a:,} chữ)...",
                 )
                 part_b_clean = self._write_part_with_length_gate(
                     session,
@@ -4770,6 +4802,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step3_context=step3_out,
                     prev_part_tail=part_a_clean[-450:],
                     min_acceptable_chars=accept_b,
+                    in_same_writer_chat=reuse_chat2_for_b,
                 )
                 part_b_file.write_text(part_b_clean, encoding="utf-8")
                 count_b = pure_char_count(part_b_clean)
@@ -4780,7 +4813,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 has_script=False,
                 completed_parts_count=2,
                 missing_parts=["C"],
-                current_step=f"STEP 3B: Xong STAGE A+B ([PART 1]–[PART 5]: {count_a + count_b:,} chữ) -> Đang chuẩn bị STAGE C...",
+                current_step=f"New Chat #2: Xong STAGE A+B ([PART 1]–[PART 5]: {count_a + count_b:,} chữ) -> Tiếp tục STAGE C...",
             )
 
             # --- 4.3: STAGE C ([PART 6] & [PART 7]) ---
@@ -4792,12 +4825,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     part_c_file.write_text(part_c_clean, encoding="utf-8")
                 count_c = pure_char_count(part_c_clean)
             else:
-                session.start_fresh_chat("STEP_4_WRITE_PART_C")
+                reuse_chat2_for_c = chat2_writer_opened
+                if not chat2_writer_opened:
+                    session.start_fresh_chat("NEW_CHAT_2_SKILL_03_WRITER")
+                    chat2_writer_opened = True
                 self._update_idea_record(
                     ma_id,
                     has_script=False,
                     status="RUNNING",
-                    current_step=f"STEP 3C (Chat #3C Mới): Đang viết STAGE C ([PART 6]–[PART 7] — Đã có {count_a + count_b:,} chữ)...",
+                    current_step=f"New Chat #2 (Skill 03 Stage C): Đang viết nối tiếp [PART 6]–[PART 7] (Đã có {count_a + count_b:,} chữ)...",
                 )
                 part_c_clean = self._write_part_with_length_gate(
                     session,
@@ -4811,6 +4847,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step3_context=step3_out,
                     prev_part_tail=part_b_clean[-450:],
                     min_acceptable_chars=accept_c,
+                    in_same_writer_chat=reuse_chat2_for_c,
                 )
                 part_c_file.write_text(part_c_clean, encoding="utf-8")
                 count_c = pure_char_count(part_c_clean)
@@ -4852,15 +4889,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 has_script=True,
                 completed_parts_count=3,
                 missing_parts=[],
-                current_step=f"STEP 3 Hoàn tất đủ 7 Parts / 3 Stages ({total_pure:,} ký tự es-MX)",
+                current_step=f"New Chat #2 Hoàn tất đủ 7 Parts / 3 Stages ({total_pure:,} ký tự es-MX)",
             )
             self._emit(
                 progress=74.0,
-                message=f"[{ma_id}] ✅ Đã ghép xong đủ 7 Parts: STAGE A ({count_a:,}) + STAGE B ({count_b:,}) + STAGE C ({count_c:,}) = {total_pure:,} ký tự!",
+                message=f"[{ma_id}] ✅ [New Chat #2] Đã viết & ghép xong đủ 7 Parts: STAGE A ({count_a:,}) + STAGE B ({count_b:,}) + STAGE C ({count_c:,}) = {total_pure:,} ký tự!",
             )
 
             # ------------------------------------------------------------------
-            # ĐOẠN CHAT #4 & #5 ĐỘC LẬP (STEP 4 & STEP 5 PADRE MX V3.0):
+            # NEW CHAT #3: CHẠY SKILL 04 VÒNG 1 VÀ SKILL 04 VÒNG 2 TRÊN CÙNG 1 ĐOẠN CHAT
             # - VÒNG 1 (ROUND 1): KIỂM ĐỊNH LOGIC, TÍNH LIÊN TỤC, PHÁP LÝ & CHÍNH TẢ `es-MX` + REPAIR 1
             # - VÒNG 2 (ROUND 2): KIỂM ĐỊNH CHẤT LƯỢNG TỔNG THỂ, NHỊP ĐIỆU & GIỌNG ĐỌC TTS + REPAIR 2
             # ------------------------------------------------------------------
@@ -4873,18 +4910,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 if step5_file.exists() and step5_file.stat().st_size > 500:
                     step5_out = step5_file.read_text(encoding="utf-8")
                     self._emit(
-                        current_step="STEP 4 & 5 — 2 Vòng Kiểm định Độc lập (Chat #4 & #5)",
+                        current_step="New Chat #3 — Skill 04 Vòng 1 & Vòng 2",
                         progress=84.0,
-                        message=f"[{ma_id}] ♻️ Khôi phục báo cáo kiểm toán 2 vòng có sẵn ({len(step5_out):,} ký tự)...",
+                        message=f"[{ma_id}] ♻️ Khôi phục báo cáo kiểm toán Skill 04 (2 vòng) có sẵn ({len(step5_out):,} ký tự)...",
                     )
                 else:
+                    # Mở đúng 1 đoạn New Chat #3 cho cả Vòng 1 & Vòng 2 của Skill 04
+                    session.start_fresh_chat("NEW_CHAT_3_SKILL_04_AUDIT")
+
                     # --- VÒNG 1: FORENSIC LOGIC AUDIT + REPAIR 1 ---
-                    session.start_fresh_chat("STEP_5_ROUND1_LOGIC_AUDIT")
-                    self._update_idea_record(ma_id, current_step="STEP 4 (Vòng 1 — Chat Độc Lập): Kiểm định Logic, Pháp lý & Chính tả es-MX + Repair 1")
+                    self._update_idea_record(ma_id, current_step="New Chat #3 (Skill 04 Vòng 1): Kiểm định Logic, Pháp lý & Chính tả es-MX + Repair 1")
                     self._emit(
-                        current_step="STEP 4 — Kiểm định Vòng 1: Logic & Chính tả es-MX",
+                        current_step="New Chat #3 — Skill 04 Vòng 1: Logic & Chính tả es-MX",
                         progress=78.0,
-                        message=f"[{ma_id}] 💬 [Vòng Kiểm Định #1] Đang kiểm tra Logic, Tuổi tác, Pháp lý Mexico & Chính tả es-MX trên toàn bộ 7 Parts...",
+                        message=f"[{ma_id}] 💬 [New Chat #3 — Skill 04 Vòng 1] Đang kiểm tra Logic, Tuổi tác, Pháp lý Mexico & Chính tả es-MX trên toàn bộ 7 Parts...",
                     )
                     r1_prompt = self._build_step5_audit_prompt(
                         ma_id,
@@ -4902,7 +4941,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         r1_prompt,
                         step_label="STEP_5_ROUND_1",
                         timeout_sec=720,
-                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [Audit Vòng 1 — Logic] Đang kiểm tra & Repair 1 ({ch:,} ký tự)..."),
+                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #3 — Skill 04 Vòng 1] Đang kiểm tra & Repair 1 ({ch:,} ký tự)..."),
                         should_stop_cb=lambda: self.should_stop,
                     )
                     r1_file.write_text(r1_out, encoding="utf-8")
@@ -4928,13 +4967,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
                     total_pure = count_a + count_b + count_c
 
-                    # --- VÒNG 2: HOLISTIC QUALITY AUDIT + REPAIR 2 ---
-                    session.start_fresh_chat("STEP_5_ROUND2_QUALITY_AUDIT")
-                    self._update_idea_record(ma_id, current_step="STEP 5 (Vòng 2 — Chat Độc Lập): Kiểm định Chất lượng Tổng thể & Nhịp đọc TTS + Repair 2")
+                    # --- VÒNG 2 (Vẫn trên cùng New Chat #3): HOLISTIC QUALITY AUDIT + REPAIR 2 ---
+                    self._update_idea_record(ma_id, current_step="New Chat #3 (Skill 04 Vòng 2): Kiểm định Chất lượng Tổng thể & Nhịp đọc TTS + Repair 2")
                     self._emit(
-                        current_step="STEP 5 — Kiểm định Vòng 2: Chất lượng & Nhịp đọc TTS",
+                        current_step="New Chat #3 — Skill 04 Vòng 2: Chất lượng & Nhịp đọc TTS",
                         progress=82.0,
-                        message=f"[{ma_id}] 💬 [Vòng Kiểm Định #2] Đang đánh giá Chất lượng văn học, Nhịp điệu, Cao trào cảm xúc & Repair 2...",
+                        message=f"[{ma_id}] 💬 [New Chat #3 — Skill 04 Vòng 2] Đang đánh giá Chất lượng văn học, Nhịp điệu, Cao trào cảm xúc & Repair 2 ngay trên cùng đoạn chat...",
                     )
                     r2_prompt = self._build_step5_round2_quality_audit_prompt(
                         ma_id,
@@ -4947,12 +4985,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         part_b_text=part_b_headed,
                         part_c_text=part_c_headed,
                         round1_report=r1_out,
+                        in_same_audit_chat=True,
                     )
                     r2_out = session.send_prompt_and_wait(
                         r2_prompt,
                         step_label="STEP_5_ROUND_2",
                         timeout_sec=720,
-                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [Audit Vòng 2 — Quality] Đang đánh giá & Repair 2 ({ch:,} ký tự)..."),
+                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #3 — Skill 04 Vòng 2] Đang đánh giá & Repair 2 ({ch:,} ký tự)..."),
                         should_stop_cb=lambda: self.should_stop,
                     )
                     r2_file.write_text(r2_out, encoding="utf-8")
@@ -4998,25 +5037,27 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 )
 
             # ------------------------------------------------------------------
-            # ĐOẠN CHAT #6 MỚI ĐỘC LẬP (STEP 6): SEO `es-MX` & 2 THUMBNAIL PROMPTS (CÓ FALLBACK AN TOÀN)
+            # NEW CHAT #4: CHẠY SKILL 05 (SEO `es-MX`) VÀ VẼ THUMBNAIL TRÊN CÙNG 1 ĐOẠN CHAT
             # ------------------------------------------------------------------
             step6_file = proj_dir / "seo_publish_pack.txt"
             pmx_seo_file = proj_dir / "PMX_SEO_PACK.md"
+            chat4_seo_thumb_opened = False
             try:
                 if step6_file.exists() and step6_file.stat().st_size > 300 and "BLOCKED" not in step6_file.read_text(encoding="utf-8")[:400]:
                     step6_out = step6_file.read_text(encoding="utf-8")
                     self._emit(
-                        current_step="STEP 6 — SEO es-MX & 2 Thumbnail Prompts (Chat #6)",
+                        current_step="New Chat #4 — Skill 05: SEO es-MX & Thumbnail Prompts",
                         progress=89.0,
-                        message=f"[{ma_id}] ♻️ Khôi phục gói SEO STEP 6 có sẵn ({len(step6_out):,} ký tự)...",
+                        message=f"[{ma_id}] ♻️ Khôi phục gói SEO Skill 05 có sẵn ({len(step6_out):,} ký tự)...",
                     )
                 else:
-                    session.start_fresh_chat("STEP_6_SEO_AND_THUMB_PROMPTS")
-                    self._update_idea_record(ma_id, current_step="STEP 6 (Chat Độc Lập): Đang xuất gói SEO es-MX & Prompt 2 Ảnh Thumbnail 80/20")
+                    session.start_fresh_chat("NEW_CHAT_4_SKILL_05_SEO_AND_THUMB")
+                    chat4_seo_thumb_opened = True
+                    self._update_idea_record(ma_id, current_step="New Chat #4 (Skill 05): Đang xuất gói SEO es-MX & Prompt 2 Ảnh Thumbnail 80/20")
                     self._emit(
-                        current_step="STEP 6 — SEO es-MX & 2 Thumbnail Prompts (Chat #6)",
+                        current_step="New Chat #4 — Skill 05: SEO es-MX & Thumbnail Prompts",
                         progress=86.0,
-                        message=f"[{ma_id}] 💬 [Đoạn Chat Mới — Chuyên SEO] Đang chạy STEP 6 (Xuất Title, Description, Tags es-MX & Prompt THUMBNAIL.png + THUMBNAIL-NENXANH.png)...",
+                        message=f"[{ma_id}] 💬 [New Chat #4 — Skill 05] Đang xuất Title, Description, Tags es-MX & Prompt THUMBNAIL.png + THUMBNAIL-NENXANH.png...",
                     )
                     script_excerpt = (full_clean_script[:2000] + "\n...\n" + full_clean_script[-1200:]) if len(full_clean_script) > 3500 else full_clean_script
                     step6_prompt = self._build_step6_seo_prompt(
@@ -5030,7 +5071,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         step6_prompt,
                         step_label="STEP_6",
                         timeout_sec=420,
-                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [Chat SEO] STEP 6 đang tạo gói SEO es-MX & Prompt 2 Thumbnail ({ch:,} ký tự)..."),
+                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #4 — Skill 05] Đang tạo gói SEO es-MX & Prompt Thumbnail ({ch:,} ký tự)..."),
                         should_stop_cb=lambda: self.should_stop,
                     )
                     step6_file.write_text(step6_out, encoding="utf-8")
@@ -5039,7 +5080,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 if self.should_stop:
                     raise
                 self._emit(
-                    message=f"[{ma_id}] ⚠️ Bước 6 (SEO) phản hồi chậm ({e_s6}) -> Tự động tổng hợp gói SEO es-MX chuẩn từ dữ liệu Step 1/2 để không dừng tiến trình!"
+                    message=f"[{ma_id}] ⚠️ Skill 05 (SEO) phản hồi chậm ({e_s6}) -> Tự động tổng hợp gói SEO es-MX chuẩn từ dữ liệu Step 1/2 để không dừng tiến trình!"
                 )
                 step6_out = self._build_fallback_seo_pack(ma_id, locked_title, total_pure, idea, step2_out)
                 step6_file.write_text(step6_out, encoding="utf-8")
@@ -5074,9 +5115,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             (renders_dir / f"{ma_id}_SEO.txt").write_text(master_seo_content, encoding="utf-8")
             (renders_dir / f"{ma_id}_KICH_BAN.txt").write_text(full_clean_script, encoding="utf-8")
 
-            # ------------------------------------------------------------------
-            # ĐOẠN CHAT #6 MỚI ĐỘC LẬP (STEP 7): TẠO THUMBNAIL 80/20 + ẢNH NỀN XANH
-            # ------------------------------------------------------------------
+            # --- Vẫn trên cùng New Chat #4: Vẽ Thumbnail 80/20 + Ảnh nền xanh ---
+            if not chat4_seo_thumb_opened:
+                session.start_fresh_chat("NEW_CHAT_4_SKILL_05_SEO_AND_THUMB")
+                chat4_seo_thumb_opened = True
+
             thumbnail_paths: List[str] = []
             try:
                 thumbnail_paths = self.generate_and_verify_three_thumbnails_sync(
@@ -5088,6 +5131,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     idea=idea,
                     proj_dir=proj_dir,
                     renders_dir=renders_dir,
+                    reuse_current_chat=True,
                 )
             except Exception as e_thumb:
                 if self.should_stop:

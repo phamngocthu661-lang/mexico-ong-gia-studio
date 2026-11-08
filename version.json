@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.10",
-  "build_number": 130,
-  "released_at": "2026-11-09 02:31:51",
+  "version": "V1.0.11",
+  "build_number": 131,
+  "released_at": "2026-11-09 03:13:19",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "Sửa lỗi JS khiến nút Lưu Tiêu Đề và các chức năng trên giao diện không hoạt động (V1.0.10)"
+  "changelog": "Tối ưu luồng viết kịch bản xuống đúng 4 đoạn New Chat: Chat #1 (Skill 01+02), Chat #2 (Skill 03 Stage A+B+C), Chat #3 (Skill 04 Vòng 1+2), Chat #4 (Skill 05+Vẽ Thumbnail)"
 }

@@ -1,5 +1,35 @@
 # NHẬT KÝ TIẾN ĐỘ NÂNG CẬP & SỬA LỖI — MEXICO ÔNG GIÀ STUDIO
 
+## Cập nhật: 09/11/2026 (Lần 67 — V1.0.11 Build #131) — Tối Ưu Hóa Luồng Viết Kịch Bản: Rút Gọn Từ 9 Đoạn Chat Xuống Đúng 4 Đoạn New Chat (`New Chat #1..#4`) Cho Toàn Bộ 5 Skill & Vẽ Thumbnail
+
+### 1. Yêu cầu của người dùng
+- Người dùng yêu cầu:
+  - *"như này quá nhiều đoạn chat / sửa lại:"*
+  - **`New Chat #1`**: Dùng để chạy **Skill 01** và **Skill 02**
+  - **`New Chat #2`**: Dùng để chạy **Skill 03 Stage A**, **Skill 03 Stage B**, **Skill 03 Stage C**
+  - **`New Chat #3`**: Dùng để chạy **Skill 04 Vòng 1** và **Skill 04 Vòng 2**
+  - **`New Chat #4`**: Dùng để chạy **Skill 05** và **Vẽ Thumbnail**
+
+### 2. Giải pháp đã thực hiện (Đồng bộ 100% giữa `d:\Mexico ông già\` và `d:\Mexico ông già\app\`)
+1. **Cấu trúc lại luồng điều phối phiên Chat trong [`backend/adas_script_engine.py`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/backend/adas_script_engine.py#L4560-L5145) thành đúng 4 đoạn New Chat**:
+   - **`New Chat #1` (`open_session_tab`)**:
+     - Lượt 1: Chạy **Skill 01 (`01_tieu_de_padre_mx`)** tạo 5 tiêu đề `es-MX`, chốt `LOCKED_TITLE` & 6 dòng chữ Thumbnail.
+     - Lượt 2 (Ngay trên cùng `New Chat #1`): Chạy tiếp **Skill 02 (`02_gian_y_padre_mx`)** thiết kế Giàn ý 7 Phần (`[PART 1]`..`[PART 7]`) & `Canon Continuity` mà không cần mở đoạn chat mới hay dán lại dữ liệu của Skill 01.
+   - **`New Chat #2` (`NEW_CHAT_2_SKILL_03_WRITER`)**:
+     - Mở đúng 1 đoạn chat mới cho toàn bộ **Skill 03 (`03_viet_kich_ban_padre_mx`)**.
+     - Lần lượt chạy nối tiếp **Stage A (`[PART 1]`–`[PART 2]`)** ➔ **Stage B (`[PART 3]`–`[PART 5]`)** ➔ **Stage C (`[PART 6]`–`[PART 7]`)** ngay trên cùng `New Chat #2` (`in_same_writer_chat=True`), giúp AI nhớ nguyên vẹn 100% mạch văn từ Phần 1 đến Phần 7 mà không phải nạp lại `SKILL.md` nhiều lần.
+   - **`New Chat #3` (`NEW_CHAT_3_SKILL_04_AUDIT`)**:
+     - Mở đúng 1 đoạn chat mới cho toàn bộ **Skill 04 (`04_kiem_dinh_kich_ban_padre_mx`)**.
+     - Lượt 1: Chạy **Skill 04 Vòng 1** (Kiểm định Logic, Tuổi tác, Pháp lý Mexico, Chính tả `es-MX` + `Repair 1`).
+     - Lượt 2 (Ngay trên cùng `New Chat #3`): Chạy tiếp **Skill 04 Vòng 2** (Kiểm định Chất lượng văn học, Nhịp đọc TTS + `Repair 2`, `in_same_audit_chat=True`) mà không cần gửi lại 75.000 ký tự kịch bản lần thứ hai.
+   - **`New Chat #4` (`NEW_CHAT_4_SKILL_05_SEO_AND_THUMB`)**:
+     - Mở đúng 1 đoạn chat mới cho **Skill 05 (`05_seo_thumbnail_padre_mx`)** và **Vẽ Thumbnail**.
+     - Lượt 1: Xuất trọn bộ gói **SEO YouTube `es-MX`** & Prompt Thumbnail 80/20.
+     - Lượt 2 (Ngay trên cùng `New Chat #4`, `reuse_current_chat=True`): Vẽ trực tiếp ảnh Thumbnail 80/20, chấm QA và tách nền tạo cặp `THUMBNAIL.png` + `THUMBNAIL-NENXANH.png`.
+2. **Đẩy bản `V1.0.11 (Build #131)` lên GitHub (`phamngocthu661-lang/mexico-ong-gia-studio`), đóng gói lại 2 file `.zip` gửi khách và khởi động lại ứng dụng `Mexico_Ong_Gia.exe`**.
+
+---
+
 ## Cập nhật: 09/11/2026 (Lần 66 — V1.0.10 Build #130) — Sửa Triệt Để Lỗi Đơ Giao Diện (`TypeError: Cannot read properties of null (reading 'addEventListener')`) Khiến Nút Lưu Tiêu Đề & Các Chức Năng Không Hoạt Động
 
 ### 1. Hiện tượng & Yêu cầu của người dùng
