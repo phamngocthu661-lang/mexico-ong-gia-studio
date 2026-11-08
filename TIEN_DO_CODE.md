@@ -1,5 +1,22 @@
 # NHẬT KÝ TIẾN ĐỘ NÂNG CẬP & SỬA LỖI — MEXICO ÔNG GIÀ STUDIO
 
+## Cập nhật: 09/11/2026 (Lần 66 — V1.0.10 Build #130) — Sửa Triệt Để Lỗi Đơ Giao Diện (`TypeError: Cannot read properties of null (reading 'addEventListener')`) Khiến Nút Lưu Tiêu Đề & Các Chức Năng Không Hoạt Động
+
+### 1. Hiện tượng & Yêu cầu của người dùng
+- Người dùng phản hồi: *"kiểm tra lại sao tôi gắn tiêu đề vào ấn lưu không luuw được ? và gần như ứng dụng không hoạt đông ?"*
+
+### 2. Nguyên nhân gốc rễ đã phát hiện qua kiểm thử Console/Playwright
+- Trong hàm `initApp()` của [`frontend/app.js`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/frontend/app.js#L129-L155), bước `setupStockModal()` gọi `btnYtDownload.addEventListener(...)` và `setupProductionTrigger()` gọi `btnProduce.addEventListener(...)` / `btnWatchVideo.addEventListener(...)` mà không có kiểm tra `if (el)`. Khi các nút phụ này bằng `null`, trình duyệt ném lỗi `TypeError: Cannot read properties of null (reading 'addEventListener')` ngay ở dòng `1383`, làm toàn bộ các bước khởi tạo phía sau (`setupChatGPTAndADASSystem()`, `setupTelemetryPolling()`, `checkLicenseStatus()`, `loadConfig()`, `connectWebSocket()`) bị ngắt hoàn toàn — dẫn tới nút **Lưu Kho Dự Án** và các nút điều khiển trên giao diện không được gắn sự kiện.
+
+### 3. Giải pháp đã thực hiện (Đồng bộ 100% giữa `d:\Mexico ông già\` và `d:\Mexico ông già\app\`)
+1. **Bọc an toàn `safeSetup()` cho toàn bộ các module khởi tạo trong `initApp()` & Bổ sung kiểm tra `if (el)` cho mọi lời gọi `.addEventListener` ([`frontend/app.js`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/frontend/app.js#L129-L158), [`frontend/app.js`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/frontend/app.js#L1391-L1605))**:
+   - Đảm bảo 0 lỗi `PAGEERROR` khi tải trang (`PAGEERRORS COUNT: 0`).
+   - Đã kiểm thử tự động bằng Playwright: bấm **`Dán Mẫu Tiêu Đề`** nhận diện đúng `🔥 Đã nhận diện: 3 tiêu đề (Mã STT #1 ➔ #3)` và bấm **`Lưu Kho Dự Án`** lưu ngay lập tức 3 dự án **`#1`**, **`#2`**, **`#3`** vào Kho Dự Án.
+2. **Đồng bộ ổ cứng trước khi tính STT tiếp theo trong [`add_or_update_ideas_bulk_from_raw()`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/backend/adas_script_engine.py#L2760-L2768)** và nâng mã phiên bản `<script src="app.js?v=20261109_v130"></script>` trong [`frontend/index.html`](file:///d:/Mexico%20%C3%B4ng%20gi%C3%A0/frontend/index.html#L1654) để chống cache trình duyệt.
+3. **Khởi động lại Server cồng `8900`, đẩy bản `V1.0.10 (Build #130)` lên GitHub (`phamngocthu661-lang/mexico-ong-gia-studio`) & Đóng gói lại 2 file `.zip` gửi khách**.
+
+---
+
 ## Cập nhật: 09/11/2026 (Lần 65 — V1.0.9 Build #129) — Sửa Phần Nhận Tiêu Đề: Mỗi Tiêu Đề 1 Dòng, Tự Động Bỏ Qua Mã Đầu Dòng & Đánh Mã Dự Án Tự Động Theo STT (`1`, `2`, `3`...)
 
 ### 1. Yêu cầu của người dùng

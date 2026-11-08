@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.9",
-  "build_number": 129,
-  "released_at": "2026-11-09 02:17:38",
+  "version": "V1.0.10",
+  "build_number": 130,
+  "released_at": "2026-11-09 02:31:51",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "Sửa phần nhận tiêu đề: Mỗi tiêu đề 1 dòng, tự động bỏ qua Mã đầu dòng và đánh Mã dự án tự động theo STT (1, 2, 3...)"
+  "changelog": "Sửa lỗi JS khiến nút Lưu Tiêu Đề và các chức năng trên giao diện không hoạt động (V1.0.10)"
 }

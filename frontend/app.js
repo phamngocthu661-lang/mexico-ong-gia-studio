@@ -126,19 +126,27 @@ document.addEventListener("DOMContentLoaded", () => {
   // Init App
   initApp();
 
+  function safeSetup(fn, label) {
+    try {
+      fn();
+    } catch (err) {
+      console.error(`[InitApp] Lỗi khởi tạo module ${label}:`, err);
+    }
+  }
+
   async function initApp() {
-    setupLicenseSystem();
-    setupModeTabs();
-    setupSingleFileLoader();
-    setupBatchUploader();
-    setupFolderPickers();
-    setupResolutionSelectors();
-    setupFpsSelectors();
-    setupLivePreviewListeners();
-    setupStockModal();
-    setupProductionTrigger();
-    setupChatGPTAndADASSystem();
-    setupTelemetryPolling();
+    safeSetup(setupLicenseSystem, "LicenseSystem");
+    safeSetup(setupModeTabs, "ModeTabs");
+    safeSetup(setupSingleFileLoader, "SingleFileLoader");
+    safeSetup(setupBatchUploader, "BatchUploader");
+    safeSetup(setupFolderPickers, "FolderPickers");
+    safeSetup(setupResolutionSelectors, "ResolutionSelectors");
+    safeSetup(setupFpsSelectors, "FpsSelectors");
+    safeSetup(setupLivePreviewListeners, "LivePreviewListeners");
+    safeSetup(setupStockModal, "StockModal");
+    safeSetup(setupProductionTrigger, "ProductionTrigger");
+    safeSetup(setupChatGPTAndADASSystem, "ChatGPTAndADASSystem");
+    safeSetup(setupTelemetryPolling, "TelemetryPolling");
     await checkLicenseStatus();
     await loadConfig();
     await loadStocks();
@@ -1380,14 +1388,16 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    btnYtDownload.addEventListener("click", async () => {
-      const url = ytUrlInput.value.trim();
-      if (!url) {
-        alert("Vui lòng dán link YouTube!");
-        return;
-      }
-      await triggerYtDownload(url, false);
-    });
+    if (btnYtDownload) {
+      btnYtDownload.addEventListener("click", async () => {
+        const url = ytUrlInput ? ytUrlInput.value.trim() : "";
+        if (!url) {
+          alert("Vui lòng dán link YouTube!");
+          return;
+        }
+        await triggerYtDownload(url, false);
+      });
+    }
 
     async function triggerYtDownload(url, forceDownload) {
       btnYtDownload.disabled = true;
@@ -1430,7 +1440,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 8. Bắt đầu sản xuất
   function setupProductionTrigger() {
-    btnProduce.addEventListener("click", async () => {
+    if (btnProduce) btnProduce.addEventListener("click", async () => {
       await checkLicenseStatus();
       if (!isLicenseValid) {
         if (licenseModal) licenseModal.style.display = "flex";
@@ -1554,36 +1564,44 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // Deliverables Buttons
-    btnWatchVideo.addEventListener("click", async () => {
-      const target = currentResults.length > 0 ? currentResults[0] : null;
-      if (target && target.final_video) {
-        await openSystemVideo(target.final_video);
-      }
-    });
+    if (btnWatchVideo) {
+      btnWatchVideo.addEventListener("click", async () => {
+        const target = currentResults.length > 0 ? currentResults[0] : null;
+        if (target && target.final_video) {
+          await openSystemVideo(target.final_video);
+        }
+      });
+    }
 
-    btnOpenDir.addEventListener("click", async () => {
-      const target = currentResults.length > 0 ? currentResults[0] : null;
-      const targetPath = (target && target.project_dir) ? target.project_dir : outputDirInput.value.trim();
-      if (targetPath) {
-        await openSystemFolder(targetPath);
-      }
-    });
+    if (btnOpenDir) {
+      btnOpenDir.addEventListener("click", async () => {
+        const target = currentResults.length > 0 ? currentResults[0] : null;
+        const targetPath = (target && target.project_dir) ? target.project_dir : (outputDirInput ? outputDirInput.value.trim() : "");
+        if (targetPath) {
+          await openSystemFolder(targetPath);
+        }
+      });
+    }
 
-    btnCopySrt.addEventListener("click", () => {
-      const target = currentResults.length > 0 ? currentResults[0] : null;
-      if (target && target.subtitles_srt) {
-        navigator.clipboard.writeText(target.subtitles_srt);
-        alert("Đã sao chép đường dẫn file SRT: " + target.subtitles_srt);
-      }
-    });
+    if (btnCopySrt) {
+      btnCopySrt.addEventListener("click", () => {
+        const target = currentResults.length > 0 ? currentResults[0] : null;
+        if (target && target.subtitles_srt) {
+          navigator.clipboard.writeText(target.subtitles_srt);
+          alert("Đã sao chép đường dẫn file SRT: " + target.subtitles_srt);
+        }
+      });
+    }
 
-    btnCopyChapters.addEventListener("click", () => {
-      const target = currentResults.length > 0 ? currentResults[0] : null;
-      if (target && target.timestamps_txt) {
-        navigator.clipboard.writeText(target.timestamps_txt);
-        alert("Đã sao chép đường dẫn file Chapters: " + target.timestamps_txt);
-      }
-    });
+    if (btnCopyChapters) {
+      btnCopyChapters.addEventListener("click", () => {
+        const target = currentResults.length > 0 ? currentResults[0] : null;
+        if (target && target.timestamps_txt) {
+          navigator.clipboard.writeText(target.timestamps_txt);
+          alert("Đã sao chép đường dẫn file Chapters: " + target.timestamps_txt);
+        }
+      });
+    }
   }
 
   // 9. WebSocket Tiến Trình Thời Gian Thực
@@ -5655,10 +5673,10 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
 
-  setupSystemLogsAndDiagnostics();
-  setupVoiceSelectorAndTuning();
-  setupWindowCloseAutoShutdown();
-  setupGithubOtaAutoUpdater();
-  setupPerformanceModeSelector();
-  setupSkill04InteractivePreview();
+  safeSetup(setupSystemLogsAndDiagnostics, "SystemLogsAndDiagnostics");
+  safeSetup(setupVoiceSelectorAndTuning, "VoiceSelectorAndTuning");
+  safeSetup(setupWindowCloseAutoShutdown, "WindowCloseAutoShutdown");
+  safeSetup(setupGithubOtaAutoUpdater, "GithubOtaAutoUpdater");
+  safeSetup(setupPerformanceModeSelector, "PerformanceModeSelector");
+  safeSetup(setupSkill04InteractivePreview, "Skill04InteractivePreview");
 });

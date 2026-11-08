@@ -2757,6 +2757,7 @@ class ADASScriptEngine:
             cleaned_single = clean_single_title_line(raw_text)
             blocks = [cleaned_single] if cleaned_single else [raw_text.strip()]
 
+        self._sync_projects_disk_state()
         ideas = self.load_saved_ideas()
         existing_ids = {str(it.get("ma_id")).strip() for it in ideas if it.get("ma_id")}
         saved_items: List[Dict[str, Any]] = []
@@ -2764,7 +2765,7 @@ class ADASScriptEngine:
 
         # Tìm STT lớn nhất hiện có trong Kho Dự Án để đánh tiếp theo STT (1, 2, 3...)
         max_stt = max([int(x) for x in existing_ids if x.isdigit()], default=0)
-        next_num = max(max_stt + 1, len(ideas) + 1)
+        next_num = max_stt + 1
 
         for block_str in blocks:
             while str(next_num) in existing_ids:
