@@ -59,6 +59,8 @@ if exist "%GH_TMP%\update.zip" (
         xcopy "%%D\backend\*" "%TARGET_DIR%\backend\" /E /I /Y /Q >nul
         xcopy "%%D\frontend\*" "%TARGET_DIR%\frontend\" /E /I /Y /Q >nul
         xcopy "%%D\adas_skills\*" "%TARGET_DIR%\adas_skills\" /E /I /Y /Q >nul
+        if exist "%%D\Kho_Voice" xcopy "%%D\Kho_Voice\*" "%TARGET_DIR%\Kho_Voice\" /E /I /Y /Q >nul
+        if exist "%%D\assets" xcopy "%%D\assets\*" "%TARGET_DIR%\assets\" /E /I /Y /Q >nul
         for %%F in (main.py requirements.txt version.json Chay_App.bat Cai_Dat_May_Moi.bat) do (
             if exist "%%D\%%F" copy /Y "%%D\%%F" "%TARGET_DIR%\%%F" >nul 2>&1
         )

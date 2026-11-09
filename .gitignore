@@ -3,11 +3,9 @@ projects/
 STOOK/
 VIDEO XONG/
 Kho_Green/
-Kho_Voice/
 VoiceStudio/
 pretrained_models/
 bin/
-assets/
 logs/
 cache/
 ADMIN_KEYGEN/
@@ -57,7 +55,13 @@ ARCHITECTURE_ONTOLOGY.md
 RESTRUCTURE_PLAN.md
 CODE_PROGRESS.md
 
-# Bytecode & môi trường ảo
+# Cho phép đẩy Giọng mẫu mặc định Ông Già Mexico (04_mx_ong_gia_padre_implacable) & assets lên GitHub cho máy khách
+!Kho_Voice/
+!Kho_Voice/04_mx_ong_gia_padre_implacable/
+!Kho_Voice/04_mx_ong_gia_padre_implacable/**
+!assets/
+!assets/**
+
 __pycache__/
 *.py[cod]
 *$py.class

@@ -3665,16 +3665,71 @@ def _get_voice_config_file() -> Path:
     return cfg_dir / "voice_studio_config.json"
 
 
+def _ensure_default_padre_voice_profile(root_dir: Optional[Path] = None) -> Path:
+    """Đảm bảo hồ sơ giọng mẫu mặc định 04_mx_ong_gia_padre_implacable luôn có mặt đầy đủ trong Kho_Voice/."""
+    import shutil
+
+    base = Path(root_dir) if root_dir else Path(__file__).resolve().parent.parent
+    if base.name.lower() == "app":
+        base = base.parent
+    prof_dir = base / "Kho_Voice" / "04_mx_ong_gia_padre_implacable"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    sample_wav = prof_dir / "sample.wav"
+    sample_txt = prof_dir / "sample.txt"
+    prof_json = prof_dir / "profile.json"
+
+    fallback_wav = base / "assets" / "voices" / "Padre_Mexico.wav"
+    fallback_txt = base / "assets" / "voices" / "Padre_Mexico.txt"
+
+    if not sample_wav.exists() and fallback_wav.exists():
+        try:
+            shutil.copy2(str(fallback_wav), str(sample_wav))
+        except Exception:
+            pass
+    if not sample_txt.exists():
+        if fallback_txt.exists():
+            try:
+                shutil.copy2(str(fallback_txt), str(sample_txt))
+            except Exception:
+                pass
+        else:
+            sample_txt.write_text(
+                "a la seis y cuarto de la mañana, mientras yo estaba tumbado en un cattre, en la cochera de la casa de mi hijo, con una tos que sonaba a tornillos sueltos dentro de una lata.",
+                encoding="utf-8",
+            )
+    if not prof_json.exists():
+        prof_data = {
+            "id": "04_mx_ong_gia_padre_implacable",
+            "name": "04. Padre Implacable — Ông Già Trừng Trị Mexico",
+            "language": "es",
+            "description": "[Key: 04_Nhom_Ong_Gia_Trung_Tri_Mexico] Người cha già sắt đá (Padre Implacable) bị con ruột đuổi ra nhà kho — U uất, đanh thép, nghiêm nghị, uy quyền phụ hệ không khoan nhượng",
+            "personality": "Người cha già sắt đá (Padre Implacable) bị con ruột đuổi ra nhà kho. U uất, đanh thép, nghiêm nghị, uy quyền phụ hệ không khoan nhượng",
+            "refText": sample_txt.read_text(encoding="utf-8", errors="ignore").strip(),
+            "channelKey": "04_Nhom_Ong_Gia_Trung_Tri_Mexico",
+            "speed": 1.0,
+            "model": "omnivoice",
+            "sampleFile": "sample.wav",
+        }
+        prof_json.write_text(
+            json.dumps(prof_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return sample_wav
+
+
 def load_voice_config(root_dir: Optional[Path] = None) -> Dict[str, Any]:
+    default_wav = _ensure_default_padre_voice_profile(root_dir)
     cfg_file = _get_voice_config_file()
     default_cfg = {
         "engine_mode": "voicestudio",
         "active_gpu_server": "omnivoice_gpu",
         "selected_preset_id": "04_mx_ong_gia_padre_implacable",
-        "ref_wav": "04_mx_ong_gia_padre_implacable",
+        "ref_wav": str(default_wav),
         "speedScale": 1.0,
-        "pitchScale": 0.0,
+        "pitchScale": 1.05,
         "language": "es",
+        "volumeScale": 1.05,
+        "intonationScale": 0.95,
+        "pauseLengthScale": 1.12,
     }
     if cfg_file.exists():
         try:
@@ -3683,6 +3738,11 @@ def load_voice_config(root_dir: Optional[Path] = None) -> Dict[str, Any]:
                 default_cfg.update(saved)
         except Exception:
             pass
+    if not str(default_cfg.get("selected_preset_id") or "").strip():
+        default_cfg["selected_preset_id"] = "04_mx_ong_gia_padre_implacable"
+    cur_ref = str(default_cfg.get("ref_wav") or "").strip()
+    if not cur_ref or (not os.path.exists(cur_ref) and default_wav.exists()):
+        default_cfg["ref_wav"] = str(default_wav)
     default_cfg["engine_mode"] = "voicestudio"
     default_cfg["active_gpu_server"] = "omnivoice_gpu"
     return default_cfg
@@ -3707,6 +3767,7 @@ def save_voice_config(
 
 
 def list_kho_voices(root_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+    _ensure_default_padre_voice_profile(root_dir)
     base = Path(root_dir) if root_dir else Path(__file__).resolve().parent.parent
     if base.name.lower() == "app":
         base = base.parent

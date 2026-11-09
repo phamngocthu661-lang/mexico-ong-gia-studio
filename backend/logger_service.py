@@ -2102,7 +2102,13 @@ def apply_github_update(
             app_subdir = root_dir / "app"
 
             # 1. Cập nhật các thư mục code: backend, frontend, adas_skills (An toàn chống lỗi PermissionError)
-            for folder_name in ("backend", "frontend", "adas_skills"):
+            for folder_name in (
+                "backend",
+                "frontend",
+                "adas_skills",
+                "Kho_Voice",
+                "assets",
+            ):
                 s_folder = src_root / folder_name
                 if not s_folder.exists():
                     continue

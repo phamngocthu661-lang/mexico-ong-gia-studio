@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.18",
-  "build_number": 134,
-  "released_at": "2026-11-09 18:21:29",
+  "version": "V1.0.19",
+  "build_number": 135,
+  "released_at": "2026-11-09 18:28:22",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "Gom nhóm toàn bộ thư mục gốc và hợp nhất 7 Model cốt lõi trong backend/, tự động di chuyển an toàn cấu hình/bản quyền khách hàng vào config/"
+  "changelog": "Đóng gói kèm sẵn Giọng mẫu mặc định Ông Già Mexico (04_mx_ong_gia_padre_implacable / sample.wav) trong Kho_Voice & assets/voices khi cài đặt và cập nhật từ GitHub"
 }
