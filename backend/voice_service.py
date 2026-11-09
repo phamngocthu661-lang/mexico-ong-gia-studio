@@ -1774,6 +1774,43 @@ def _apply_omnivoice_torch_compat_patch():
             except Exception:
                 setattr(_t, "_orig_real_version", str(_t.__version__))
 
+        try:
+            import torch.library as _tl
+
+            if not getattr(_tl, "_patched_safe_register_fake", False):
+                _orig_rf = getattr(_tl, "register_fake", None)
+                if callable(_orig_rf):
+
+                    def _safe_register_fake(op, *a, **kw):
+                        try:
+                            _dec = _orig_rf(op, *a, **kw)
+                        except Exception:
+                            return lambda fn: fn
+
+                        def _wrap(fn):
+                            try:
+                                return _dec(fn)
+                            except Exception:
+                                return fn
+
+                        return _wrap
+
+                    _tl.register_fake = _safe_register_fake
+                _orig_lib_cls = getattr(_tl, "Library", None)
+                if _orig_lib_cls is not None and hasattr(_orig_lib_cls, "impl"):
+                    _orig_impl = _orig_lib_cls.impl
+
+                    def _safe_lib_impl(self, op_name, fn=None, *a, **kw):
+                        try:
+                            return _orig_impl(self, op_name, fn, *a, **kw)
+                        except Exception:
+                            return fn if fn is not None else (lambda f: f)
+
+                    _orig_lib_cls.impl = _safe_lib_impl
+                setattr(_tl, "_patched_safe_register_fake", True)
+        except Exception:
+            pass
+
         # Kiểm tra thực tế xem torchvision có nạp được C++ ops hay bị lệch version với torch (RuntimeError: operator torchvision::nms does not exist)
         _tv_healthy = False
         _orig_find_spec = getattr(_ilu, "_orig_find_spec_for_omnivoice", _ilu.find_spec)

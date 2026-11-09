@@ -5403,15 +5403,27 @@ class ADASScriptEngine:
                     pass
             if has_green:
                 try:
-                    part1_chk = proj_dir / "script_green_images" / "green_part_01.png"
-                    if not part1_chk.exists():
-                        from backend.renderer import (
-                            ensure_project_script_green_images,
-                        )
+                    from backend.renderer import (
+                        _is_green_plate_clean_and_large,
+                        ensure_project_script_green_images,
+                    )
 
+                    part1_chk = proj_dir / "script_green_images" / "green_part_01.png"
+                    if not part1_chk.exists() or not _is_green_plate_clean_and_large(
+                        target_green
+                    ):
                         ensure_project_script_green_images(
                             proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
                         )
+                        if (proj_dir / "THUMBNAIL-NENXANH.png").exists() and (
+                            proj_dir / "THUMBNAIL-NENXANH.png"
+                        ).stat().st_size > 10_000:
+                            shutil.copy2(
+                                proj_dir / "THUMBNAIL-NENXANH.png", target_green
+                            )
+                            shutil.copy2(
+                                proj_dir / "THUMBNAIL-NENXANH.png", target_green_id
+                            )
                 except Exception:
                     pass
 
@@ -10306,6 +10318,16 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     if cand_g.exists() and cand_g.stat().st_size > 2_000:
                         green_thumb_path = cand_g
                         break
+
+        # Tự động kiểm tra nếu ảnh nền xanh cũ chưa đạt chuẩn DeepLabV3 V1.0.25 thì tái tạo ngay từ THUMBNAIL.png
+        if main_thumb_path is not None and green_thumb_path is not None:
+            try:
+                from backend.renderer import _is_green_plate_clean_and_large
+
+                if not _is_green_plate_clean_and_large(green_thumb_path):
+                    green_thumb_path = None
+            except Exception:
+                pass
 
         # Tự động tách nền tạo ngay THUMBNAIL-NENXANH.png nếu đã có THUMBNAIL.png nhưng chưa có ảnh nền xanh
         if main_thumb_path is not None and green_thumb_path is None:

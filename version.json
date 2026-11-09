@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.24",
-  "build_number": 140,
-  "released_at": "2026-11-09 20:43:14",
+  "version": "V1.0.25",
+  "build_number": 141,
+  "released_at": "2026-11-09 21:44:27",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.24: Sua triet de loi Could not import module PreTrainedModel do xung dot torchvision/transformers tren may khach"
+  "changelog": "V1.0.25: Khoi phuc tach nen AI DeepLabV3_ResNet50 chuan V1.0.18, xoa khoi cat elip va tu dong tai tao toan bo anh nen xanh cu"
 }

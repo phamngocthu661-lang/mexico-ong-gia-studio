@@ -711,6 +711,48 @@ def ensure_green_icons_and_sfx_assets(
         return resolved
 
 
+GREEN_PLATE_ENGINE_STAMP = "v1025_deeplab_restored_clean_v2"
+
+
+def _ensure_safe_torch_library_for_torchvision():
+    try:
+        import torch.library as _tl
+
+        if not getattr(_tl, "_patched_safe_register_fake", False):
+            _orig_rf = getattr(_tl, "register_fake", None)
+            if callable(_orig_rf):
+
+                def _safe_register_fake(op, *a, **kw):
+                    try:
+                        _dec = _orig_rf(op, *a, **kw)
+                    except Exception:
+                        return lambda fn: fn
+
+                    def _wrap(fn):
+                        try:
+                            return _dec(fn)
+                        except Exception:
+                            return fn
+
+                    return _wrap
+
+                _tl.register_fake = _safe_register_fake
+            _orig_lib_cls = getattr(_tl, "Library", None)
+            if _orig_lib_cls is not None and hasattr(_orig_lib_cls, "impl"):
+                _orig_impl = _orig_lib_cls.impl
+
+                def _safe_lib_impl(self, op_name, fn=None, *a, **kw):
+                    try:
+                        return _orig_impl(self, op_name, fn, *a, **kw)
+                    except Exception:
+                        return fn if fn is not None else (lambda f: f)
+
+                _orig_lib_cls.impl = _safe_lib_impl
+            setattr(_tl, "_patched_safe_register_fake", True)
+    except Exception:
+        pass
+
+
 def _get_person_segmentation_model():
     if _DEEPLAB_CACHE["model"] is None:
         import importlib
@@ -720,6 +762,8 @@ def _get_person_segmentation_model():
         import sys
 
         import torch
+
+        _ensure_safe_torch_library_for_torchvision()
 
         _orig_fs = getattr(_ilu, "_orig_find_spec_for_omnivoice", None)
         if _orig_fs is not None:
@@ -738,46 +782,58 @@ def _get_person_segmentation_model():
             ]:
                 sys.modules.pop(_tv_k, None)
 
-            real_torch_ver = str(getattr(torch, "_orig_real_version", "") or "")
-            if not real_torch_ver:
-                _orig_ver_fn = getattr(
-                    importlib.metadata,
-                    "_orig_version_for_omnivoice",
-                    importlib.metadata.version,
+            _ensure_safe_torch_library_for_torchvision()
+            try:
+                from torchvision.models.segmentation import (
+                    DeepLabV3_ResNet50_Weights,
+                    deeplabv3_resnet50,
                 )
-                try:
-                    real_torch_ver = str(_orig_ver_fn("torch"))
-                except Exception:
-                    real_torch_ver = str(torch.__version__)
+            except Exception:
+                real_torch_ver = str(getattr(torch, "_orig_real_version", "") or "")
+                if not real_torch_ver:
+                    _orig_ver_fn = getattr(
+                        importlib.metadata,
+                        "_orig_version_for_omnivoice",
+                        importlib.metadata.version,
+                    )
+                    try:
+                        real_torch_ver = str(_orig_ver_fn("torch"))
+                    except Exception:
+                        real_torch_ver = str(torch.__version__)
 
-            tv_ver = (
-                "torchvision==0.20.1"
-                if real_torch_ver.startswith("2.5.")
-                else "torchvision"
-            )
-            cmd = [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--prefer-binary",
-                "--force-reinstall",
-                "--no-deps",
-                tv_ver,
-            ]
-            if "+cu" in real_torch_ver:
-                cu_tag = real_torch_ver.split("+")[-1].strip()
-                cmd += ["--index-url", f"https://download.pytorch.org/whl/{cu_tag}"]
-            elif real_torch_ver.startswith("2.5.") and torch.cuda.is_available():
-                cmd += ["--index-url", "https://download.pytorch.org/whl/cu121"]
-            subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180
-            )
-            importlib.invalidate_caches()
-            from torchvision.models.segmentation import (
-                DeepLabV3_ResNet50_Weights,
-                deeplabv3_resnet50,
-            )
+                tv_map = {
+                    "2.6.": "torchvision==0.21.0",
+                    "2.5.": "torchvision==0.20.1",
+                    "2.4.": "torchvision==0.19.1",
+                    "2.3.": "torchvision==0.18.1",
+                }
+                tv_ver = next(
+                    (v for k, v in tv_map.items() if real_torch_ver.startswith(k)),
+                    "torchvision==0.20.1",
+                )
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--prefer-binary",
+                    "--no-deps",
+                    tv_ver,
+                ]
+                if "+cu" in real_torch_ver:
+                    cu_tag = real_torch_ver.split("+")[-1].strip()
+                    cmd += ["--index-url", f"https://download.pytorch.org/whl/{cu_tag}"]
+                elif real_torch_ver.startswith("2.5.") and torch.cuda.is_available():
+                    cmd += ["--index-url", "https://download.pytorch.org/whl/cu121"]
+                subprocess.run(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180
+                )
+                importlib.invalidate_caches()
+                _ensure_safe_torch_library_for_torchvision()
+                from torchvision.models.segmentation import (
+                    DeepLabV3_ResNet50_Weights,
+                    deeplabv3_resnet50,
+                )
 
         weights = DeepLabV3_ResNet50_Weights.DEFAULT
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -798,8 +854,8 @@ def extract_clean_large_green_character_bytes(
 ) -> bytes:
     """
     Tách chân dung người cha Mexico từ ảnh THUMBNAIL.png sang ảnh nền xanh #00FF00 (1920x1080):
-    1. Loại bỏ 100% chữ tiêu đề, băng rôn đỏ bên trái và giấy tờ có chữ ở phía dưới.
-    2. Dùng AI DeepLabV3_ResNet50 (Person Segmentation) + SciPy/PIL (không phụ thuộc cv2) tách sạch phông nền sau đầu/vai.
+    1. Loại bỏ 100% chữ tiêu đề, băng rôn đỏ bên trái, giấy tờ có chữ và bảng tên ở phía dưới.
+    2. Dùng AI DeepLabV3_ResNet50 (Person Segmentation) chuẩn V1.0.18 + SciPy/PIL tách sạch phông nền sau đầu/vai.
     3. Phóng to nhân vật rõ nét, uy nghi ở góc phải màn hình (rộng ~580..740px, cao ~820..1055px) trên nền #00FF00.
     """
     import io
@@ -828,14 +884,12 @@ def extract_clean_large_green_character_bytes(
     )
 
     if is_already_clean_green:
-        # Nếu đã là ảnh nền xanh #00FF00 nhưng cần kiểm tra xem có bị dính chữ ở vùng x=1000..1410 không
         mid_zone = arr[:, int(w * 0.52) : int(w * 0.72), :]
         non_green_mid = ~(
             (mid_zone[:, :, 0] == 0)
             & (mid_zone[:, :, 1] == 255)
             & (mid_zone[:, :, 2] == 0)
         )
-        # Nếu không bị dính chữ và chỉ cần chỉnh màu theo Part
         if float(np.mean(non_green_mid)) < 0.35 and int(part_index) == 1:
             return thumb_bytes
 
@@ -861,43 +915,50 @@ def extract_clean_large_green_character_bytes(
     crop_arr = arr[:, x_crop_start:, :].copy()
     ch_raw, cw_raw, _ = crop_arr.shape
 
-    # 2. Chạy AI DeepLabV3_ResNet50 (class 15 = person) trên nửa phải ảnh để lấy ngữ cảnh đầy đủ
-    probs_crop = None
-    try:
-        import torch
+    # 2. Chạy AI DeepLabV3_ResNet50 (class 15 = person) trên nửa phải ảnh (có cache theo ảnh gốc để tạo 7 Part tức thì)
+    thumb_md5 = hashlib.md5(
+        thumb_bytes[:65536] + str(len(thumb_bytes)).encode()
+    ).hexdigest()
+    cached_probs = (
+        _DEEPLAB_CACHE.get("last_probs_crop")
+        if _DEEPLAB_CACHE.get("last_thumb_md5") == thumb_md5
+        else None
+    )
+    probs_crop = cached_probs
+    if probs_crop is None or probs_crop.shape != (ch_raw, cw_raw):
+        try:
+            import torch
 
-        model, preprocess, device = _get_person_segmentation_model()
-        x_wide = int(w * 0.50)
-        wide_im = im.crop((x_wide, 0, w, h))
-        inp = preprocess(wide_im).unsqueeze(0).to(device)
-        with torch.no_grad():
-            out = model(inp)["out"][0]
-        probs_wide = torch.softmax(out, dim=0)[15].detach().cpu().numpy()
-        probs_wide_full = np.asarray(
-            Image.fromarray(probs_wide.astype(np.float32), mode="F").resize(
-                wide_im.size, Image.Resampling.BICUBIC
-            ),
-            dtype=np.float32,
-        )
-        probs_crop = probs_wide_full[:, (x_crop_start - x_wide) :]
-    except Exception as e:
-        print(f"[VisualCueDirector] Lưu ý khi chạy DeepLabV3 tách nền nhân vật: {e}")
-        probs_crop = None
+            model, preprocess, device = _get_person_segmentation_model()
+            x_wide = int(w * 0.50)
+            wide_im = im.crop((x_wide, 0, w, h))
+            inp = preprocess(wide_im).unsqueeze(0).to(device)
+            with torch.no_grad():
+                out = model(inp)["out"][0]
+            probs_wide = torch.softmax(out, dim=0)[15].detach().cpu().numpy()
+            probs_wide_full = np.asarray(
+                Image.fromarray(probs_wide.astype(np.float32), mode="F").resize(
+                    wide_im.size, Image.Resampling.BICUBIC
+                ),
+                dtype=np.float32,
+            )
+            probs_crop = probs_wide_full[:, (x_crop_start - x_wide) :]
+            _DEEPLAB_CACHE["last_thumb_md5"] = thumb_md5
+            _DEEPLAB_CACHE["last_probs_crop"] = probs_crop
+            _DEEPLAB_CACHE["last_used_deeplab"] = True
+        except Exception as e:
+            print(
+                f"[VisualCueDirector] Lưu ý khi chạy DeepLabV3 tách nền nhân vật: {e}"
+            )
+            probs_crop = None
+            _DEEPLAB_CACHE["last_used_deeplab"] = False
+    else:
+        _DEEPLAB_CACHE["last_used_deeplab"] = True
 
     if probs_crop is not None:
-        mask = (probs_crop >= 0.44).astype(np.uint8) * 255
+        mask = (probs_crop >= 0.42).astype(np.uint8) * 255
     else:
-        # Dự phòng giải phẫu học + màu viền khi chạy hoàn toàn offline chưa có model DeepLabV3
-        yy, xx = np.mgrid[0:ch_raw, 0:cw_raw].astype(np.float32)
-        yn = yy / float(max(1, ch_raw))
-        xn = xx / float(max(1, cw_raw))
-        head_d = ((xn - 0.55) / 0.39) ** 2 + ((yn - 0.28) / 0.22) ** 2
-        neck_d = ((xn - 0.57) / 0.27) ** 2 + ((yn - 0.50) / 0.14) ** 2
-        torso_mask = (yn >= 0.60) & (
-            xn >= 0.02 + 0.24 * np.clip((0.72 - yn) / 0.12, 0.0, 1.0) ** 2
-        )
-        anat_fg = (head_d <= 1.0) | (neck_d <= 1.0) | torso_mask
-        mask = np.where(anat_fg, 255, 0).astype(np.uint8)
+        mask = np.full((ch_raw, cw_raw), 255, dtype=np.uint8)
 
     # Xóa nền trắng/sáng kết nối với viền trên hoặc viền trái bằng SciPy ndimage.label
     is_white = (
@@ -916,30 +977,68 @@ def extract_clean_large_green_character_bytes(
         if len(w_ids) > 0:
             mask[np.isin(lbl_w, w_ids)] = 0
 
-    # Xác định hàng vai (y_shoulder ở vùng thân áo y >= 62% chiều cao, tránh nhầm ngang tai/cổ)
+    # Xác định hàng vai (y_shoulder) chuẩn V1.0.18
     row_fg_counts = np.sum(mask > 127, axis=1)
     shoulder_rows = np.where(
-        (np.arange(ch_raw) >= int(ch_raw * 0.62))
+        (np.arange(ch_raw) >= int(ch_raw * 0.35))
         & (row_fg_counts >= int(cw_raw * 0.80))
     )[0]
-    y_shoulder = int(shoulder_rows[0]) if len(shoulder_rows) > 0 else int(ch_raw * 0.68)
+    y_shoulder = int(shoulder_rows[0]) if len(shoulder_rows) > 0 else int(ch_raw * 0.50)
 
-    # Nếu nửa dưới có cầm giấy tờ văn bản (xác suất person giảm thấp), cắt ngay trên mép giấy để không dính chữ
-    y_cut_bottom = int(round(ch_raw * 0.88))
+    # Nếu nửa dưới có cầm giấy tờ văn bản hoặc có bảng tên (như DON ERNESTO), cắt ngay trên mép giấy/bảng tên để không dính chữ
+    y_cut_bottom = int(round(ch_raw * 0.86))
     if probs_crop is not None:
         lower_probs = probs_crop[y_shoulder + 30 :, :]
         low_prob_rows = np.where(np.mean(lower_probs > 0.35, axis=1) < 0.45)[0]
-        if len(low_prob_rows) > 40:
-            y_cut_bottom = min(ch_raw, y_shoulder + 30 + int(low_prob_rows[0]) - 45)
-            y_cut_bottom = max(int(ch_raw * 0.56), y_cut_bottom)
+        if len(low_prob_rows) > 18:
+            y_cut_bottom = min(ch_raw, y_shoulder + 30 + int(low_prob_rows[0]) - 54)
+            y_cut_bottom = max(int(ch_raw * 0.44), y_cut_bottom)
 
-    # Lấp đầy phần thân áo từ đường vai xuống y_cut_bottom
+    # Quét bổ sung bảng tên ngang nền sáng có chữ tối (như "DON ERNESTO") ở vùng đáy (y >= 72% chiều cao)
+    y_badge_scan_start = max(int(ch_raw * 0.72), y_shoulder + 40)
+    if y_badge_scan_start < y_cut_bottom:
+        lower_rgb = crop_arr[y_badge_scan_start:y_cut_bottom, :, :].astype(np.int16)
+        luma = (
+            lower_rgb[:, :, 0] * 299
+            + lower_rgb[:, :, 1] * 587
+            + lower_rgb[:, :, 2] * 114
+        ) // 1000
+        bright_neutral = (
+            (lower_rgb[:, :, 0] > 195)
+            & (lower_rgb[:, :, 1] > 195)
+            & (lower_rgb[:, :, 2] > 185)
+            & (
+                (
+                    np.maximum(
+                        np.maximum(lower_rgb[:, :, 0], lower_rgb[:, :, 1]),
+                        lower_rgb[:, :, 2],
+                    )
+                    - np.minimum(
+                        np.minimum(lower_rgb[:, :, 0], lower_rgb[:, :, 1]),
+                        lower_rgb[:, :, 2],
+                    )
+                )
+                < 35
+            )
+        )
+        sharp_edges = np.abs(np.diff(luma, axis=1)) > 55
+        badge_rows = np.where(
+            (np.mean(bright_neutral, axis=1) > 0.40)
+            & (np.sum(sharp_edges, axis=1) >= 6)
+        )[0]
+        if len(badge_rows) >= 8:
+            y_cut_bottom = min(
+                y_cut_bottom,
+                max(int(ch_raw * 0.48), y_badge_scan_start + int(badge_rows[0]) - 14),
+            )
+
+    # Lấp đầy phần thân áo từ đường vai xuống y_cut_bottom chuẩn V1.0.18
     for x in range(cw_raw):
         fg_ys_shoulder = np.where(
-            mask[max(0, y_shoulder - 15) : y_cut_bottom, x] > 127
+            mask[max(0, y_shoulder - 30) : y_cut_bottom, x] > 127
         )[0]
         if len(fg_ys_shoulder) > 0:
-            y_st = max(0, y_shoulder - 15) + int(fg_ys_shoulder[0])
+            y_st = max(0, y_shoulder - 30) + int(fg_ys_shoulder[0])
             mask[y_st:y_cut_bottom, x] = 255
 
     # Xóa lại nền trắng sát biên trái nếu có sau khi lấp đầy
@@ -1056,6 +1155,24 @@ def extract_clean_large_green_character_bytes(
     return out_buf.getvalue()
 
 
+def _write_green_plate_stamp(target_path: Path) -> None:
+    if not _DEEPLAB_CACHE.get("last_used_deeplab", False):
+        return
+    try:
+        target_path = Path(target_path)
+        for st_dir in (
+            target_path.parent,
+            target_path.parent / "script_green_images",
+            target_path.parent.parent / "script_green_images",
+        ):
+            if st_dir.exists() and st_dir.is_dir():
+                (st_dir / "green_plate_version.txt").write_text(
+                    GREEN_PLATE_ENGINE_STAMP, encoding="utf-8"
+                )
+    except Exception:
+        pass
+
+
 def normalize_character_to_strict_80_20_green_plate(
     source_image_path: Path,
     output_plate_path: Path,
@@ -1063,7 +1180,7 @@ def normalize_character_to_strict_80_20_green_plate(
 ) -> Optional[Path]:
     """
     Chuẩn hóa ảnh Nhân vật Green Screen (1920x1080):
-    - Loại bỏ 100% chữ tiêu đề, băng rôn đỏ và giấy tờ văn bản.
+    - Loại bỏ 100% chữ tiêu đề, băng rôn đỏ, giấy tờ văn bản và bảng tên phía dưới.
     - Tách sạch phông nền sau đầu/vai nhân vật sang màu xanh lá thuần khiết #00FF00 (RGB 0,255,0).
     - Phóng to chân dung nhân vật rõ nét ở bên phải khung hình.
     """
@@ -1077,6 +1194,7 @@ def normalize_character_to_strict_80_20_green_plate(
         output_plate_path = Path(output_plate_path)
         output_plate_path.parent.mkdir(parents=True, exist_ok=True)
         output_plate_path.write_bytes(green_bytes)
+        _write_green_plate_stamp(output_plate_path)
         return output_plate_path
     except Exception as e:
         print(f"[VisualCueDirector] Lưu ý khi chuẩn hóa ảnh Green: {e}")
@@ -1084,10 +1202,27 @@ def normalize_character_to_strict_80_20_green_plate(
 
 
 def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
-    """Kiểm tra xem file THUMBNAIL-NENXANH.png / green_part_01.png có bị dính chữ bên trái hoặc nhân vật quá nhỏ không."""
+    """Kiểm tra xem file THUMBNAIL-NENXANH.png / green_part_01.png đã được tách bằng AI DeepLabV3 chuẩn V1.0.25 và sạch chữ chưa."""
     if not plate_path or not plate_path.exists() or plate_path.stat().st_size < 5_000:
         return False
     try:
+        plate_path = Path(plate_path)
+        stamp_candidates = (
+            plate_path.parent / "green_plate_version.txt",
+            plate_path.parent / "script_green_images" / "green_plate_version.txt",
+            plate_path.parent.parent
+            / "script_green_images"
+            / "green_plate_version.txt",
+        )
+        has_valid_stamp = any(
+            sc.exists()
+            and sc.read_text(encoding="utf-8", errors="ignore").strip()
+            == GREEN_PLATE_ENGINE_STAMP
+            for sc in stamp_candidates
+        )
+        if not has_valid_stamp:
+            return False
+
         import numpy as np
         from PIL import Image
 
@@ -1095,7 +1230,7 @@ def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
         if im.size != (1920, 1080):
             return False
         arr = np.asarray(im, dtype=np.uint8)
-        w, _ = im.size
+        w, h = im.size
         # 1. Toàn bộ vùng x = 0..1100 bắt buộc phải là màu xanh #00FF00 thuần khiết (không dính chữ cắt dở)
         left_zone = arr[:, : int(w * 0.57), :]
         left_green_ratio = float(
@@ -1115,6 +1250,37 @@ def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
             & (right_zone[:, :, 2] == 0)
         )
         if float(np.mean(non_green)) < 0.42:
+            return False
+        # 3. Kiểm tra vùng đáy bên phải (y >= 80%) không bị dính bảng tên trắng chữ đen (như DON ERNESTO)
+        bot_right = arr[int(h * 0.80) :, int(w * 0.68) :, :].astype(np.int16)
+        luma_br = (
+            bot_right[:, :, 0] * 299
+            + bot_right[:, :, 1] * 587
+            + bot_right[:, :, 2] * 114
+        ) // 1000
+        bright_br = (
+            (bot_right[:, :, 0] > 195)
+            & (bot_right[:, :, 1] > 195)
+            & (bot_right[:, :, 2] > 185)
+            & (
+                (
+                    np.maximum(
+                        np.maximum(bot_right[:, :, 0], bot_right[:, :, 1]),
+                        bot_right[:, :, 2],
+                    )
+                    - np.minimum(
+                        np.minimum(bot_right[:, :, 0], bot_right[:, :, 1]),
+                        bot_right[:, :, 2],
+                    )
+                )
+                < 35
+            )
+        )
+        edges_br = np.abs(np.diff(luma_br, axis=1)) > 55
+        bad_badge_rows = np.where(
+            (np.mean(bright_br, axis=1) > 0.42) & (np.sum(edges_br, axis=1) >= 6)
+        )[0]
+        if len(bad_badge_rows) >= 8:
             return False
         return True
     except Exception:
@@ -2131,7 +2297,7 @@ def prepare_script_green_character_cutout(
         opacity = max(0.1, min(1.0, float(char_cfg.get("opacity", 0.90))))
 
         sig = (
-            f"char_bottom_v6|{src_p}|{src_p.stat().st_mtime_ns}|{src_p.stat().st_size}|"
+            f"char_bottom_v10_deeplab|{src_p}|{src_p.stat().st_mtime_ns}|{src_p.stat().st_size}|"
             f"{target_w}x{target_h}|x{box_x}_w{box_w}_h{box_h}_op{opacity:.2f}"
         )
         sig_hash = hashlib.md5(sig.encode("utf-8")).hexdigest()[:12]
