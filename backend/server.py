@@ -1,40 +1,49 @@
-import os
-import sys
-import time
-import json
 import asyncio
-import threading
+import os
 import subprocess
+import sys
+import threading
+import time
 import urllib.parse
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .pipeline import ProductionPipeline
-from .voice_service import split_japanese_script, load_voice_config, save_voice_config, list_kho_voices
-from .renderer import load_video_layout_config, save_video_layout_config, build_or_get_fixed_green_layers_cache
-from .license_manager import LicenseManager
-from .chatgpt_web_client import (
+from .adas_script_engine import (
+    ADASScriptEngine,
+    build_step2_prompt_from_idea,
     check_all_web_accounts_status,
+    close_all_chatgpt_browsers,
     ensure_chrome_debug_browser_open,
+    parse_idea_input_block,
     set_chrome_window_visibility,
     sweep_completed_and_idle_tabs_across_all_accounts,
-    close_all_chatgpt_browsers,
-    CHATGPT_ACCOUNTS,
 )
-from .adas_script_engine import ADASScriptEngine, build_step2_prompt_from_idea, parse_idea_input_block
 from .logger_service import (
+    LicenseManager,
     get_logger,
+    install_missing_libraries_async,
+    log_error,
     log_info,
     log_warn,
-    log_error,
     run_system_diagnostics,
-    install_missing_libraries_async,
+)
+from .pipeline import ProductionPipeline
+from .renderer import (
+    build_or_get_fixed_green_layers_cache,
+    load_video_layout_config,
+    save_video_layout_config,
+)
+from .voice_service import (
+    list_kho_voices,
+    load_voice_config,
+    save_voice_config,
+    split_japanese_script,
 )
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -45,7 +54,11 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 def create_app(root_dir: Optional[Path] = None) -> FastAPI:
-    base_dir = Path(os.path.abspath(str(root_dir))) if root_dir else Path(os.path.abspath(__file__)).parent.parent
+    base_dir = (
+        Path(os.path.abspath(str(root_dir)))
+        if root_dir
+        else Path(os.path.abspath(__file__)).parent.parent
+    )
     if base_dir.name.lower() == "app":
         base_dir = base_dir.parent
     elif not (base_dir / "STOOK").exists() and (base_dir.parent / "STOOK").exists():
@@ -56,7 +69,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         base_dir / "frontend",
         base_dir / "app" / "frontend",
         Path(os.path.abspath(__file__)).parent.parent / "frontend",
-        Path(os.path.abspath(__file__)).parent / "frontend"
+        Path(os.path.abspath(__file__)).parent / "frontend",
     ]:
         if (cand / "index.html").exists():
             frontend_dir = cand
@@ -77,7 +90,9 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     @app.middleware("http")
     async def disable_static_cache(request, call_next):
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Cache-Control"] = (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
         return response
 
     sys_logger = get_logger(base_dir)
@@ -200,9 +215,13 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     # API HỆ THỐNG LOG & CHẨN ĐOÁN LỖI (SYSTEM LOGS & DIAGNOSTICS)
     # ==========================================================================
     @app.get("/api/logs")
-    def api_get_logs(limit: int = 250, level: Optional[str] = None, category: Optional[str] = None):
+    def api_get_logs(
+        limit: int = 250, level: Optional[str] = None, category: Optional[str] = None
+    ):
         return {
-            "entries": sys_logger.get_recent_logs(limit=limit, level_filter=level, category_filter=category),
+            "entries": sys_logger.get_recent_logs(
+                limit=limit, level_filter=level, category_filter=category
+            ),
             "log_paths": sys_logger.get_log_file_paths(),
         }
 
@@ -214,7 +233,9 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     @app.get("/api/diagnostics")
     def api_run_diagnostics():
-        report = run_system_diagnostics(base_dir, pipeline=pipeline, adas_engine=adas_engine)
+        report = run_system_diagnostics(
+            base_dir, pipeline=pipeline, adas_engine=adas_engine
+        )
         return report
 
     @app.post("/api/diagnostics/install-missing")
@@ -222,7 +243,10 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         return install_missing_libraries_async(install_cuda=install_cuda)
 
     _telemetry_cache: Dict[str, Any] = {"ts": 0.0, "data": {}}
-    _shutdown_state: Dict[str, float] = {"last_alive_ts": time.time(), "close_req_ts": 0.0}
+    _shutdown_state: Dict[str, float] = {
+        "last_alive_ts": time.time(),
+        "close_req_ts": 0.0,
+    }
 
     def _force_kill_all_studio_processes():
         if os.name == "nt":
@@ -252,8 +276,14 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         def _delayed_check_and_shutdown():
             time.sleep(1.8)
             # Nếu người dùng chỉ bấm F5 tải lại trang thì heartbeat_alive / telemetry sẽ cập nhật last_alive_ts > close_ts
-            if _shutdown_state["close_req_ts"] == close_ts and _shutdown_state["last_alive_ts"] < close_ts:
-                log_info("SYSTEM", "🛑 Người dùng đã bấm nút X đóng cửa sổ ứng dụng — Đang tắt toàn bộ Server Voice (run.exe) và Backend...")
+            if (
+                _shutdown_state["close_req_ts"] == close_ts
+                and _shutdown_state["last_alive_ts"] < close_ts
+            ):
+                log_info(
+                    "SYSTEM",
+                    "🛑 Người dùng đã bấm nút X đóng cửa sổ ứng dụng — Đang tắt toàn bộ Server Voice (run.exe) và Backend...",
+                )
                 _force_kill_all_studio_processes()
 
         threading.Thread(target=_delayed_check_and_shutdown, daemon=True).start()
@@ -288,16 +318,36 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
             if res.returncode == 0 and res.stdout.strip():
-                parts = [p.strip() for p in res.stdout.strip().splitlines()[0].split(",")]
+                parts = [
+                    p.strip() for p in res.stdout.strip().splitlines()[0].split(",")
+                ]
                 if len(parts) >= 5:
                     gpu_name = parts[0]
-                    gpu_load = int(float(parts[1])) if parts[1].replace(".", "").isdigit() else 18
-                    gpu_temp = int(float(parts[2])) if parts[2].replace(".", "").isdigit() else 52
-                    mem_u = float(parts[3]) if parts[3].replace(".", "").isdigit() else 2400.0
-                    mem_t = float(parts[4]) if parts[4].replace(".", "").isdigit() else 12288.0
+                    gpu_load = (
+                        int(float(parts[1]))
+                        if parts[1].replace(".", "").isdigit()
+                        else 18
+                    )
+                    gpu_temp = (
+                        int(float(parts[2]))
+                        if parts[2].replace(".", "").isdigit()
+                        else 52
+                    )
+                    mem_u = (
+                        float(parts[3])
+                        if parts[3].replace(".", "").isdigit()
+                        else 2400.0
+                    )
+                    mem_t = (
+                        float(parts[4])
+                        if parts[4].replace(".", "").isdigit()
+                        else 12288.0
+                    )
                     vram_used_gb = round(mem_u / 1024.0, 1)
                     vram_total_gb = round(mem_t / 1024.0, 1) if mem_t > 0 else 12.0
-                    vram_pct = round((vram_used_gb / max(vram_total_gb, 0.1)) * 100.0, 1)
+                    vram_pct = round(
+                        (vram_used_gb / max(vram_total_gb, 0.1)) * 100.0, 1
+                    )
                 if len(parts) >= 6 and parts[5].replace(".", "").isdigit():
                     gpu_fan_pct = int(float(parts[5]))
         except Exception:
@@ -326,8 +376,10 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             stat.dwLength = ctypes.sizeof(stat)
             if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
                 ram_pct = float(stat.dwMemoryLoad)
-                ram_total_gb = round(stat.ullTotalPhys / (1024 ** 3), 1)
-                ram_used_gb = round((stat.ullTotalPhys - stat.ullAvailPhys) / (1024 ** 3), 1)
+                ram_total_gb = round(stat.ullTotalPhys / (1024**3), 1)
+                ram_used_gb = round(
+                    (stat.ullTotalPhys - stat.ullAvailPhys) / (1024**3), 1
+                )
         except Exception:
             pass
 
@@ -335,6 +387,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         cpu_name = f"{cpu_threads}-Thread Workstation CPU"
         try:
             import platform
+
             proc_name = platform.processor()
             if proc_name:
                 cpu_name = proc_name
@@ -342,6 +395,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             pass
 
         import socket
+
         cdp_ports = []
         for idx, port in enumerate((9232, 9233, 9234, 9235, 9236), start=1):
             alive = False
@@ -390,13 +444,19 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         try:
             if low.startswith("nvidia-smi"):
                 res = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=name,driver_version,utilization.gpu,temperature.gpu,memory.used,memory.total", "--format=csv"],
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=name,driver_version,utilization.gpu,temperature.gpu,memory.used,memory.total",
+                        "--format=csv",
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=5,
                     creationflags=0x08000000 if os.name == "nt" else 0,
                 )
-                out_text = (res.stdout or res.stderr or "Không đọc được nvidia-smi").strip()
+                out_text = (
+                    res.stdout or res.stderr or "Không đọc được nvidia-smi"
+                ).strip()
             elif "ffmpeg" in low:
                 res = subprocess.run(
                     ["ffmpeg", "-hwaccels"],
@@ -414,11 +474,20 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
                 out_text = f"Kho Stock: {st_info.get('available_count', 0)} cuộn khả dụng ({st_info.get('available_raw_hours', 0):.1f}h) tại {st_info.get('stook_dir', '')}"
             elif "cdp" in low or "chrome" in low:
                 tel = api_get_telemetry()
-                ports_str = ", ".join(f"{p['id']}:{p['port']}={'ONLINE' if p['active'] else 'OFFLINE'}" for p in tel["cdp_ports"])
-                out_text = f"Chrome CDP Nodes ({tel['cdp_active_count']}/3): {ports_str}"
+                ports_str = ", ".join(
+                    f"{p['id']}:{p['port']}={'ONLINE' if p['active'] else 'OFFLINE'}"
+                    for p in tel["cdp_ports"]
+                )
+                out_text = (
+                    f"Chrome CDP Nodes ({tel['cdp_active_count']}/3): {ports_str}"
+                )
             elif low in ("diag", "diagnostics", "check", "status"):
-                rep = run_system_diagnostics(base_dir, pipeline=pipeline, adas_engine=adas_engine)
-                out_text = f"Chẩn đoán hệ thống hoàn tất: {rep.get('summary_text', 'OK')}"
+                rep = run_system_diagnostics(
+                    base_dir, pipeline=pipeline, adas_engine=adas_engine
+                )
+                out_text = (
+                    f"Chẩn đoán hệ thống hoàn tất: {rep.get('summary_text', 'OK')}"
+                )
             else:
                 tel = api_get_telemetry()
                 out_text = (
@@ -475,13 +544,17 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     # ==========================================================================
     @app.get("/api/adas/ideas")
     def api_adas_get_ideas():
-        if time.time() - getattr(adas_engine, "_last_disk_sync_ts", 0.0) >= 25.0 and not getattr(adas_engine, "_disk_sync_in_progress", False):
+        if time.time() - getattr(
+            adas_engine, "_last_disk_sync_ts", 0.0
+        ) >= 25.0 and not getattr(adas_engine, "_disk_sync_in_progress", False):
+
             def _bg_sync():
                 try:
                     adas_engine._disk_sync_in_progress = True
                     adas_engine._sync_projects_disk_state()
                 finally:
                     adas_engine._disk_sync_in_progress = False
+
             threading.Thread(target=_bg_sync, daemon=True).start()
         return {
             "ideas": adas_engine.load_saved_ideas(),
@@ -491,10 +564,17 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     @app.post("/api/adas/ideas/save")
     def api_adas_save_idea(req: SaveIdeaInputRequest):
         if not req.raw_text or not req.raw_text.strip():
-            raise HTTPException(status_code=400, detail="Vui lòng dán nội dung Tiêu đề Nhật nháp & Tóm tắt!")
-        saved_list = adas_engine.add_or_update_ideas_bulk_from_raw(req.raw_text, custom_id=req.custom_id)
+            raise HTTPException(
+                status_code=400,
+                detail="Vui lòng dán nội dung Tiêu đề Nhật nháp & Tóm tắt!",
+            )
+        saved_list = adas_engine.add_or_update_ideas_bulk_from_raw(
+            req.raw_text, custom_id=req.custom_id
+        )
         first_idea = saved_list[0]
-        step2_prompt = build_step2_prompt_from_idea(first_idea, adas_engine.get_step2_template())
+        step2_prompt = build_step2_prompt_from_idea(
+            first_idea, adas_engine.get_step2_template()
+        )
         return {
             "success": True,
             "idea": first_idea,
@@ -507,8 +587,12 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/adas/ideas/preview-prompt")
     def api_adas_preview_prompt(req: SaveIdeaInputRequest):
-        parsed = parse_idea_input_block(req.raw_text, custom_id=req.custom_id or "IDEA_PREVIEW")
-        step2_prompt = build_step2_prompt_from_idea(parsed, adas_engine.get_step2_template())
+        parsed = parse_idea_input_block(
+            req.raw_text, custom_id=req.custom_id or "IDEA_PREVIEW"
+        )
+        step2_prompt = build_step2_prompt_from_idea(
+            parsed, adas_engine.get_step2_template()
+        )
         return {
             "parsed": parsed,
             "step2_prompt": step2_prompt,
@@ -539,7 +623,9 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         folder_path = str(payload.get("folder_path") or "").strip() or None
         try:
             if action == "start":
-                res = adas_engine.start_check_and_repair_async(custom_folder=folder_path)
+                res = adas_engine.start_check_and_repair_async(
+                    custom_folder=folder_path
+                )
                 return {"success": True, **res}
             if action == "status":
                 res = adas_engine.get_check_and_repair_status()
@@ -554,12 +640,17 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         payload = payload or {}
         folder_path = str(payload.get("folder_path") or "").strip()
         if not folder_path:
-            raise HTTPException(status_code=400, detail="Vui lòng chọn thư mục chứa Kịch bản + Thumbnail + SEO cần nhập!")
+            raise HTTPException(
+                status_code=400,
+                detail="Vui lòng chọn thư mục chứa Kịch bản + Thumbnail + SEO cần nhập!",
+            )
         try:
             res = adas_engine.import_external_projects_folder(folder_path)
             return {"success": True, **res}
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Lỗi khi nhập dự án từ máy khác: {e}")
+            raise HTTPException(
+                status_code=400, detail=f"Lỗi khi nhập dự án từ máy khác: {e}"
+            )
 
     @app.get("/api/adas/template/step2")
     def api_adas_get_step2_template():
@@ -575,9 +666,14 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     def api_adas_run(req: RunADASPipelineRequest):
         lic = license_mgr.get_license_status(check_online_time=False)
         if not lic.get("valid"):
-            raise HTTPException(status_code=403, detail=lic.get("message", "Bản quyền đã hết hạn hoặc chưa kích hoạt!"))
+            raise HTTPException(
+                status_code=403,
+                detail=lic.get("message", "Bản quyền đã hết hạn hoặc chưa kích hoạt!"),
+            )
         if not req.ma_ids:
-            raise HTTPException(status_code=400, detail="Vui lòng chọn ít nhất 1 Mã ý tưởng để chạy!")
+            raise HTTPException(
+                status_code=400, detail="Vui lòng chọn ít nhất 1 Mã ý tưởng để chạy!"
+            )
 
         started = adas_engine.start_run_ideas_async(
             ma_ids=req.ma_ids,
@@ -590,8 +686,14 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             max_retries=max(1, min(5, req.max_retries)),
         )
         if not started:
-            raise HTTPException(status_code=400, detail="Dây chuyền viết kịch bản đang chạy một dự án khác!")
-        return {"success": True, "message": f"Đã bắt đầu chạy dây chuyền Step 2 -> Step 6 cho {len(req.ma_ids)} dự án!"}
+            raise HTTPException(
+                status_code=400,
+                detail="Dây chuyền viết kịch bản đang chạy một dự án khác!",
+            )
+        return {
+            "success": True,
+            "message": f"Đã bắt đầu chạy dây chuyền Step 2 -> Step 6 cho {len(req.ma_ids)} dự án!",
+        }
 
     @app.post("/api/adas/stop")
     def api_adas_stop():
@@ -602,14 +704,20 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     def api_adas_render_only(req: RenderOnlyRequest):
         lic = license_mgr.get_license_status(check_online_time=False)
         if not lic.get("valid"):
-            raise HTTPException(status_code=403, detail=lic.get("message", "Bản quyền đã hết hạn hoặc chưa kích hoạt!"))
+            raise HTTPException(
+                status_code=403,
+                detail=lic.get("message", "Bản quyền đã hết hạn hoặc chưa kích hoạt!"),
+            )
         res = adas_engine.start_render_video_for_ideas_async(
             ma_ids=req.ma_ids,
             video_settings=req.video_settings,
             only_unrendered=req.only_unrendered,
         )
         if not res.get("started") and res.get("queued_count", 0) == 0:
-            raise HTTPException(status_code=400, detail=res.get("message", "Không có kịch bản nào sẵn sàng Render MP4!"))
+            raise HTTPException(
+                status_code=400,
+                detail=res.get("message", "Không có kịch bản nào sẵn sàng Render MP4!"),
+            )
         return res
 
     @app.get("/api/adas/status")
@@ -626,8 +734,9 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/adas/project/{ma_id}/check-sync")
     def api_adas_check_project_sync(ma_id: str, payload: dict = None):
-        from backend.sync_checker import verify_rendered_video_sync
         import json
+
+        from backend.voice_service import verify_rendered_video_sync
 
         payload = payload or {}
         auto_redo = bool(payload.get("auto_redo", False))
@@ -643,7 +752,9 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         if not script_path.exists():
             script_path = proj_dir / "script.txt"
         if not script_path.exists():
-            raise HTTPException(status_code=404, detail=f"Không tìm thấy kịch bản của dự án {ma_id}")
+            raise HTTPException(
+                status_code=404, detail=f"Không tìm thấy kịch bản của dự án {ma_id}"
+            )
 
         script_text = script_path.read_text(encoding="utf-8")
         sentences = split_japanese_script(script_text)
@@ -672,7 +783,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         if not report.get("passed") and auto_redo:
             redo_indices = report.get("sentence_audit", {}).get("redo_indices", [])
             for r_idx in redo_indices:
-                bad_w = sentences_dir / f"sentence_{r_idx+1:04d}.wav"
+                bad_w = sentences_dir / f"sentence_{r_idx + 1:04d}.wav"
                 if bad_w.exists():
                     try:
                         bad_w.unlink()
@@ -686,11 +797,13 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
             seo_file = proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt"
             seo_txt = seo_file.read_text(encoding="utf-8") if seo_file.exists() else ""
-            job_payload = [{
-                "name": ma_id,
-                "script_text": script_text,
-                "seo_text": seo_txt,
-            }]
+            job_payload = [
+                {
+                    "name": ma_id,
+                    "script_text": script_text,
+                    "seo_text": seo_txt,
+                }
+            ]
             redo_started = pipeline.start_batch_production_async(
                 jobs=job_payload,
                 output_dir=vcfg.get("output_dir") or str(adas_engine.projects_dir),
@@ -712,15 +825,24 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         }
 
     @app.post("/api/adas/project/{ma_id}/generate-thumbnails")
-    def api_adas_generate_thumbnails(ma_id: str, preferred_acc_id: Optional[str] = None, force: bool = True):
+    def api_adas_generate_thumbnails(
+        ma_id: str, preferred_acc_id: Optional[str] = None, force: bool = True
+    ):
         started = adas_engine.start_generate_thumbnails_only_async(
             ma_id=ma_id,
             preferred_acc_id=preferred_acc_id,
             force_regenerate=force,
         )
         if not started:
-            raise HTTPException(status_code=400, detail="Hệ thống ChatGPT đang bận chạy dự án khác. Vui lòng đợi hoàn tất!")
-        return {"success": True, "ma_id": ma_id, "message": f"Đã bắt đầu tạo & đánh giá 3 Thumbnail (6 dòng chữ) cho {ma_id}!"}
+            raise HTTPException(
+                status_code=400,
+                detail="Hệ thống ChatGPT đang bận chạy dự án khác. Vui lòng đợi hoàn tất!",
+            )
+        return {
+            "success": True,
+            "ma_id": ma_id,
+            "message": f"Đã bắt đầu tạo & đánh giá 3 Thumbnail (6 dòng chữ) cho {ma_id}!",
+        }
 
     @app.get("/api/license/status")
     def get_license_status():
@@ -730,7 +852,9 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     def activate_license(req: ActivateLicenseRequest):
         res = license_mgr.activate_license(req.license_key)
         if not res.get("valid"):
-            raise HTTPException(status_code=400, detail=res.get("message", "Key không hợp lệ!"))
+            raise HTTPException(
+                status_code=400, detail=res.get("message", "Key không hợp lệ!")
+            )
         return res
 
     @app.post("/api/browse-directory")
@@ -762,7 +886,7 @@ except Exception:
                 text=True,
                 timeout=120,
                 encoding="utf-8",
-                errors="replace"
+                errors="replace",
             )
             for line in res.stdout.splitlines():
                 if line.startswith("SELECTED:"):
@@ -772,7 +896,7 @@ except Exception:
 
         # 2. Dự phòng: Nếu Tkinter không trả về kết quả (hoặc gặp lỗi), dùng PowerShell FolderBrowserDialog
         if not selected_path:
-            clean_title = req.title.replace("'", "").replace('"', '')
+            clean_title = req.title.replace("'", "").replace('"', "")
             ps_code = f"""
 [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null
 $f = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -791,7 +915,7 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
                     text=True,
                     timeout=120,
                     encoding="utf-8",
-                    errors="replace"
+                    errors="replace",
                 )
                 for line in res.stdout.splitlines():
                     if line.startswith("SELECTED:"):
@@ -849,13 +973,18 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     @app.get("/api/config")
     def get_config():
         import torch
-        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU Mode"
+
+        gpu_name = (
+            torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU Mode"
+        )
         sp = adas_engine.get_storage_paths()
         return {
             "root_dir": str(base_dir),
-            "default_output_dir": sp.get("final_video_dir") or str(adas_engine.projects_dir),
+            "default_output_dir": sp.get("final_video_dir")
+            or str(adas_engine.projects_dir),
             "projects_dir": sp.get("projects_dir") or str(adas_engine.projects_dir),
-            "final_video_dir": sp.get("final_video_dir") or str(adas_engine.final_video_dir),
+            "final_video_dir": sp.get("final_video_dir")
+            or str(adas_engine.final_video_dir),
             "ssd_staging_dir": sp.get("ssd_staging_dir"),
             "use_ssd_staging": sp.get("use_ssd_staging", True),
             "storage_paths": sp,
@@ -863,17 +992,37 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
             "cuda_available": torch.cuda.is_available(),
             "performance_mode": pipeline.get_performance_mode_info(),
             "resolutions": [
-                {"id": "1920x1080", "label": "Full HD 1080p (1920x1080 - Khuyên dùng)", "default": True},
-                {"id": "2560x1440", "label": "2K Quad HD (2560x1440 - Siêu nét)", "default": False},
-                {"id": "3840x2160", "label": "4K Ultra HD (3840x2160 - Cao cấp)", "default": False},
-                {"id": "1280x720", "label": "HD 720p (1280x720 - Render nhanh)", "default": False},
-                {"id": "1080x1920", "label": "Shorts / TikTok (1080x1920 - Khung dọc)", "default": False}
+                {
+                    "id": "1920x1080",
+                    "label": "Full HD 1080p (1920x1080 - Khuyên dùng)",
+                    "default": True,
+                },
+                {
+                    "id": "2560x1440",
+                    "label": "2K Quad HD (2560x1440 - Siêu nét)",
+                    "default": False,
+                },
+                {
+                    "id": "3840x2160",
+                    "label": "4K Ultra HD (3840x2160 - Cao cấp)",
+                    "default": False,
+                },
+                {
+                    "id": "1280x720",
+                    "label": "HD 720p (1280x720 - Render nhanh)",
+                    "default": False,
+                },
+                {
+                    "id": "1080x1920",
+                    "label": "Shorts / TikTok (1080x1920 - Khung dọc)",
+                    "default": False,
+                },
             ],
             "fps_options": [
                 {"value": 30, "label": "30 FPS (Mặc định chuẩn Nhật)", "default": True},
                 {"value": 60, "label": "60 FPS (Siêu mượt)", "default": False},
-                {"value": 24, "label": "24 FPS (Cinematic Điện ảnh)", "default": False}
-            ]
+                {"value": 24, "label": "24 FPS (Cinematic Điện ảnh)", "default": False},
+            ],
         }
 
     @app.get("/api/status")
@@ -901,19 +1050,26 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     @app.post("/api/stocks/scan")
     def rescan_stocks():
         res = pipeline.stock_manager.scan_and_update_inventory()
-        log_info("STOCK", f"🔄 Đã quét lại Kho Video Stock: {res.get('available_count', 0)} video khả dụng ({res.get('available_raw_hours', 0):.1f} giờ).")
+        log_info(
+            "STOCK",
+            f"🔄 Đã quét lại Kho Video Stock: {res.get('available_count', 0)} video khả dụng ({res.get('available_raw_hours', 0):.1f} giờ).",
+        )
         return res
 
     @app.post("/api/stocks/reset")
     def reset_stock(req: ResetStockRequest):
         success = pipeline.stock_manager.reset_usage(req.stock_id)
-        log_info("STOCK", f"♻️ Đã đặt lại trạng thái sử dụng cho video Stock: {req.stock_id}")
+        log_info(
+            "STOCK", f"♻️ Đã đặt lại trạng thái sử dụng cho video Stock: {req.stock_id}"
+        )
         return {"success": success}
 
     @app.post("/api/stocks/reset-all")
     def reset_all_stocks():
         data = pipeline.stock_manager.reset_all_usage()
-        log_info("STOCK", "♻️ Đã đặt lại trạng thái chưa sử dụng cho toàn bộ Kho Video Stock.")
+        log_info(
+            "STOCK", "♻️ Đã đặt lại trạng thái chưa sử dụng cho toàn bộ Kho Video Stock."
+        )
         return {"success": True, "data": data}
 
     @app.post("/api/stocks/cleanup-used")
@@ -923,17 +1079,27 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
 
     @app.post("/api/stocks/download-youtube")
     def download_youtube_stock(req: YouTubeDownloadRequest):
-        log_info("STOCK", f"📥 Bắt đầu tải & cắt Part {req.slice_minutes}p từ link YouTube: {req.url}")
+        log_info(
+            "STOCK",
+            f"📥 Bắt đầu tải & cắt Part {req.slice_minutes}p từ link YouTube: {req.url}",
+        )
         res = pipeline.stock_manager.download_youtube_and_slice(
             req.url,
             slice_minutes=req.slice_minutes,
             force_redownload=req.force,
         )
         if not res.get("success") and not res.get("already_exists"):
-            log_error("STOCK", f"❌ Lỗi tải Stock YouTube ({req.url}): {res.get('error')}")
-            raise HTTPException(status_code=400, detail=res.get("error", "Lỗi tải video YouTube"))
+            log_error(
+                "STOCK", f"❌ Lỗi tải Stock YouTube ({req.url}): {res.get('error')}"
+            )
+            raise HTTPException(
+                status_code=400, detail=res.get("error", "Lỗi tải video YouTube")
+            )
         if res.get("success"):
-            log_info("STOCK", f"✅ Đã tải & cắt thành công {res.get('parts_count', 0)} part vào kho STOOK ({res.get('video_id')}).")
+            log_info(
+                "STOCK",
+                f"✅ Đã tải & cắt thành công {res.get('parts_count', 0)} part vào kho STOOK ({res.get('video_id')}).",
+            )
         return res
 
     class PexelsPixabayDownloadRequest(BaseModel):
@@ -944,12 +1110,17 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     def download_pexels_pixabay_stock(req: PexelsPixabayDownloadRequest):
         def _on_px_progress(msg: str):
             log_info("STOCK", msg)
-            on_pipeline_update({
-                **pipeline.get_state(),
-                "message": msg,
-            })
+            on_pipeline_update(
+                {
+                    **pipeline.get_state(),
+                    "message": msg,
+                }
+            )
 
-        log_info("STOCK", f"🌐 Bắt đầu tải cuộn Stock {req.target_minutes}p từ Pexels & Pixabay API...")
+        log_info(
+            "STOCK",
+            f"🌐 Bắt đầu tải cuộn Stock {req.target_minutes}p từ Pexels & Pixabay API...",
+        )
         res = pipeline.stock_manager.download_pexels_pixabay_stock_reel(
             query=req.query,
             target_minutes=req.target_minutes,
@@ -957,20 +1128,29 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
         )
         if not res.get("success"):
             log_error("STOCK", f"❌ Lỗi tải Stock Pexels/Pixabay: {res.get('error')}")
-            raise HTTPException(status_code=400, detail=res.get("error", "Lỗi tải video Pexels/Pixabay"))
-        log_info("STOCK", res.get("message", "✅ Đã tải xong cuộn Stock Pexels/Pixabay!"))
+            raise HTTPException(
+                status_code=400, detail=res.get("error", "Lỗi tải video Pexels/Pixabay")
+            )
+        log_info(
+            "STOCK", res.get("message", "✅ Đã tải xong cuộn Stock Pexels/Pixabay!")
+        )
         return res
 
     @app.post("/api/stocks/auto-replenish")
     def auto_replenish_stocks(req: AutoReplenishStockRequest):
         def _on_replenish_progress(msg: str):
             log_info("STOCK", msg)
-            on_pipeline_update({
-                **pipeline.get_state(),
-                "message": msg,
-            })
+            on_pipeline_update(
+                {
+                    **pipeline.get_state(),
+                    "message": msg,
+                }
+            )
 
-        log_info("STOCK", f"⚡ Kiểm tra & tự động tải bù Kho Stock cho đủ {req.target_hours} giờ...")
+        log_info(
+            "STOCK",
+            f"⚡ Kiểm tra & tự động tải bù Kho Stock cho đủ {req.target_hours} giờ...",
+        )
         res = pipeline.stock_manager.ensure_minimum_stock_hours(
             target_hours=req.target_hours,
             slice_minutes=req.slice_minutes,
@@ -981,7 +1161,10 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     @app.post("/api/stocks/sync-cloud-note")
     def sync_cloud_note_stocks():
         res = pipeline.stock_manager.sync_cloud_used_links(push_if_needed=True)
-        log_info("STOCK", f"☁️ Đã đồng bộ File Note Online Mexico Ông Già ({res.get('cloud_note_url')}): Tổng {res.get('total_synced_ids', 0)} link chống trùng.")
+        log_info(
+            "STOCK",
+            f"☁️ Đã đồng bộ File Note Online Mexico Ông Già ({res.get('cloud_note_url')}): Tổng {res.get('total_synced_ids', 0)} link chống trùng.",
+        )
         return res
 
     @app.get("/api/stocks/cloud-note")
@@ -995,18 +1178,30 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     def api_get_green_library():
         kho_green_dir = base_dir / "Kho_Green"
         kho_green_dir.mkdir(parents=True, exist_ok=True)
-        allowed_exts = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".png", ".jpg", ".jpeg", ".webp"}
+        allowed_exts = {
+            ".mp4",
+            ".mov",
+            ".webm",
+            ".avi",
+            ".mkv",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+        }
         items = []
         for f in sorted(kho_green_dir.iterdir(), key=lambda p: p.name.lower()):
             if f.is_file() and f.suffix.lower() in allowed_exts:
                 is_vid = f.suffix.lower() in {".mp4", ".mov", ".webm", ".avi", ".mkv"}
-                items.append({
-                    "name": f.name,
-                    "file": f.name,
-                    "type": "video" if is_vid else "image",
-                    "url": f"/kho_green/{f.name}",
-                    "size_kb": round(f.stat().st_size / 1024.0, 1),
-                })
+                items.append(
+                    {
+                        "name": f.name,
+                        "file": f.name,
+                        "type": "video" if is_vid else "image",
+                        "url": f"/kho_green/{f.name}",
+                        "size_kb": round(f.stat().st_size / 1024.0, 1),
+                    }
+                )
         return {
             "success": True,
             "kho_green_dir": str(kho_green_dir),
@@ -1026,6 +1221,7 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     @app.post("/api/video-layout")
     def api_save_video_layout(payload: Dict[str, Any]):
         saved = save_video_layout_config(payload, base_dir)
+
         # Tự động tạo / cập nhật Cache lớp Video Green cố định trong nền để tiết kiệm thời gian Render
         def _prebake_green_cache():
             try:
@@ -1040,9 +1236,15 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
                         work_fps=12,
                     )
                     if cache_file:
-                        log_info("RENDER", f"💾 Đã lưu cấu hình Preview & đóng gói sẵn Cache lớp Video Green cố định: {Path(cache_file).name}")
+                        log_info(
+                            "RENDER",
+                            f"💾 Đã lưu cấu hình Preview & đóng gói sẵn Cache lớp Video Green cố định: {Path(cache_file).name}",
+                        )
                     else:
-                        log_info("RENDER", "💾 Đã lưu cấu hình Preview (Không có lớp Video Green cố định nào bật).")
+                        log_info(
+                            "RENDER",
+                            "💾 Đã lưu cấu hình Preview (Không có lớp Video Green cố định nào bật).",
+                        )
             except Exception as e:
                 log_warn("RENDER", f"⚠️ Không thể tạo trước Cache lớp Video Green: {e}")
 
@@ -1060,6 +1262,7 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     @app.post("/api/green-library/import-file")
     def api_import_green_file(payload: Dict[str, Any] = None):
         import shutil
+
         payload = payload or {}
         src_path = str(payload.get("file_path") or "").strip().strip('"')
         if not src_path:
@@ -1083,7 +1286,14 @@ except Exception:
     pass
 """
             try:
-                res = subprocess.run([sys.executable, "-c", tk_code], capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")
+                res = subprocess.run(
+                    [sys.executable, "-c", tk_code],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    encoding="utf-8",
+                    errors="replace",
+                )
                 for ln in res.stdout.splitlines():
                     if ln.startswith("SELECTED:"):
                         src_path = ln.replace("SELECTED:", "").strip()
@@ -1098,7 +1308,9 @@ except Exception:
         dst = kho_green_dir / os.path.basename(src_path)
         if os.path.abspath(src_path) != os.path.abspath(str(dst)):
             shutil.copy2(src_path, dst)
-        log_info("RENDER", f"➕ Đã thêm file Green Screen mới vào Kho_Green: {dst.name}")
+        log_info(
+            "RENDER", f"➕ Đã thêm file Green Screen mới vào Kho_Green: {dst.name}"
+        )
         return {
             "success": True,
             "added_file": dst.name,
@@ -1108,9 +1320,23 @@ except Exception:
 
     @app.post("/api/green-library/upload")
     async def api_upload_green_file(request: Request):
-        raw_name = urllib.parse.unquote(request.headers.get("X-File-Name", "") or f"green_{int(time.time())}.mp4")
-        safe_name = os.path.basename(raw_name.strip()) or f"green_{int(time.time())}.mp4"
-        allowed_exts = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".png", ".jpg", ".jpeg", ".webp"}
+        raw_name = urllib.parse.unquote(
+            request.headers.get("X-File-Name", "") or f"green_{int(time.time())}.mp4"
+        )
+        safe_name = (
+            os.path.basename(raw_name.strip()) or f"green_{int(time.time())}.mp4"
+        )
+        allowed_exts = {
+            ".mp4",
+            ".mov",
+            ".webm",
+            ".avi",
+            ".mkv",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+        }
         ext = os.path.splitext(safe_name)[1].lower()
         if ext not in allowed_exts:
             safe_name = safe_name + ".mp4"
@@ -1121,7 +1347,10 @@ except Exception:
         kho_green_dir.mkdir(parents=True, exist_ok=True)
         dst = kho_green_dir / safe_name
         dst.write_bytes(body)
-        log_info("RENDER", f"➕ Đã tải trực tiếp file Green Screen vào Kho_Green & đưa lên Preview: {dst.name} ({round(len(body)/1024.0, 1)} KB)")
+        log_info(
+            "RENDER",
+            f"➕ Đã tải trực tiếp file Green Screen vào Kho_Green & đưa lên Preview: {dst.name} ({round(len(body) / 1024.0, 1)} KB)",
+        )
         return {
             "success": True,
             "added_file": dst.name,
@@ -1146,11 +1375,16 @@ except Exception:
         cfg = load_voice_config(base_dir)
         presets = list_kho_voices(base_dir)
         sel_id = cfg.get("selected_preset_id", "04_mx_ong_gia_padre_implacable")
-        active_preset = next((p for p in presets if p["id"] == sel_id), presets[0] if presets else {
-            "id": sel_id,
-            "name": sel_id,
-            "style": "VoiceStudio Clone",
-        })
+        active_preset = next(
+            (p for p in presets if p["id"] == sel_id),
+            presets[0]
+            if presets
+            else {
+                "id": sel_id,
+                "name": sel_id,
+                "style": "VoiceStudio Clone",
+            },
+        )
         return {
             "installed": True,
             "running": True,
@@ -1158,15 +1392,22 @@ except Exception:
             "config": cfg,
             "active_preset": active_preset,
             "presets": presets,
-            "hardware_load": pipeline.resource_balancer.get_metrics(force_refresh=False),
+            "hardware_load": pipeline.resource_balancer.get_metrics(
+                force_refresh=False
+            ),
         }
 
     @app.post("/api/voice-engine/config")
     def api_voice_engine_save_config(req: VoiceConfigUpdateRequest):
-        payload = {k: v for k, v in req.dict().items() if v is not None and k != "sample_text"}
+        payload = {
+            k: v for k, v in req.dict().items() if v is not None and k != "sample_text"
+        }
         saved = save_voice_config(payload, base_dir)
         presets = list_kho_voices(base_dir)
-        preset_name = next((p["name"] for p in presets if p["id"] == saved.get("selected_preset_id")), saved.get("selected_preset_id"))
+        preset_name = next(
+            (p["name"] for p in presets if p["id"] == saved.get("selected_preset_id")),
+            saved.get("selected_preset_id"),
+        )
         log_info(
             "VOICE",
             f"🎙️ Đã lưu cấu hình VoiceStudio Clone: {preset_name} "
@@ -1177,6 +1418,7 @@ except Exception:
     @app.post("/api/voice-engine/import-sample")
     def api_voice_engine_import_sample(payload: Dict[str, Any] = None):
         import shutil
+
         payload = payload or {}
         src_path = str(payload.get("file_path") or "").strip().strip('"')
         voice_name = str(payload.get("voice_name") or "").strip()
@@ -1200,7 +1442,14 @@ except Exception:
     pass
 """
             try:
-                res = subprocess.run([sys.executable, "-c", tk_code], capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")
+                res = subprocess.run(
+                    [sys.executable, "-c", tk_code],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    encoding="utf-8",
+                    errors="replace",
+                )
                 for ln in res.stdout.splitlines():
                     if ln.startswith("SELECTED:"):
                         src_path = ln.replace("SELECTED:", "").strip()
@@ -1213,7 +1462,12 @@ except Exception:
         kho_voice_dir = base_dir / "Kho_Voice"
         kho_voice_dir.mkdir(parents=True, exist_ok=True)
         stem = voice_name or Path(src_path).stem
-        safe_id = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in stem).strip("_") or f"custom_voice_{int(time.time())}"
+        safe_id = (
+            "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in stem).strip(
+                "_"
+            )
+            or f"custom_voice_{int(time.time())}"
+        )
         target_dir = kho_voice_dir / safe_id
         target_dir.mkdir(parents=True, exist_ok=True)
         dst_wav = target_dir / "reference.wav"
@@ -1222,15 +1476,30 @@ except Exception:
         ffmpeg_bin = base_dir / "bin" / "ffmpeg.exe"
         if ffmpeg_bin.exists():
             subprocess.run(
-                [str(ffmpeg_bin), "-y", "-i", src_path, "-ar", "24000", "-ac", "1", str(dst_wav)],
+                [
+                    str(ffmpeg_bin),
+                    "-y",
+                    "-i",
+                    src_path,
+                    "-ar",
+                    "24000",
+                    "-ac",
+                    "1",
+                    str(dst_wav),
+                ],
                 capture_output=True,
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
         if not dst_wav.exists():
             shutil.copy2(src_path, dst_wav)
 
-        saved = save_voice_config({"selected_preset_id": safe_id, "ref_wav": str(dst_wav)}, base_dir)
-        log_info("VOICE", f"🎙️ Đã nạp mẫu giọng Clone mới vào Kho_Voice: {safe_id} ({dst_wav.name})")
+        saved = save_voice_config(
+            {"selected_preset_id": safe_id, "ref_wav": str(dst_wav)}, base_dir
+        )
+        log_info(
+            "VOICE",
+            f"🎙️ Đã nạp mẫu giọng Clone mới vào Kho_Voice: {safe_id} ({dst_wav.name})",
+        )
         return {
             "success": True,
             "selected_preset_id": safe_id,
@@ -1240,15 +1509,24 @@ except Exception:
 
     @app.post("/api/voice-engine/upload-sample")
     async def api_voice_engine_upload_sample(request: Request):
-        raw_name = urllib.parse.unquote(request.headers.get("X-File-Name", "") or f"voice_{int(time.time())}.wav")
-        safe_name = os.path.basename(raw_name.strip()) or f"voice_{int(time.time())}.wav"
+        raw_name = urllib.parse.unquote(
+            request.headers.get("X-File-Name", "") or f"voice_{int(time.time())}.wav"
+        )
+        safe_name = (
+            os.path.basename(raw_name.strip()) or f"voice_{int(time.time())}.wav"
+        )
         body = await request.body()
         if not body:
             return {"success": False, "message": "File âm thanh rỗng."}
         kho_voice_dir = base_dir / "Kho_Voice"
         kho_voice_dir.mkdir(parents=True, exist_ok=True)
         stem = Path(safe_name).stem
-        safe_id = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in stem).strip("_") or f"custom_voice_{int(time.time())}"
+        safe_id = (
+            "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in stem).strip(
+                "_"
+            )
+            or f"custom_voice_{int(time.time())}"
+        )
         target_dir = kho_voice_dir / safe_id
         target_dir.mkdir(parents=True, exist_ok=True)
         raw_path = target_dir / safe_name
@@ -1257,14 +1535,29 @@ except Exception:
         ffmpeg_bin = base_dir / "bin" / "ffmpeg.exe"
         if ffmpeg_bin.exists():
             subprocess.run(
-                [str(ffmpeg_bin), "-y", "-i", str(raw_path), "-ar", "24000", "-ac", "1", str(dst_wav)],
+                [
+                    str(ffmpeg_bin),
+                    "-y",
+                    "-i",
+                    str(raw_path),
+                    "-ar",
+                    "24000",
+                    "-ac",
+                    "1",
+                    str(dst_wav),
+                ],
                 capture_output=True,
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
         if not dst_wav.exists():
             dst_wav.write_bytes(body)
-        saved = save_voice_config({"selected_preset_id": safe_id, "ref_wav": str(dst_wav)}, base_dir)
-        log_info("VOICE", f"🎙️ Đã tải trực tiếp mẫu giọng Clone mới vào Kho_Voice: {safe_id} ({dst_wav.name})")
+        saved = save_voice_config(
+            {"selected_preset_id": safe_id, "ref_wav": str(dst_wav)}, base_dir
+        )
+        log_info(
+            "VOICE",
+            f"🎙️ Đã tải trực tiếp mẫu giọng Clone mới vào Kho_Voice: {safe_id} ({dst_wav.name})",
+        )
         return {
             "success": True,
             "selected_preset_id": safe_id,
@@ -1274,24 +1567,33 @@ except Exception:
 
     @app.post("/api/voice-engine/preview")
     def api_voice_engine_preview(req: VoiceConfigUpdateRequest):
-        payload = {k: v for k, v in req.dict().items() if v is not None and k != "sample_text"}
+        payload = {
+            k: v for k, v in req.dict().items() if v is not None and k != "sample_text"
+        }
         saved = save_voice_config(payload, base_dir)
         presets = list_kho_voices(base_dir)
         sel_id = saved.get("selected_preset_id", "04_mx_ong_gia_padre_implacable")
-        active_p = next((p for p in presets if p["id"] == sel_id), presets[0] if presets else None)
+        active_p = next(
+            (p for p in presets if p["id"] == sel_id), presets[0] if presets else None
+        )
         if active_p and os.path.exists(active_p.get("ref_wav", "")):
-            ref_wav = Path(active_p["ref_wav"])
             return {
                 "success": True,
-                "audio_url": f"/api/voice-engine/preview-audio?voice_id={sel_id}&t={int(time.time()*1000)}",
+                "audio_url": f"/api/voice-engine/preview-audio?voice_id={sel_id}&t={int(time.time() * 1000)}",
                 "config": saved,
             }
-        raise HTTPException(status_code=404, detail="Chưa tìm thấy file mẫu giọng trong Kho_Voice.")
+        raise HTTPException(
+            status_code=404, detail="Chưa tìm thấy file mẫu giọng trong Kho_Voice."
+        )
 
     @app.get("/api/voice-engine/preview-audio")
-    def api_voice_engine_preview_audio(voice_id: str = "04_mx_ong_gia_padre_implacable", file: str = ""):
+    def api_voice_engine_preview_audio(
+        voice_id: str = "04_mx_ong_gia_padre_implacable", file: str = ""
+    ):
         presets = list_kho_voices(base_dir)
-        active_p = next((p for p in presets if p["id"] == voice_id), presets[0] if presets else None)
+        active_p = next(
+            (p for p in presets if p["id"] == voice_id), presets[0] if presets else None
+        )
         if active_p and os.path.exists(active_p.get("ref_wav", "")):
             return FileResponse(active_p["ref_wav"], media_type="audio/wav")
         cand = base_dir / "assets" / "voices" / "Padre_Mexico.wav"
@@ -1307,18 +1609,23 @@ except Exception:
             "sentence_count": len(sentences),
             "estimated_seconds": est_duration,
             "estimated_formatted": f"{int(est_duration // 60):02d}:{int(est_duration % 60):02d}",
-            "sample_sentences": sentences[:5]
+            "sample_sentences": sentences[:5],
         }
 
     @app.post("/api/start")
     def start_pipeline(req: StartRequest):
         lic = license_mgr.get_license_status(check_online_time=False)
         if not lic.get("valid"):
-            raise HTTPException(status_code=403, detail=lic.get("message", "Bản quyền đã hết hạn hoặc chưa kích hoạt!"))
+            raise HTTPException(
+                status_code=403,
+                detail=lic.get("message", "Bản quyền đã hết hạn hoặc chưa kích hoạt!"),
+            )
         if not req.script_text.strip():
             raise HTTPException(status_code=400, detail="Vui lòng nhập kịch bản.")
 
-        clean_proj = req.project_name or f"mexico_ong_gia_{time.strftime('%Y%m%d_%H%M%S')}"
+        clean_proj = (
+            req.project_name or f"mexico_ong_gia_{time.strftime('%Y%m%d_%H%M%S')}"
+        )
         jobs = [{"name": clean_proj, "script_text": req.script_text}]
 
         success = pipeline.start_batch_production_async(
@@ -1336,14 +1643,19 @@ except Exception:
             voice_config=req.voice_config,
         )
         if not success:
-            raise HTTPException(status_code=400, detail="Một dự án khác đang được xử lý.")
+            raise HTTPException(
+                status_code=400, detail="Một dự án khác đang được xử lý."
+            )
         return {"success": True, "message": "Đã bắt đầu sản xuất!"}
 
     @app.post("/api/start-batch")
     def start_batch_pipeline(req: StartBatchRequest):
         lic = license_mgr.get_license_status(check_online_time=False)
         if not lic.get("valid"):
-            raise HTTPException(status_code=403, detail=lic.get("message", "Bản quyền đã hết hạn hoặc chưa kích hoạt!"))
+            raise HTTPException(
+                status_code=403,
+                detail=lic.get("message", "Bản quyền đã hết hạn hoặc chưa kích hoạt!"),
+            )
         if not req.jobs:
             raise HTTPException(status_code=400, detail="Danh sách kịch bản trống.")
 
@@ -1362,8 +1674,13 @@ except Exception:
             voice_config=req.voice_config,
         )
         if not success:
-            raise HTTPException(status_code=400, detail="Một tiến trình sản xuất khác đang chạy.")
-        return {"success": True, "message": f"Đã bắt đầu hàng đợi {len(req.jobs)} kịch bản!"}
+            raise HTTPException(
+                status_code=400, detail="Một tiến trình sản xuất khác đang chạy."
+            )
+        return {
+            "success": True,
+            "message": f"Đã bắt đầu hàng đợi {len(req.jobs)} kịch bản!",
+        }
 
     @app.post("/api/stop")
     def stop_pipeline():
@@ -1384,12 +1701,14 @@ except Exception:
                         mp4s = list(renders.glob("*.mp4"))
                         if mp4s:
                             final_mp4 = str(mp4s[0])
-                    projects.append({
-                        "name": d.name,
-                        "path": str(d),
-                        "has_render": final_mp4 is not None,
-                        "video_path": final_mp4
-                    })
+                    projects.append(
+                        {
+                            "name": d.name,
+                            "path": str(d),
+                            "has_render": final_mp4 is not None,
+                            "video_path": final_mp4,
+                        }
+                    )
         projects.sort(key=lambda x: x["name"], reverse=True)
         return {"projects": projects}
 
@@ -1438,11 +1757,28 @@ except Exception:
             try:
                 cmd_str = f'cmd.exe /c start "" "{p}"'
                 subprocess.run(
-                    ["schtasks", "/Create", "/TN", "StudioVideoOpen", "/TR", cmd_str, "/SC", "ONCE", "/ST", "00:00", "/IT", "/F"],
+                    [
+                        "schtasks",
+                        "/Create",
+                        "/TN",
+                        "StudioVideoOpen",
+                        "/TR",
+                        cmd_str,
+                        "/SC",
+                        "ONCE",
+                        "/ST",
+                        "00:00",
+                        "/IT",
+                        "/F",
+                    ],
                     capture_output=True,
                     timeout=3,
                 )
-                subprocess.run(["schtasks", "/Run", "/TN", "StudioVideoOpen"], capture_output=True, timeout=3)
+                subprocess.run(
+                    ["schtasks", "/Run", "/TN", "StudioVideoOpen"],
+                    capture_output=True,
+                    timeout=3,
+                )
             except Exception:
                 pass
             return {"success": True}
@@ -1453,17 +1789,20 @@ except Exception:
     # ==========================================================
     @app.get("/api/update/status")
     def api_get_local_version():
-        from backend.updater_service import get_local_version_info
+        from backend.logger_service import get_local_version_info
+
         return get_local_version_info(base_dir)
 
     @app.get("/api/update/check")
     def api_check_github_update(force: bool = False):
-        from backend.updater_service import check_for_github_update
+        from backend.logger_service import check_for_github_update
+
         return check_for_github_update(base_dir, force_refresh=bool(force))
 
     @app.post("/api/update/apply")
     def api_apply_github_update(restart: bool = True):
-        from backend.updater_service import apply_github_update
+        from backend.logger_service import apply_github_update
+
         return apply_github_update(
             base_dir,
             adas_engine=adas_engine,
@@ -1489,24 +1828,30 @@ except Exception:
 
     @app.get("/api/skill04/overview")
     def api_get_skill04_overview():
-        from backend.visual_cue_director import ensure_green_icons_and_sfx_assets, ICON_DEFINITIONS
+        from backend.renderer import (
+            ICON_DEFINITIONS,
+            ensure_green_icons_and_sfx_assets,
+        )
+
         assets_info = ensure_green_icons_and_sfx_assets(base_dir)
         icons_list = []
         for ic in ICON_DEFINITIONS:
             iid = ic["id"]
-            icons_list.append({
-                "id": iid,
-                "label": ic["label"],
-                "keywords": ic["keywords"][:6],
-                "video_url": f"/assets/green_icons/icon_green_{iid}.mp4",
-                "sfx_url": f"/assets/sfx/sfx_{iid}.wav",
-                "video_path": assets_info["icons"].get(iid, ""),
-                "sfx_path": assets_info["sfx"].get(iid, ""),
-                "x": 120,
-                "y": 90,
-                "duration_sec": 4.0,
-                "cooldown_sec": "45-60s",
-            })
+            icons_list.append(
+                {
+                    "id": iid,
+                    "label": ic["label"],
+                    "keywords": ic["keywords"][:6],
+                    "video_url": f"/assets/green_icons/icon_green_{iid}.mp4",
+                    "sfx_url": f"/assets/sfx/sfx_{iid}.wav",
+                    "video_path": assets_info["icons"].get(iid, ""),
+                    "sfx_path": assets_info["sfx"].get(iid, ""),
+                    "x": 120,
+                    "y": 90,
+                    "duration_sec": 4.0,
+                    "cooldown_sec": "45-60s",
+                }
+            )
         return {
             "success": True,
             "green_icons_dir": str((base_dir / "assets" / "green_icons").resolve()),
@@ -1521,7 +1866,11 @@ except Exception:
 
     kho_green_root = base_dir / "Kho_Green"
     kho_green_root.mkdir(parents=True, exist_ok=True)
-    app.mount("/kho_green", StaticFiles(directory=str(kho_green_root)), name="kho_green_static")
+    app.mount(
+        "/kho_green",
+        StaticFiles(directory=str(kho_green_root)),
+        name="kho_green_static",
+    )
 
     stook_root = base_dir / "STOOK"
     stook_root.mkdir(parents=True, exist_ok=True)
@@ -1531,10 +1880,20 @@ except Exception:
     if frontend_dir and frontend_dir.exists():
         index_html_path = frontend_dir / "index.html"
         if index_html_path.exists():
+
             @app.get("/", include_in_schema=False)
             async def serve_root_index():
-                return FileResponse(str(index_html_path), media_type="text/html; charset=utf-8")
-        app.mount("/static", StaticFiles(directory=str(frontend_dir), html=True), name="frontend_static")
-        app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+                return FileResponse(
+                    str(index_html_path), media_type="text/html; charset=utf-8"
+                )
+
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(frontend_dir), html=True),
+            name="frontend_static",
+        )
+        app.mount(
+            "/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend"
+        )
 
     return app

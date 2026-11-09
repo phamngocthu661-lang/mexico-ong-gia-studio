@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.17",
-  "build_number": 133,
-  "released_at": "2026-11-09 16:01:11",
+  "version": "V1.0.18",
+  "build_number": 134,
+  "released_at": "2026-11-09 18:21:29",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "Nâng cấp Kho Stock 2 Chế Độ (1. Dùng Stock Tải Về Tự Động & 2. Dùng Stock Sẵn Có), tạo Link Note Chống Trùng riêng cho Mexico Ông Già, tối ưu tối đa 5 tài khoản ChatGPT (tự tắt Chrome khi rảnh) và sửa lỗi khởi động trên máy mới."
+  "changelog": "Gom nhóm toàn bộ thư mục gốc và hợp nhất 7 Model cốt lõi trong backend/, tự động di chuyển an toàn cấu hình/bản quyền khách hàng vào config/"
 }

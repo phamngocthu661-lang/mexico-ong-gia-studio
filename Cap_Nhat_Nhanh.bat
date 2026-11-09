@@ -4,10 +4,10 @@ title CẬP NHẬT TỰ ĐỘNG MEXICO ÔNG GIÀ STUDIO TỪ GITHUB (KHÔNG MẤ
 color 0A
 
 echo ============================================================================
-echo   CÔNG CỤ CẬP NHẬT TỰ ĐỘNG — MEXICO ÔNG GIÀ STUDIO (OTA GITHUB V1.0.8+)
+echo   CÔNG CỤ CẬP NHẬT TỰ ĐỘNG — MEXICO ÔNG GIÀ STUDIO (OTA GITHUB V1.0.9+)
 echo   - Tự động tải bản mới nhất trực tiếp từ GitHub chính thức (Key Ông Già Mexico)
-echo   - Giữ nguyên 100%% Kịch bản đã tạo (projects/, saved_ideas.json)
-echo   - Giữ nguyên 100%% Key bản quyền (license.json) ^& Chrome (BROWSER_PROFILE)
+echo   - Giữ nguyên 100%% Kịch bản đã tạo (projects/, config/saved_ideas.json)
+echo   - Giữ nguyên 100%% Key bản quyền (config/license.json) ^& Chrome (config/browser_profiles)
 echo ============================================================================
 echo.
 
@@ -39,9 +39,7 @@ if /I not "%SRC_DIR%"=="%TARGET_DIR%" (
         xcopy "%SRC_DIR%\backend\*" "%TARGET_DIR%\backend\" /E /I /Y /Q >nul
         xcopy "%SRC_DIR%\frontend\*" "%TARGET_DIR%\frontend\" /E /I /Y /Q >nul
         xcopy "%SRC_DIR%\adas_skills\*" "%TARGET_DIR%\adas_skills\" /E /I /Y /Q >nul
-        if exist "%SRC_DIR%\config" xcopy "%SRC_DIR%\config\*" "%TARGET_DIR%\config\" /E /I /Y /Q >nul
-        if exist "%SRC_DIR%\app" xcopy "%SRC_DIR%\app\*" "%TARGET_DIR%\app\" /E /I /Y /Q >nul
-        for %%F in (main.py install_setup.py requirements.txt version.json Chay_App.bat Cai_Dat_May_Moi.bat QUY_TRINH_HOAT_DONG.md TIEN_DO_CODE.md) do (
+        for %%F in (main.py requirements.txt version.json Chay_App.bat Cai_Dat_May_Moi.bat) do (
             if exist "%SRC_DIR%\%%F" copy /Y "%SRC_DIR%\%%F" "%TARGET_DIR%\%%F" >nul
         )
     )
@@ -61,21 +59,19 @@ if exist "%GH_TMP%\update.zip" (
         xcopy "%%D\backend\*" "%TARGET_DIR%\backend\" /E /I /Y /Q >nul
         xcopy "%%D\frontend\*" "%TARGET_DIR%\frontend\" /E /I /Y /Q >nul
         xcopy "%%D\adas_skills\*" "%TARGET_DIR%\adas_skills\" /E /I /Y /Q >nul
-        for %%F in (main.py install_setup.py requirements.txt version.json Chay_App.bat Cai_Dat_May_Moi.bat QUY_TRINH_HOAT_DONG.md TIEN_DO_CODE.md) do (
+        for %%F in (main.py requirements.txt version.json Chay_App.bat Cai_Dat_May_Moi.bat) do (
             if exist "%%D\%%F" copy /Y "%%D\%%F" "%TARGET_DIR%\%%F" >nul 2>&1
         )
     )
 )
 if exist "%GH_TMP%" rmdir /S /Q "%GH_TMP%" >nul 2>&1
 
-:: Đồng bộ sang thư mục app/
-if exist "%TARGET_DIR%\app" (
-    xcopy "%TARGET_DIR%\backend\*" "%TARGET_DIR%\app\backend\" /E /I /Y /Q >nul
-    xcopy "%TARGET_DIR%\frontend\*" "%TARGET_DIR%\app\frontend\" /E /I /Y /Q >nul
-    xcopy "%TARGET_DIR%\adas_skills\*" "%TARGET_DIR%\app\adas_skills\" /E /I /Y /Q >nul
-    copy /Y "%TARGET_DIR%\main.py" "%TARGET_DIR%\app\main.py" >nul 2>&1
-    copy /Y "%TARGET_DIR%\version.json" "%TARGET_DIR%\app\version.json" >nul 2>&1
+:: Dọn dẹp các file lẻ cũ đã được gộp vào 7 Model chính và thư mục app/ dư thừa
+for %%O in (chatgpt_web_client.py karaoke_subtitle.py sync_checker.py visual_cue_director.py license_manager.py updater_service.py install_setup.py) do (
+    if exist "%TARGET_DIR%\backend\%%O" del /f /q "%TARGET_DIR%\backend\%%O" >nul 2>&1
 )
+if exist "%TARGET_DIR%\install_setup.py" del /f /q "%TARGET_DIR%\install_setup.py" >nul 2>&1
+if exist "%TARGET_DIR%\app" rmdir /S /Q "%TARGET_DIR%\app" >nul 2>&1
 
 echo       -^> Đã nâng cấp thành công lên phiên bản mới nhất!
 echo.

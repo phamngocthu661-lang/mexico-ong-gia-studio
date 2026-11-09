@@ -24,8 +24,8 @@ if not exist "%~dp0main.py" (
 echo [BUOC 1/4] Dang kiem tra Python tren may tinh...
 set "PYTHON_EXE="
 
-if exist "%~dp0python_path.txt" (
-    set /p SAVED_PY=<"%~dp0python_path.txt"
+if exist "%~dp0config\python_path.txt" (
+    set /p SAVED_PY=<"%~dp0config\python_path.txt"
     if exist "!SAVED_PY!" set "PYTHON_EXE=!SAVED_PY!"
 )
 if defined PYTHON_EXE goto :VERIFY_PYTHON
@@ -111,7 +111,7 @@ echo [OK] Da tim thay Python tai: "%PYTHON_EXE%"
 echo.
 
 :: Chay trinh cai dat thu vien va Model AI tu dong bang Python
-"%PYTHON_EXE%" "%~dp0install_setup.py"
+"%PYTHON_EXE%" "%~dp0main.py" --setup
 if errorlevel 1 (
     echo.
     echo [CANH BAO] Co loi xay ra trong qua trinh tai thu vien. Vui long kiem tra mang va thu lai!

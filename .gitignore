@@ -50,6 +50,12 @@ app/storage_paths.json
 TIEN_DO_CODE.md
 app/TIEN_DO_CODE.md
 BAO_CAO_CHECK_VA_DON_TOAN_BO.txt
+.ontology/
+AGENTS.md
+GEMINI.md
+ARCHITECTURE_ONTOLOGY.md
+RESTRUCTURE_PLAN.md
+CODE_PROGRESS.md
 
 # Bytecode & môi trường ảo
 __pycache__/

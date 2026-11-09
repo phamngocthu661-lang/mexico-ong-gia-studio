@@ -1,10 +1,10 @@
 import os
-import sys
-import time
 import socket
-import traceback
-import threading
 import subprocess
+import sys
+import threading
+import time
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -31,6 +31,283 @@ if CURRENT_DIR.name.lower() == "app":
 else:
     ROOT_DIR = CURRENT_DIR
 
+PYTHON_EXE = sys.executable
+
+
+def run_pip(args, desc=""):
+    if desc:
+        print(f"\n>>> {desc}")
+    cmd = [PYTHON_EXE, "-m", "pip"] + args
+    print("    Lệnh:", " ".join(cmd))
+    res = subprocess.run(cmd)
+    return res.returncode == 0
+
+
+def check_module(mod_name: str) -> bool:
+    res = subprocess.run(
+        [PYTHON_EXE, "-c", f"import {mod_name}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return res.returncode == 0
+
+
+def run_install_setup():
+    print(
+        "================================================================================"
+    )
+    print("🚀 [MEXICO ÔNG GIÀ STUDIO] TRÌNH TỰ ĐỘNG TẢI & CÀI ĐẶT THƯ VIỆN CHO MÁY MỚI")
+    print(f"🐍 Python đang dùng: {PYTHON_EXE}")
+    print(f"📂 Thư mục gốc:      {ROOT_DIR}")
+    print(
+        "================================================================================"
+    )
+
+    # Lưu đường dẫn Python chuẩn vào python_path.txt và %LOCALAPPDATA% để khi cập nhật hoặc giải nén thư mục mới vẫn nhớ đúng bản Python đã cài thư viện
+    try:
+        with open(ROOT_DIR / "config" / "python_path.txt", "w", encoding="utf-8") as f:
+            f.write(PYTHON_EXE.strip())
+        local_app = Path(
+            os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
+        )
+        for app_sub in ("Mexico_Ong_Gia_Studio", "MexicoOngGiaStudio"):
+            d_sub = local_app / app_sub
+            d_sub.mkdir(parents=True, exist_ok=True)
+            (d_sub / "python_path.txt").write_text(PYTHON_EXE.strip(), encoding="utf-8")
+    except Exception:
+        pass
+
+    # 1. Đảm bảo pip hoạt động và được nâng cấp
+    print("\n[BƯỚC 1/4] Kiểm tra và nâng cấp trình quản lý gói PIP...")
+    subprocess.run(
+        [PYTHON_EXE, "-m", "ensurepip", "--upgrade"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    run_pip(
+        ["install", "--upgrade", "pip", "setuptools", "wheel"],
+        "Đang nâng cấp pip, setuptools, wheel...",
+    )
+
+    # 2. Cài đặt PyTorch + TorchAudio (Ưu tiên CUDA GPU, dự phòng bản chuẩn nếu máy không hỗ trợ)
+    print("\n[BƯỚC 2/4] Kiểm tra và cài đặt PyTorch + TorchAudio (GPU CUDA)...")
+    has_nvidia_gpu = False
+    try:
+        gpu_res = subprocess.run(
+            ["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        has_nvidia_gpu = gpu_res.returncode == 0
+    except Exception:
+        has_nvidia_gpu = False
+
+    has_torch = check_module("torch") and check_module("torchaudio")
+    if has_torch and has_nvidia_gpu:
+        cuda_ok = (
+            subprocess.run(
+                [
+                    PYTHON_EXE,
+                    "-c",
+                    "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ).returncode
+            == 0
+        )
+        if not cuda_ok:
+            print(
+                "[!] Phát hiện card rời NVIDIA nhưng PyTorch hiện tại là bản CPU. Đang nâng cấp lên bản GPU CUDA..."
+            )
+            has_torch = False
+
+    if not has_torch:
+        ok_cu121 = run_pip(
+            [
+                "install",
+                "--prefer-binary",
+                "torch==2.5.1",
+                "torchaudio==2.5.1",
+                "--index-url",
+                "https://download.pytorch.org/whl/cu121",
+            ],
+            "Đang tải PyTorch 2.5.1 GPU (CUDA 12.1)...",
+        )
+        if not ok_cu121 or not check_module("torch"):
+            print("[!] Đang chuyển sang tải PyTorch GPU (CUDA 12.4)...")
+            ok_cu124 = run_pip(
+                [
+                    "install",
+                    "--prefer-binary",
+                    "torch>=2.5.0,<2.9.0",
+                    "torchaudio>=2.5.0,<2.9.0",
+                    "--index-url",
+                    "https://download.pytorch.org/whl/cu124",
+                ],
+                "Đang tải PyTorch GPU (CUDA 12.4)...",
+            )
+            if not ok_cu124 or not check_module("torch"):
+                run_pip(
+                    [
+                        "install",
+                        "--prefer-binary",
+                        "torch>=2.5.0,<2.9.0",
+                        "torchaudio>=2.5.0,<2.9.0",
+                    ],
+                    "Đang tải PyTorch bản tiêu chuẩn...",
+                )
+    else:
+        print("✅ PyTorch & TorchAudio (GPU CUDA) đã được cài đặt sẵn!")
+
+    # 3. Cài đặt toàn bộ thư viện trong requirements.txt
+    print("\n[BƯỚC 3/4] Đang tải và cài đặt các thư viện AI VoiceStudio & Giao diện...")
+    req_file = ROOT_DIR / "requirements.txt"
+    if req_file.exists():
+        ok_req = run_pip(
+            ["install", "--prefer-binary", "-r", str(req_file)],
+            "Đang cài đặt danh sách thư viện từ requirements.txt...",
+        )
+        if not ok_req:
+            print("[!] Đang thử cài đặt từng thư viện quan trọng...")
+            with open(req_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    pkg = line.strip()
+                    if pkg and not pkg.startswith("#"):
+                        run_pip(["install", "--prefer-binary", pkg])
+    else:
+        essential_pkgs = [
+            "fastapi",
+            "uvicorn",
+            "websockets",
+            "websocket-client",
+            "pywebview",
+            "yt-dlp[default]",
+            "yt-dlp-ejs",
+            "loguru",
+            "pyyaml",
+            "pydantic",
+            "aiofiles",
+            "requests",
+            "transformers",
+            "accelerate",
+            "safetensors",
+            "huggingface-hub",
+            "librosa",
+            "soundfile",
+            "pydub",
+            "scipy",
+            "numpy",
+            "tqdm",
+            "playwright",
+            "Pillow",
+            "cryptography",
+            "faster-whisper",
+        ]
+        run_pip(
+            ["install", "--prefer-binary"] + essential_pkgs,
+            "Đang cài đặt các thư viện thiết yếu...",
+        )
+
+    # Kiểm tra lại các thư viện cốt lõi
+    critical_mods = [
+        "torch",
+        "torchaudio",
+        "fastapi",
+        "uvicorn",
+        "webview",
+        "yt_dlp",
+        "transformers",
+        "huggingface_hub",
+        "playwright",
+        "PIL",
+        "cryptography",
+        "faster_whisper",
+    ]
+    missing = [m for m in critical_mods if not check_module(m)]
+    if missing:
+        print(f"⚠️ Đang cài bổ sung các gói còn thiếu: {missing}")
+        pkg_map = {
+            "webview": "pywebview",
+            "yt_dlp": "yt-dlp",
+            "huggingface_hub": "huggingface-hub",
+            "PIL": "Pillow",
+            "faster_whisper": "faster-whisper",
+        }
+        for m in missing:
+            run_pip(["install", "--prefer-binary", pkg_map.get(m, m)])
+
+    # Tự động đảm bảo onnxruntime-gpu được kích hoạt trên máy có card NVIDIA RTX/GTX
+    if has_nvidia_gpu:
+        has_ort_gpu = (
+            subprocess.run(
+                [
+                    PYTHON_EXE,
+                    "-c",
+                    "import onnxruntime as ort; raise SystemExit(0 if 'CUDAExecutionProvider' in ort.get_available_providers() else 1)",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ).returncode
+            == 0
+        )
+        if not has_ort_gpu:
+            print(
+                "⚡ Phát hiện GPU NVIDIA: Đang nâng cấp onnxruntime sang bản onnxruntime-gpu (CUDA)..."
+            )
+            subprocess.run(
+                [PYTHON_EXE, "-m", "pip", "uninstall", "-y", "onnxruntime"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            run_pip(
+                ["install", "--prefer-binary", "onnxruntime-gpu"],
+                "Đang cài đặt onnxruntime-gpu...",
+            )
+
+    # 4. Kiểm tra và tự động tải Model AI OmniVoice (1.6 GB) nếu chưa có
+    print("\n[BƯỚC 4/4] Kiểm tra bộ não giọng đọc AI Tây Ban Nha Mexico (OmniVoice)...")
+    model_dir = ROOT_DIR / "pretrained_models" / "OmniVoice"
+    main_weights = model_dir / "model.safetensors"
+    tok_weights = model_dir / "audio_tokenizer" / "model.safetensors"
+
+    model_ready = (
+        main_weights.exists()
+        and main_weights.stat().st_size > 1_000_000_000
+        and tok_weights.exists()
+        and tok_weights.stat().st_size > 800_000_000
+    )
+    if not model_ready:
+        print(
+            "📥 Đang tự động tải Model AI OmniVoice từ HuggingFace về máy (Khoảng 1.6 GB)..."
+        )
+        print("   Vui lòng đợi cho đến khi tải xong 100%...")
+        try:
+            from huggingface_hub import snapshot_download
+
+            model_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_download(repo_id="k2-fsa/OmniVoice", local_dir=str(model_dir))
+            print("✅ Đã tải hoàn tất Model AI OmniVoice!")
+        except Exception as e:
+            print(f"⚠️ Lưu ý khi tải trước Model AI: {e}")
+            print(
+                "   (Hệ thống sẽ tự động tải lại khi bạn bấm chạy sản xuất video đầu tiên)."
+            )
+    else:
+        print("✅ Model AI OmniVoice đã có sẵn đầy đủ trong máy!")
+
+    print(
+        "\n================================================================================"
+    )
+    print("🎉 [HOÀN TẤT 100%] ĐÃ CÀI ĐẶT XONG TOÀN BỘ THƯ VIỆN & MODEL AI!")
+    print("👉 Bây giờ ứng dụng Mexico_Ong_Gia.exe sẽ tự động mở lên.")
+    print(
+        "================================================================================"
+    )
+    return 0
+
+
+if "--setup" in sys.argv:
+    raise SystemExit(run_install_setup())
+
 
 def _ensure_preferred_python_runtime():
     """
@@ -41,11 +318,13 @@ def _ensure_preferred_python_runtime():
     if os.environ.get("DRAMA_PYTHON_SWITCHED") == "1":
         return
 
-    local_appdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    local_appdata = os.environ.get("LOCALAPPDATA") or str(
+        Path.home() / "AppData" / "Local"
+    )
     candidates = []
 
     for pf in [
-        ROOT_DIR / "python_path.txt",
+        ROOT_DIR / "config" / "python_path.txt",
         Path(local_appdata) / "Mexico_Ong_Gia_Studio" / "python_path.txt",
         Path(local_appdata) / "MexicoOngGiaStudio" / "python_path.txt",
     ]:
@@ -72,7 +351,9 @@ def _ensure_preferred_python_runtime():
         cand_norm = os.path.normcase(os.path.abspath(cand))
         if cand_norm == cur_exe:
             try:
-                (ROOT_DIR / "python_path.txt").write_text(cand, encoding="utf-8")
+                (ROOT_DIR / "config" / "python_path.txt").write_text(
+                    cand, encoding="utf-8"
+                )
             except Exception:
                 pass
             return
@@ -90,12 +371,16 @@ def _ensure_preferred_python_runtime():
             )
             if chk.returncode == 0:
                 try:
-                    (ROOT_DIR / "python_path.txt").write_text(cand, encoding="utf-8")
+                    (ROOT_DIR / "config" / "python_path.txt").write_text(
+                        cand, encoding="utf-8"
+                    )
                 except Exception:
                     pass
                 env = os.environ.copy()
                 env["DRAMA_PYTHON_SWITCHED"] = "1"
-                res = subprocess.run([cand, str(Path(__file__).resolve()), *sys.argv[1:]], env=env)
+                res = subprocess.run(
+                    [cand, str(Path(__file__).resolve()), *sys.argv[1:]], env=env
+                )
                 raise SystemExit(res.returncode)
         except SystemExit:
             raise
@@ -144,26 +429,27 @@ os.environ.pop("https_proxy", None)
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 os.environ["no_proxy"] = "127.0.0.1,localhost"
 
-_write_startup_log(f"Bắt đầu khởi chạy Mexico Ông Già Studio (Python: {sys.executable}, Root: {ROOT_DIR})")
+_write_startup_log(
+    f"Bắt đầu khởi chạy Mexico Ông Già Studio (Python: {sys.executable}, Root: {ROOT_DIR})"
+)
 
 try:
-    import fastapi
+    import fastapi  # noqa: F401
     import uvicorn
 except ImportError as imp_err:
     _write_startup_log(
         f"Phát hiện thiếu thư viện cốt lõi ({imp_err}). Đang tự động chạy trình cài đặt (install_setup.py)...",
         is_error=False,
     )
-    import install_setup
-    install_setup.main()
+    run_install_setup()
     import uvicorn
 
 try:
+    from backend.logger_service import log_error, log_info
     from backend.server import create_app
-    from backend.logger_service import log_info, log_error
 except ImportError:
+    from app.backend.logger_service import log_error, log_info
     from app.backend.server import create_app
-    from app.backend.logger_service import log_info, log_error
 
 
 SERVER_BOOT_ERROR: list[str] = []
@@ -179,7 +465,9 @@ def find_free_port(start_port=8900):
 
 def start_server(port: int, root_dir: Path):
     try:
-        _write_startup_log(f"Đang khởi tạo FastAPI Application trên cổng 127.0.0.1:{port}...")
+        _write_startup_log(
+            f"Đang khởi tạo FastAPI Application trên cổng 127.0.0.1:{port}..."
+        )
         app = create_app(root_dir)
         config = uvicorn.Config(
             app=app,
@@ -190,7 +478,10 @@ def start_server(port: int, root_dir: Path):
             log_config=None,
         )
         server = uvicorn.Server(config)
-        log_info(f"Server FastAPI đã khởi tạo thành công tại http://127.0.0.1:{port}", category="SERVER")
+        log_info(
+            f"Server FastAPI đã khởi tạo thành công tại http://127.0.0.1:{port}",
+            category="SERVER",
+        )
         server.run()
     except Exception as e:
         tb = traceback.format_exc()
@@ -198,7 +489,9 @@ def start_server(port: int, root_dir: Path):
         SERVER_BOOT_ERROR.append(err_msg)
         _write_startup_log(err_msg, is_error=True)
         try:
-            log_error(f"Không thể bật Server trên cổng {port}: {e}", category="SERVER", exc=e)
+            log_error(
+                f"Không thể bật Server trên cổng {port}: {e}", category="SERVER", exc=e
+            )
         except Exception:
             pass
 
@@ -207,6 +500,7 @@ def is_local_server_responding(port=8900) -> bool:
     """Kiểm tra nhanh Server nội bộ đã sẵn sàng nhận kết nối HTTP chưa (không bao giờ kill tiến trình)."""
     try:
         import urllib.request
+
         proxy_handler = urllib.request.ProxyHandler({})
         opener = urllib.request.build_opener(proxy_handler)
         with opener.open(f"http://127.0.0.1:{port}/api/status", timeout=1.5) as resp:
@@ -222,9 +516,12 @@ def is_existing_studio_running(port=8900) -> bool:
     # Server đang chạy sẵn từ phiên trước trên cổng 8900 -> kiểm tra nhanh xem có phản hồi bình thường không
     try:
         import urllib.request
+
         proxy_handler = urllib.request.ProxyHandler({})
         opener = urllib.request.build_opener(proxy_handler)
-        with opener.open(f"http://127.0.0.1:{port}/api/chatgpt/status", timeout=3.0) as resp_chk:
+        with opener.open(
+            f"http://127.0.0.1:{port}/api/chatgpt/status", timeout=3.0
+        ) as resp_chk:
             return resp_chk.status == 200
     except Exception:
         # Chỉ tắt tiến trình cũ nếu ĐÓ KHÔNG PHẢI là chính tiến trình Python hiện tại (os.getpid())
@@ -235,7 +532,12 @@ def is_existing_studio_running(port=8900) -> bool:
                 f"Where-Object {{ $_.OwningProcess -ne {my_pid} }} | "
                 f"ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
             )
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps_kill], capture_output=True, timeout=3, creationflags=0x08000000)
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_kill],
+                capture_output=True,
+                timeout=3,
+                creationflags=0x08000000,
+            )
             time.sleep(0.5)
         except Exception:
             pass
@@ -245,6 +547,7 @@ def is_existing_studio_running(port=8900) -> bool:
 def is_frontend_html_ready(port=8900) -> bool:
     try:
         import urllib.request
+
         proxy_handler = urllib.request.ProxyHandler({})
         opener = urllib.request.build_opener(proxy_handler)
         with opener.open(f"http://127.0.0.1:{port}/", timeout=1.5) as resp:
@@ -265,8 +568,12 @@ def _find_chromium_app_browser() -> str:
 
     for base in (prog_files, prog_x86, local_app):
         if base:
-            candidates.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
-            candidates.append(os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"))
+            candidates.append(
+                os.path.join(base, "Google", "Chrome", "Application", "chrome.exe")
+            )
+            candidates.append(
+                os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe")
+            )
 
     for p in candidates:
         if p and os.path.isfile(p):
@@ -274,10 +581,14 @@ def _find_chromium_app_browser() -> str:
 
     try:
         import winreg
+
         for exe_name in ("chrome.exe", "msedge.exe"):
             for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
                 try:
-                    with winreg.OpenKey(hive, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}") as k:
+                    with winreg.OpenKey(
+                        hive,
+                        rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}",
+                    ) as k:
                         val, _ = winreg.QueryValueEx(k, "")
                         if val and os.path.isfile(val):
                             return val
@@ -292,6 +603,7 @@ def _is_non_default_desktop() -> bool:
     """Kiểm tra xem tiến trình có đang chạy trong Sandbox/Background Desktop (khác Default) hay không."""
     try:
         import ctypes
+
         u32 = ctypes.windll.user32
         k32 = ctypes.windll.kernel32
         h_desk = u32.GetThreadDesktop(k32.GetCurrentThreadId())
@@ -317,7 +629,9 @@ def open_native_pywebview_window(url: str) -> str:
 
     try:
         local_app = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        wv2_profile = os.path.join(local_app, "Mexico_Ong_Gia_Studio", "WebView2_Native_Profile_V3")
+        wv2_profile = os.path.join(
+            local_app, "Mexico_Ong_Gia_Studio", "WebView2_Native_Profile_V3"
+        )
         os.makedirs(wv2_profile, exist_ok=True)
         os.environ["WEBVIEW2_USER_DATA_FOLDER"] = wv2_profile
         os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
@@ -328,7 +642,9 @@ def open_native_pywebview_window(url: str) -> str:
         import webview
 
         cache_bust_url = f"{url}/?v={int(time.time())}"
-        _write_startup_log(f"Đang mở cửa sổ Desktop App Native (PyWebView EdgeChromium) -> {cache_bust_url}")
+        _write_startup_log(
+            f"Đang mở cửa sổ Desktop App Native (PyWebView EdgeChromium) -> {cache_bust_url}"
+        )
         webview.create_window(
             title="ZC Team - MEXICO ÔNG GIÀ | Workstation Studio",
             url=cache_bust_url,
@@ -341,7 +657,10 @@ def open_native_pywebview_window(url: str) -> str:
         webview.start(gui="edgechromium", debug=False)
         return "closed"
     except Exception as e:
-        _write_startup_log(f"Lưu ý khi mở PyWebView Native ({e}), tự động chuyển sang Chromium App mode...", is_error=False)
+        _write_startup_log(
+            f"Lưu ý khi mở PyWebView Native ({e}), tự động chuyển sang Chromium App mode...",
+            is_error=False,
+        )
         return "failed"
 
 
@@ -354,7 +673,12 @@ def _close_stale_desktop_ui_windows():
             "($_.CommandLine -like '*MexicoUI_Profile_V*' -or $_.CommandLine -like '*--app=http://127.0.0.1:8900*') "
             "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
-        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, timeout=4, creationflags=0x08000000)
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True,
+            timeout=4,
+            creationflags=0x08000000,
+        )
         time.sleep(0.6)
     except Exception:
         pass
@@ -369,7 +693,13 @@ def _is_desktop_ui_window_alive() -> bool:
             "($_.CommandLine -like '*MexicoUI_Profile_V*' -or $_.CommandLine -like '*--app=http://127.0.0.1:8900*') "
             "}; if ($p) { Write-Output 'ALIVE' }"
         )
-        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps_check], capture_output=True, text=True, timeout=4, creationflags=0x08000000)
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_check],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            creationflags=0x08000000,
+        )
         return "ALIVE" in (r.stdout or "")
     except Exception:
         return True
@@ -387,30 +717,53 @@ def open_desktop_ui_window(url: str):
             _close_stale_desktop_ui_windows()
             in_bg_desktop = _is_non_default_desktop()
             local_app = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-            ui_profile_dir = os.path.join(local_app, "Mexico_Ong_Gia_Studio", "MexicoUI_Profile_V6")
+            ui_profile_dir = os.path.join(
+                local_app, "Mexico_Ong_Gia_Studio", "MexicoUI_Profile_V6"
+            )
             os.makedirs(ui_profile_dir, exist_ok=True)
 
             if in_bg_desktop:
-                bat_path = os.path.join(local_app, "Mexico_Ong_Gia_Studio", "open_ui_window.bat")
+                bat_path = os.path.join(
+                    local_app, "Mexico_Ong_Gia_Studio", "open_ui_window.bat"
+                )
                 bat_content = (
-                    f'@echo off\r\n'
+                    f"@echo off\r\n"
                     f'start "" "{browser_exe}" --app="{cache_bust_url}" '
                     f'--user-data-dir="{ui_profile_dir}" '
-                    f'--window-size=1480,920 --window-position=60,30 '
-                    f'--disk-cache-size=1 --media-cache-size=1 '
-                    f'--no-first-run --no-default-browser-check '
-                    f'--disable-features=Translate,CalculateNativeWinOcclusion '
+                    f"--window-size=1480,920 --window-position=60,30 "
+                    f"--disk-cache-size=1 --media-cache-size=1 "
+                    f"--no-first-run --no-default-browser-check "
+                    f"--disable-features=Translate,CalculateNativeWinOcclusion "
                     f'--disable-gpu-sandbox "--proxy-bypass-list=<-loopback>"\r\n'
                 )
                 with open(bat_path, "w", encoding="utf-8") as bf:
                     bf.write(bat_content)
                 subprocess.run(
-                    ["schtasks", "/Create", "/TN", "MexicoOngGiaAppUI", "/TR", f'"{bat_path}"', "/SC", "ONCE", "/ST", "00:00", "/IT", "/F"],
+                    [
+                        "schtasks",
+                        "/Create",
+                        "/TN",
+                        "MexicoOngGiaAppUI",
+                        "/TR",
+                        f'"{bat_path}"',
+                        "/SC",
+                        "ONCE",
+                        "/ST",
+                        "00:00",
+                        "/IT",
+                        "/F",
+                    ],
                     capture_output=True,
                     timeout=5,
                 )
-                subprocess.run(["schtasks", "/Run", "/TN", "MexicoOngGiaAppUI"], capture_output=True, timeout=5)
-                _write_startup_log(f"Đang mở cửa sổ App Native trên màn hình chính (schtasks /IT): {browser_exe} -> {cache_bust_url}")
+                subprocess.run(
+                    ["schtasks", "/Run", "/TN", "MexicoOngGiaAppUI"],
+                    capture_output=True,
+                    timeout=5,
+                )
+                _write_startup_log(
+                    f"Đang mở cửa sổ App Native trên màn hình chính (schtasks /IT): {browser_exe} -> {cache_bust_url}"
+                )
                 return None
 
             cmd = [
@@ -427,11 +780,16 @@ def open_desktop_ui_window(url: str):
                 "--disable-gpu-sandbox",
                 "--proxy-bypass-list=<-loopback>",
             ]
-            _write_startup_log(f"Đang mở cửa sổ App Native bằng: {browser_exe} -> {cache_bust_url} (bg_desktop={in_bg_desktop})")
+            _write_startup_log(
+                f"Đang mở cửa sổ App Native bằng: {browser_exe} -> {cache_bust_url} (bg_desktop={in_bg_desktop})"
+            )
             proc = subprocess.Popen(cmd, cwd=str(ROOT_DIR))
             return proc
         except Exception as e:
-            _write_startup_log(f"Lưu ý khi mở Chromium App mode ({e}), chuyển sang webbrowser.open...", is_error=False)
+            _write_startup_log(
+                f"Lưu ý khi mở Chromium App mode ({e}), chuyển sang webbrowser.open...",
+                is_error=False,
+            )
 
     _write_startup_log(f"Đang mở giao diện qua trình duyệt mặc định: {cache_bust_url}")
     webbrowser.open(cache_bust_url)
@@ -506,12 +864,19 @@ def main():
     port = default_port if reuse_existing else find_free_port(default_port)
     url = f"http://127.0.0.1:{port}"
 
-    print("================================================================================")
+    print(
+        "================================================================================"
+    )
     print("🎬 [MEXICO ÔNG GIÀ STUDIO] KHỞI ĐỘNG ỨNG DỤNG DESKTOP ĐỘC LẬP")
     print(f"📍 Thư mục làm việc: {ROOT_DIR}")
     print(f"📋 File Log khởi động: {STARTUP_LOG_PATH}")
-    print(f"🌐 Server Backend cục bộ: {url}" + (" (Kết nối lại tiến trình đang chạy ngầm)" if reuse_existing else ""))
-    print("================================================================================")
+    print(
+        f"🌐 Server Backend cục bộ: {url}"
+        + (" (Kết nối lại tiến trình đang chạy ngầm)" if reuse_existing else "")
+    )
+    print(
+        "================================================================================"
+    )
 
     if not reuse_existing:
         server_thread = threading.Thread(
@@ -531,10 +896,17 @@ def main():
             time.sleep(0.2)
 
         if not server_ready:
-            boot_err = SERVER_BOOT_ERROR[0] if SERVER_BOOT_ERROR else "Quá thời gian chờ (30s) nhưng Server Backend chưa phản hồi."
-            _write_startup_log(f"CHƯA BẬT ĐƯỢC SERVER BACKEND:\n{boot_err}", is_error=True)
+            boot_err = (
+                SERVER_BOOT_ERROR[0]
+                if SERVER_BOOT_ERROR
+                else "Quá thời gian chờ (30s) nhưng Server Backend chưa phản hồi."
+            )
+            _write_startup_log(
+                f"CHƯA BẬT ĐƯỢC SERVER BACKEND:\n{boot_err}", is_error=True
+            )
             try:
                 import ctypes
+
                 ctypes.windll.user32.MessageBoxW(
                     0,
                     f"❌ Không thể bật được Server Backend (Cổng {port})!\n\n"
@@ -547,7 +919,9 @@ def main():
                 pass
             return
         else:
-            _write_startup_log(f"✅ Server Backend & Giao diện HTML đã sẵn sàng 100% tại {url}")
+            _write_startup_log(
+                f"✅ Server Backend & Giao diện HTML đã sẵn sàng 100% tại {url}"
+            )
 
     print(f"-> Đang mở cửa sổ ứng dụng Desktop Mexico Ông Già Studio...")
     ui_proc = open_desktop_ui_window(url)
@@ -557,10 +931,16 @@ def main():
         time.sleep(2.0)
         return
 
-    print("================================================================================")
+    print(
+        "================================================================================"
+    )
     print(f"✅ GIAO DIỆN DESKTOP ĐÃ MỞ THÀNH CÔNG")
-    print("💡 Khi đóng cửa sổ ứng dụng bằng nút [X], toàn bộ Server Backend & Server Voice (run.exe) sẽ tự động tắt sạch 100%!")
-    print("================================================================================")
+    print(
+        "💡 Khi đóng cửa sổ ứng dụng bằng nút [X], toàn bộ Server Backend & Server Voice (run.exe) sẽ tự động tắt sạch 100%!"
+    )
+    print(
+        "================================================================================"
+    )
 
     try:
         ui_start_ts = time.time()
@@ -577,11 +957,17 @@ def main():
                 if elapsed_ui < 10.0:
                     time.sleep(1.0)
                     if _is_desktop_ui_window_alive():
-                        _write_startup_log("Cửa sổ App Native đã chuyển tiếp sang tiến trình Chrome chính và đang hiển thị bình thường.", is_error=False)
+                        _write_startup_log(
+                            "Cửa sổ App Native đã chuyển tiếp sang tiến trình Chrome chính và đang hiển thị bình thường.",
+                            is_error=False,
+                        )
                         continue
                     if not reopen_attempted:
                         reopen_attempted = True
-                        _write_startup_log(f"Tiến trình cửa sổ đầu tiên đóng sớm ({elapsed_ui:.1f}s, rc={rc}), đang tự động mở lại cửa sổ App...", is_error=False)
+                        _write_startup_log(
+                            f"Tiến trình cửa sổ đầu tiên đóng sớm ({elapsed_ui:.1f}s, rc={rc}), đang tự động mở lại cửa sổ App...",
+                            is_error=False,
+                        )
                         time.sleep(1.0)
                         ui_start_ts = time.time()
                         ui_proc = open_desktop_ui_window(url)
@@ -602,6 +988,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception as fatal_err:
-        _write_startup_log(f"LỖI NGHIÊM TRỌNG KHI CHẠY MAIN.PY:\n{traceback.format_exc()}", is_error=True)
+    except Exception:
+        _write_startup_log(
+            f"LỖI NGHIÊM TRỌNG KHI CHẠY MAIN.PY:\n{traceback.format_exc()}",
+            is_error=True,
+        )
         raise

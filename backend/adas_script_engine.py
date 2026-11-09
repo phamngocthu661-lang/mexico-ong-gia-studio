@@ -1,35 +1,3262 @@
+import sys
+
+sys.modules["backend.chatgpt_web_client"] = sys.modules[__name__]
+import ctypes
+import json
 import os
 import re
+import socket
+import subprocess
 import sys
-import json
-import time
-import shutil
 import threading
-import unicodedata
+import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Callable, Tuple
+from typing import Any, Callable, Dict, List, Optional
+
+import requests
+from websockets.sync.client import connect as ws_connect
+
+from .logger_service import log_info, log_warn
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+# Cấu hình 3 Tài khoản ChatGPT Web (Chuẩn Master Blueprint V6.0)
+# QUAN TRỌNG: Luôn thoát khỏi thư mục con 'app/' để trỏ đúng về thư mục gốc chứa BROWSER_PROFILE,
+# tránh tuyệt đối việc chạy từ app/ tạo ra profile trống làm văng tài khoản ChatGPT!
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if ROOT_DIR.name.lower() == "app":
+    ROOT_DIR = ROOT_DIR.parent
+elif not (ROOT_DIR / "bin").exists() and (ROOT_DIR.parent / "bin").exists():
+    ROOT_DIR = ROOT_DIR.parent
+
+_APPDATA_STUDIO_DIR = Path(os.path.expandvars(r"%LOCALAPPDATA%\Mexico_Ong_Gia_Studio"))
+_PROFILE_REGISTRY_FILE = _APPDATA_STUDIO_DIR / "chrome_profiles_registry.json"
+
+
+def _has_existing_chrome_data(p: Path) -> bool:
+    """Kiểm tra xem thư mục Profile đã có phiên đăng nhập / dữ liệu Chrome hay chưa."""
+    if not p.exists():
+        return False
+    return (
+        (p / "Default").exists()
+        or (p / ".studio_account_info.json").exists()
+        or (p / "Local State").exists()
+    )
+
+
+def _resolve_persistent_profile_dir(acc_id: str, folder_name: str) -> str:
+    """
+    Giữ cố định 100% phiên đăng nhập ChatGPT qua mọi bản cập nhật:
+    1. Nếu thư mục gốc hiện tại (ROOT_DIR / folder_name) đã có dữ liệu đăng nhập -> Dùng ngay và lưu đường dẫn vào Registry máy.
+    2. Nếu người dùng giải nén bản Update sang một thư mục mới (chưa có BROWSER_PROFILE), tự động đọc Registry
+       trong %LOCALAPPDATA% để trỏ lại đúng thư mục BROWSER_PROFILE cũ đã đăng nhập trên máy tính này!
+    """
+    profiles_root = ROOT_DIR / "config" / "browser_profiles"
+    profiles_root.mkdir(parents=True, exist_ok=True)
+    legacy_root_candidate = ROOT_DIR / folder_name
+    local_candidate = profiles_root / folder_name
+    if legacy_root_candidate.exists() and not local_candidate.exists():
+        try:
+            shutil.move(str(legacy_root_candidate), str(local_candidate))
+        except Exception:
+            local_candidate = legacy_root_candidate
+    registry_data: Dict[str, str] = {}
+    try:
+        _APPDATA_STUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        if _PROFILE_REGISTRY_FILE.exists():
+            registry_data = json.loads(
+                _PROFILE_REGISTRY_FILE.read_text(encoding="utf-8")
+            )
+    except Exception:
+        registry_data = {}
+
+    if _has_existing_chrome_data(local_candidate):
+        resolved = str(local_candidate.resolve())
+        if registry_data.get(acc_id) != resolved:
+            registry_data[acc_id] = resolved
+            try:
+                _PROFILE_REGISTRY_FILE.write_text(
+                    json.dumps(registry_data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+        return resolved
+
+    # Kiểm tra xem trên máy đã từng đăng nhập ở thư mục trước khi update chưa
+    prev_path_str = registry_data.get(acc_id, "")
+    if prev_path_str:
+        prev_p = Path(prev_path_str)
+        if _has_existing_chrome_data(prev_p) and prev_p.name.lower() != "app":
+            return str(prev_p.resolve())
+
+    # Mặc định lưu ở ROOT_DIR / folder_name và ghi nhận vào Registry
+    resolved_default = str(local_candidate.resolve())
+    registry_data[acc_id] = resolved_default
+    try:
+        _PROFILE_REGISTRY_FILE.write_text(
+            json.dumps(registry_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+    return resolved_default
+
+
+ACCOUNTS_CONFIG: Dict[str, Dict[str, Any]] = {
+    "acc_1": {
+        "acc_id": "acc_1",
+        "label": "Acc #1",
+        "port": 9232,
+        "profile_dir": _resolve_persistent_profile_dir("acc_1", "BROWSER_PROFILE"),
+    },
+    "acc_2": {
+        "acc_id": "acc_2",
+        "label": "Acc #2",
+        "port": 9233,
+        "profile_dir": _resolve_persistent_profile_dir("acc_2", "BROWSER_PROFILE_2"),
+    },
+    "acc_3": {
+        "acc_id": "acc_3",
+        "label": "Acc #3",
+        "port": 9234,
+        "profile_dir": _resolve_persistent_profile_dir("acc_3", "BROWSER_PROFILE_3"),
+    },
+    "acc_4": {
+        "acc_id": "acc_4",
+        "label": "Acc #4",
+        "port": 9235,
+        "profile_dir": _resolve_persistent_profile_dir("acc_4", "BROWSER_PROFILE_4"),
+    },
+    "acc_5": {
+        "acc_id": "acc_5",
+        "label": "Acc #5",
+        "port": 9236,
+        "profile_dir": _resolve_persistent_profile_dir("acc_5", "BROWSER_PROFILE_5"),
+    },
+}
+CHATGPT_ACCOUNTS: List[str] = list(ACCOUNTS_CONFIG.keys())
+
+_ACCOUNTS_STATE_FILE = ROOT_DIR / "config" / "chatgpt_accounts_state.json"
+_APPDATA_ACCOUNTS_STATE_FILE = _APPDATA_STUDIO_DIR / "chatgpt_accounts_state.json"
+_ACCOUNTS_STATE_IO_LOCK = threading.Lock()
+
+_STATE_LOCK = threading.Lock()
+_CHROME_HIDDEN_STATE: Dict[str, bool] = {aid: False for aid in CHATGPT_ACCOUNTS}
+_ACTIVE_JOBS_BY_ACC: Dict[str, Dict[str, str]] = {aid: {} for aid in CHATGPT_ACCOUNTS}
+_PENDING_PROJECTS_BY_ACC: Dict[str, set] = {aid: set() for aid in CHATGPT_ACCOUNTS}
+ACCOUNT_LIMIT_COOLDOWN_SEC = 1800  # Tạm dừng 30 phút (1800 giây) khi tài khoản bị Limit
+_ACCOUNT_COOLDOWN_UNTIL: Dict[str, float] = {aid: 0.0 for aid in CHATGPT_ACCOUNTS}
+_ACCOUNT_COOLDOWN_REASON: Dict[str, str] = {aid: "" for aid in CHATGPT_ACCOUNTS}
+_LAST_ACTIVITY_TS_BY_ACC: Dict[str, float] = {aid: 0.0 for aid in CHATGPT_ACCOUNTS}
+_MANUAL_OPEN_TS_BY_ACC: Dict[str, float] = {aid: 0.0 for aid in CHATGPT_ACCOUNTS}
+
+
+def _is_valid_saved_email(val: str) -> bool:
+    s = (val or "").strip()
+    if not s:
+        return False
+    invalid_markers = (
+        "chưa đăng nhập",
+        "chưa mở",
+        "đang ở trang login",
+        "đang tải trang",
+        "không rõ",
+    )
+    s_low = s.lower()
+    if any(m in s_low for m in invalid_markers):
+        return False
+    return True
+
+
+def _load_all_saved_accounts_state_map() -> Dict[str, Dict[str, Any]]:
+    data: Dict[str, Dict[str, Any]] = {}
+    for fpath in (_APPDATA_ACCOUNTS_STATE_FILE, _ACCOUNTS_STATE_FILE):
+        if fpath.exists():
+            try:
+                loaded = json.loads(fpath.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    for k, v in loaded.items():
+                        if k in ACCOUNTS_CONFIG and isinstance(v, dict):
+                            data[k] = dict(v)
+            except Exception:
+                pass
+    # Đồng bộ thêm từ file .studio_account_info.json trong từng thư mục BROWSER_PROFILE*
+    for aid, cfg in ACCOUNTS_CONFIG.items():
+        prof_dir = cfg["profile_dir"]
+        info_file = os.path.join(prof_dir, ".studio_account_info.json")
+        if os.path.exists(info_file):
+            try:
+                with open(info_file, "r", encoding="utf-8") as f:
+                    p_info = json.load(f)
+                if isinstance(p_info, dict):
+                    cur = data.get(aid) or {}
+                    if float(p_info.get("ts") or 0) >= float(cur.get("ts") or 0):
+                        data[aid] = dict(p_info)
+            except Exception:
+                pass
+    return data
+
+
+def _load_saved_account_login_info(acc_id: str) -> Dict[str, Any]:
+    if acc_id not in ACCOUNTS_CONFIG:
+        return {"logged_in": False, "user_email": "", "plan_type": "", "ts": 0.0}
+    with _ACCOUNTS_STATE_IO_LOCK:
+        all_map = _load_all_saved_accounts_state_map()
+    info = all_map.get(acc_id) or {}
+    email_val = str(info.get("user_email") or info.get("email") or "").strip()
+    logged = bool(info.get("logged_in")) and _is_valid_saved_email(email_val)
+    return {
+        "logged_in": logged,
+        "user_email": email_val if logged else "",
+        "plan_type": str(info.get("plan_type") or "") if logged else "",
+        "ts": float(info.get("ts") or 0.0),
+    }
+
+
+def _save_account_login_info(
+    acc_id: str,
+    logged_in: bool,
+    user_email: str = "",
+    plan_type: str = "",
+) -> Dict[str, Any]:
+    if acc_id not in ACCOUNTS_CONFIG:
+        return {}
+    clean_email = (user_email or "").strip()
+    if logged_in and not _is_valid_saved_email(clean_email):
+        clean_email = "Đã đăng nhập ChatGPT"
+    record = {
+        "acc_id": acc_id,
+        "logged_in": bool(logged_in),
+        "user_email": clean_email if logged_in else "",
+        "plan_type": str(plan_type or "") if logged_in else "",
+        "ts": time.time(),
+    }
+    with _ACCOUNTS_STATE_IO_LOCK:
+        all_map = _load_all_saved_accounts_state_map()
+        all_map[acc_id] = record
+        prof_dir = ACCOUNTS_CONFIG[acc_id]["profile_dir"]
+        if logged_in or os.path.exists(prof_dir):
+            try:
+                os.makedirs(prof_dir, exist_ok=True)
+                with open(
+                    os.path.join(prof_dir, ".studio_account_info.json"),
+                    "w",
+                    encoding="utf-8",
+                ) as f:
+                    json.dump(record, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+        for fpath in (_ACCOUNTS_STATE_FILE, _APPDATA_ACCOUNTS_STATE_FILE):
+            try:
+                fpath.parent.mkdir(parents=True, exist_ok=True)
+                fpath.write_text(
+                    json.dumps(all_map, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception:
+                pass
+    return record
+
+
+# Khởi tạo đồng bộ trạng thái đăng nhập đã lưu của 5 tài khoản ngay khi nạp module
+try:
+    with _ACCOUNTS_STATE_IO_LOCK:
+        _init_map = _load_all_saved_accounts_state_map()
+        if _init_map:
+            _ACCOUNTS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _ACCOUNTS_STATE_FILE.write_text(
+                json.dumps(_init_map, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+except Exception:
+    pass
+
+
+class AccountRateLimitError(RuntimeError):
+    """Ngoại lệ chuyên biệt khi tài khoản ChatGPT bị giới hạn (Rate Limit / Quota / Không phản hồi)."""
+
+    def __init__(self, acc_id: str, message: str):
+        super().__init__(message)
+        self.acc_id = acc_id
+
+
+def mark_account_rate_limited(
+    acc_id: str,
+    reason: str = "",
+    cooldown_sec: int = ACCOUNT_LIMIT_COOLDOWN_SEC,
+) -> float:
+    """
+    Đánh dấu tài khoản `acc_id` bị Limit -> Tạm dừng nhận kịch bản mới trong `cooldown_sec` (mặc định 30 phút = 1800s).
+    Sau đúng 30 phút hệ thống sẽ tự động mở khóa để thử lại.
+    """
+    if acc_id not in ACCOUNTS_CONFIG:
+        return 0.0
+    now = time.time()
+    until_ts = now + max(60, int(cooldown_sec))
+    clean_reason = (reason or "Tài khoản chạm giới hạn (Rate Limit / Timeout)").strip()[
+        :180
+    ]
+    with _STATE_LOCK:
+        _ACCOUNT_COOLDOWN_UNTIL[acc_id] = until_ts
+        _ACCOUNT_COOLDOWN_REASON[acc_id] = clean_reason
+        if acc_id in _PENDING_PROJECTS_BY_ACC:
+            _PENDING_PROJECTS_BY_ACC[acc_id].clear()
+    _STATUS_CACHE["ts"] = 0.0
+    resume_str = time.strftime("%H:%M:%S", time.localtime(until_ts))
+    label = ACCOUNTS_CONFIG.get(acc_id, {}).get("label", acc_id)
+    log_warn(
+        f"⏸️ [{label}] Phát hiện bị LIMIT / nghẽn ({clean_reason}) -> "
+        f"Tạm dừng {label} trong {int(cooldown_sec // 60)} phút (Mở lại lúc {resume_str}) và chuyển kịch bản sang nick khác!",
+        category="CHROME",
+    )
+    return until_ts
+
+
+def is_account_in_cooldown(acc_id: str) -> tuple[bool, int, str]:
+    """
+    Kiểm tra xem `acc_id` có đang trong thời gian tạm dừng 30 phút vì Limit hay không.
+    Tự động mở khóa ngay khi hết 30 phút.
+    """
+    if acc_id not in ACCOUNTS_CONFIG:
+        return False, 0, ""
+    now = time.time()
+    unlocked_now = False
+    with _STATE_LOCK:
+        until_ts = float(_ACCOUNT_COOLDOWN_UNTIL.get(acc_id, 0.0) or 0.0)
+        reason = str(_ACCOUNT_COOLDOWN_REASON.get(acc_id, "") or "")
+        if until_ts <= 0.0:
+            return False, 0, ""
+        if now >= until_ts:
+            _ACCOUNT_COOLDOWN_UNTIL[acc_id] = 0.0
+            _ACCOUNT_COOLDOWN_REASON[acc_id] = ""
+            unlocked_now = True
+        else:
+            return True, int(round(until_ts - now)), reason
+    if unlocked_now:
+        label = ACCOUNTS_CONFIG.get(acc_id, {}).get("label", acc_id)
+        log_info(
+            f"▶️ [{label}] Đã hết 30 phút tạm dừng Limit -> Tự động mở khóa {label} để hoạt động trở lại!",
+            category="CHROME",
+        )
+    return False, 0, ""
+
+
+def clear_account_cooldown(acc_id: Optional[str] = None) -> None:
+    """Xóa trạng thái tạm dừng Limit cho 1 hoặc toàn bộ tài khoản."""
+    with _STATE_LOCK:
+        targets = (
+            [acc_id]
+            if (acc_id and acc_id in ACCOUNTS_CONFIG)
+            else list(ACCOUNTS_CONFIG.keys())
+        )
+        for aid in targets:
+            _ACCOUNT_COOLDOWN_UNTIL[aid] = 0.0
+            _ACCOUNT_COOLDOWN_REASON[aid] = ""
+    _STATUS_CACHE["ts"] = 0.0
+
+
+def get_earliest_cooldown_remaining_sec(
+    candidate_accs: Optional[List[str]] = None,
+) -> int:
+    """Trả về số giây còn lại ngắn nhất để ít nhất 1 tài khoản thoát khỏi trạng thái tạm dừng 30 phút."""
+    accs = candidate_accs or list(ACCOUNTS_CONFIG.keys())
+    rem_list: List[int] = []
+    for aid in accs:
+        in_cd, rem_s, _ = is_account_in_cooldown(aid)
+        if not in_cd:
+            return 0
+        if rem_s > 0:
+            rem_list.append(rem_s)
+    return min(rem_list) if rem_list else 0
+
+
+_RATE_LIMIT_PATTERNS = re.compile(
+    r"(?:"
+    r"you(?:['’]?ve|\s+have)?\s+reached\s+(?:your|the)(?:\s+\w+){0,3}\s+(?:limit|usage\s+cap|message\s+cap|cap|quota)|"
+    r"you(?:['’]?ve|\s+have)?\s+hit\s+(?:your|the)(?:\s+\w+){0,3}\s+(?:limit|cap|quota)|"
+    r"rate\s+limit|"
+    r"usage\s+cap|"
+    r"message\s+cap|"
+    r"too\s+many\s+requests|"
+    r"requests\s+too\s+quickly|"
+    r"wait\s+before\s+generating\s+more\s+images|"
+    r"image\s+generation\s+limit|"
+    r"limit\s+for\s+image\s+generations|"
+    r"try\s+again\s+in\s+\d+\s*(?:minute|minutes|hour|hours)|"
+    r"please\s+wait\s+\d+\s*(?:minute|minutes|hour|hours)\s+before|"
+    r"unusual\s+activity\s+from\s+your\s+system|"
+    r"đã\s+đạt\s+giới\s+hạn|"
+    r"vượt\s+quá\s+giới\s+hạn"
+    r")",
+    flags=re.IGNORECASE,
+)
+
+
+def _detect_rate_limit_in_text(text: str, max_len_for_content_check: int = 900) -> str:
+    """Phát hiện thông báo giới hạn (Rate Limit / Quota) từ văn bản trả về hoặc banner cảnh báo của ChatGPT."""
+    t = (text or "").strip()
+    if not t or len(t) > max_len_for_content_check:
+        return ""
+    m = _RATE_LIMIT_PATTERNS.search(t)
+    if m:
+        return t[:180].replace("\n", " ").strip()
+    return ""
+
+
+CHATGPT_GUARD_URL = "https://chatgpt.com/?studio_login_guard=1#studio_login_guard"
+_PROTECTED_WS_URLS: set = set()
+
+
+def _fresh_guard_url() -> str:
+    """Tạo URL trang chủ ChatGPT kèm timestamp query duy nhất để Page.navigate luôn tải trang mới thật sự (không bị Chrome coi là cuộn hash cùng trang)."""
+    return f"https://chatgpt.com/?studio_login_guard={int(time.time() * 1000)}#studio_login_guard"
+
+
+MAX_THREADS_PER_ACCOUNT = 3
+COMPOSER_SELECTOR = (
+    '#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], '
+    'div.ProseMirror[contenteditable="true"], [data-composer-markdown], '
+    'div[role="textbox"][contenteditable="true"], main textarea'
+)
+_STATUS_CACHE: Dict[str, Any] = {
+    "ts": 0.0,
+    "data": None,
+}
+_LAST_VERIFIED_LOGIN_BY_PORT: Dict[int, Dict[str, Any]] = {}
+_LAST_BLANK_NAV_TS_BY_PORT: Dict[int, float] = {}
+_KNOWN_EMAILS: Dict[str, str] = {}
+_WS_LOCKS: Dict[str, threading.Lock] = {}
+_ACC_TAB_LOCKS: Dict[str, threading.RLock] = {
+    aid: threading.RLock() for aid in CHATGPT_ACCOUNTS
+}
+_PORT_INJECT_LOCKS: Dict[int, threading.Lock] = {
+    cfg["port"]: threading.Lock() for cfg in ACCOUNTS_CONFIG.values()
+}
+_LAST_ACTIVITY_TS_BY_ACC: Dict[str, float] = {aid: 0.0 for aid in CHATGPT_ACCOUNTS}
+_MANUAL_OPEN_TS_BY_ACC: Dict[str, float] = {aid: 0.0 for aid in CHATGPT_ACCOUNTS}
+_IDLE_WATCHER_STARTED: bool = False
+_ROUND_ROBIN_IDX = 0
+
+
+def find_chrome_executable() -> str:
+    """Tìm đường dẫn Google Chrome (hoặc Microsoft Edge Chromium dự phòng) trên Windows."""
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(
+            r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
+        ),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return "chrome.exe"
+
+
+def _cdp_get_tabs(port: int, timeout: float = 2.5) -> Optional[List[Dict[str, Any]]]:
+    """Lấy danh sách các tab đang mở từ cổng CDP của Chrome (kiểm tra nhanh socket 350ms trước, tự động thử lại nếu Chrome đang tải nặng)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.35)
+            if s.connect_ex(("127.0.0.1", int(port))) != 0:
+                return None
+        for _attempt in range(2):
+            try:
+                resp = requests.get(
+                    f"http://127.0.0.1:{port}/json/list", timeout=max(1.5, timeout)
+                )
+                if resp.status_code == 200:
+                    tabs = resp.json()
+                    return [t for t in tabs if t.get("type") == "page"]
+            except Exception:
+                time.sleep(0.2)
+    except Exception:
+        pass
+    return None
+
+
+def _install_chatgpt_tab_protection_js(ws_url: str) -> None:
+    """
+    Gắn chốt bảo vệ '#studio_login_guard' trên Tab ChatGPT (thông qua Page.addScriptToEvaluateOnNewDocument,
+    bọc History.pushState/replaceState và setInterval 250ms) để ngăn mọi tiến trình dọn tab bên ngoài
+    đóng nhầm hoặc chuyển hướng các Tab đang viết kịch bản.
+    """
+    if not ws_url:
+        return
+    guard_script = r"""
+    (() => {
+        try {
+            window.onbeforeunload = null;
+            const ensureGuardHash = () => {
+                try {
+                    const host = (window.location.hostname || '').toLowerCase();
+                    if ((host.includes('chatgpt.com') || host.includes('openai.com')) && !window.location.hash.includes('studio_login_guard')) {
+                        const cleanUrl = window.location.pathname + window.location.search + '#studio_login_guard';
+                        window.history.replaceState(window.history.state, '', cleanUrl);
+                    }
+                } catch (e) {}
+            };
+            if (!window.__studioHistoryPatched) {
+                window.__studioHistoryPatched = true;
+                const origPush = window.history.pushState;
+                const origReplace = window.history.replaceState;
+                const patchUrl = (u) => {
+                    if (typeof u === 'string' && u.length > 0 && !u.includes('studio_login_guard')) {
+                        return u.split('#')[0] + '#studio_login_guard';
+                    }
+                    return u;
+                };
+                if (typeof origPush === 'function') {
+                    window.history.pushState = function(state, title, url) {
+                        return origPush.call(this, state, title, patchUrl(url));
+                    };
+                }
+                if (typeof origReplace === 'function') {
+                    window.history.replaceState = function(state, title, url) {
+                        return origReplace.call(this, state, title, patchUrl(url));
+                    };
+                }
+            }
+            ensureGuardHash();
+            if (!window.__chatgptTabProtectionTimer) {
+                window.__chatgptTabProtectionTimer = setInterval(ensureGuardHash, 250);
+            }
+        } catch (e) {}
+        return true;
+    })()
+    """
+    with _STATE_LOCK:
+        ws_lock = _WS_LOCKS.setdefault(ws_url, threading.Lock())
+    with ws_lock:
+        try:
+            with ws_connect(ws_url, open_timeout=2.5, close_timeout=1.2) as ws:
+                ws.send(
+                    json.dumps(
+                        {
+                            "id": 9103,
+                            "method": "Runtime.evaluate",
+                            "params": {
+                                "expression": guard_script,
+                                "returnByValue": True,
+                            },
+                        }
+                    )
+                )
+                ws.recv(timeout=1.2)
+        except Exception:
+            pass
+
+
+def _cdp_navigate(
+    ws_url: str, url: str = CHATGPT_GUARD_URL, timeout: float = 3.0
+) -> bool:
+    """Điều hướng tab tới URL bằng giao thức CDP Page.navigate (kèm cài sẵn chốt bảo vệ #studio_login_guard)."""
+    if not ws_url:
+        return False
+    if url == CHATGPT_GUARD_URL or ("chatgpt.com" in url and "/c/" not in url):
+        url = _fresh_guard_url()
+    _install_chatgpt_tab_protection_js(ws_url)
+    with _STATE_LOCK:
+        ws_lock = _WS_LOCKS.setdefault(ws_url, threading.Lock())
+    with ws_lock:
+        try:
+            with ws_connect(ws_url, open_timeout=3.0, close_timeout=1.5) as ws:
+                msg_id = int(time.time() * 1000) % 1000000 + 7
+                ws.send(
+                    json.dumps(
+                        {
+                            "id": msg_id,
+                            "method": "Page.navigate",
+                            "params": {"url": url},
+                        }
+                    )
+                )
+                ws.recv(timeout=timeout)
+                return True
+        except Exception:
+            return False
+
+
+def _cdp_eval_js(
+    ws_url: str, expression: str, await_promise: bool = True, timeout: float = 15.0
+) -> Any:
+    """Thực thi biểu thức JavaScript trực tiếp trong Tab Chrome thông qua CDP WebSocket (có khóa đồng bộ & chống ngủ nền mỗi tab)."""
+    if not ws_url:
+        return None
+    with _STATE_LOCK:
+        ws_lock = _WS_LOCKS.setdefault(ws_url, threading.Lock())
+    with ws_lock:
+        try:
+            if await_promise:
+                # Kích hoạt nhanh tab để Chrome không bao giờ làm chậm setTimeout bên trong Promise
+                parts = str(ws_url).rstrip("/").split("/")
+                tab_id = parts[-1] if parts else ""
+                port_str = "9232"
+                for seg in parts:
+                    if ":" in seg:
+                        port_str = seg.split(":")[-1]
+                if tab_id and len(tab_id) >= 16:
+                    try:
+                        requests.get(
+                            f"http://127.0.0.1:{port_str}/json/activate/{tab_id}",
+                            timeout=1.2,
+                        )
+                        time.sleep(0.05)
+                    except Exception:
+                        pass
+            with ws_connect(
+                ws_url, open_timeout=4.0, close_timeout=2.0, max_size=32 * 1024 * 1024
+            ) as ws:
+                msg_id = int(time.time() * 1000) % 1000000 + 1
+                payload = {
+                    "id": msg_id,
+                    "method": "Runtime.evaluate",
+                    "params": {
+                        "expression": expression,
+                        "returnByValue": True,
+                        "awaitPromise": await_promise,
+                    },
+                }
+                ws.send(json.dumps(payload))
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    raw = ws.recv(timeout=max(0.5, deadline - time.time()))
+                    data = json.loads(raw)
+                    if data.get("id") == msg_id:
+                        res = data.get("result", {}).get("result", {})
+                        return res.get("value")
+        except Exception:
+            pass
+    return None
+
+
+def _get_pids_using_profile(profile_dir: str, port: int) -> List[int]:
+    """Tìm các Process ID của cửa sổ Chrome thuộc về Profile/Port tương ứng."""
+    pids: List[int] = []
+    try:
+        norm_prof = os.path.normpath(profile_dir).lower()
+        ps_cmd = (
+            "Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe' OR Name = 'msedge.exe'\" | "
+            "Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress"
+        )
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        if res.stdout.strip():
+            items = json.loads(res.stdout.strip())
+            if isinstance(items, dict):
+                items = [items]
+            for it in items:
+                cmd = str(it.get("CommandLine") or "").lower()
+                pid = it.get("ProcessId")
+                if pid and (
+                    f"--remote-debugging-port={port}" in cmd or norm_prof in cmd
+                ):
+                    pids.append(int(pid))
+    except Exception:
+        pass
+    return pids
+
+
+def _move_chrome_windows_for_pids(
+    pids: List[int], visible: bool, bring_to_front: bool = False
+) -> int:
+    """Ẩn cửa sổ Chrome xuống tọa độ (-3200, -3200) hoặc đưa trở lại màn hình bằng Win32 API."""
+    if os.name != "nt" or not pids:
+        return 0
+    pid_set = set(pids)
+    moved_count = 0
+    try:
+        user32 = ctypes.windll.user32
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_long)
+
+        SW_RESTORE = 9
+        SWP_NOSIZE = 0x0001
+        SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
+        SWP_SHOWWINDOW = 0x0040
+
+        def enum_cb(hwnd, _lparam):
+            nonlocal moved_count
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            pid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pid_set:
+                if visible:
+                    user32.ShowWindow(hwnd, SW_RESTORE)
+                    user32.SetWindowPos(hwnd, 0, 90, 50, 1280, 860, SWP_SHOWWINDOW)
+                    if bring_to_front:
+                        user32.SetForegroundWindow(hwnd)
+                else:
+                    user32.ShowWindow(hwnd, SW_RESTORE)
+                    user32.SetWindowPos(
+                        hwnd,
+                        0,
+                        -3200,
+                        -3200,
+                        1280,
+                        860,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                moved_count += 1
+            return True
+
+        cb_func = WNDENUMPROC(enum_cb)
+        user32.EnumWindows(cb_func, 0)
+    except Exception:
+        pass
+    return moved_count
+
+
+def _set_single_port_cdp_window_bounds(
+    port: int, visible: bool = False, offset_idx: int = 0
+) -> int:
+    """Dùng trực tiếp CDP Browser.getWindowForTarget + Browser.setWindowBounds để ẩn/hiện cửa sổ ở (-3200, -3200) với windowState='normal'."""
+    changed = 0
+    tabs = _cdp_get_tabs(port, timeout=1.5) or []
+    for t in tabs:
+        ws_url = t.get("webSocketDebuggerUrl")
+        if not ws_url:
+            continue
+        try:
+            with ws_connect(ws_url, open_timeout=2.5, close_timeout=1.5) as ws:
+                ws.send(
+                    json.dumps(
+                        {"id": 1, "method": "Browser.getWindowForTarget", "params": {}}
+                    )
+                )
+                r = json.loads(ws.recv(timeout=2.0))
+                wid = (r.get("result") or {}).get("windowId")
+                if wid:
+                    ws.send(
+                        json.dumps(
+                            {
+                                "id": 2,
+                                "method": "Browser.setWindowBounds",
+                                "params": {
+                                    "windowId": wid,
+                                    "bounds": {"windowState": "normal"},
+                                },
+                            }
+                        )
+                    )
+                    ws.recv(timeout=2.0)
+                    if visible:
+                        left_pos = 50 + (offset_idx * 45)
+                        top_pos = 35 + (offset_idx * 35)
+                        ws.send(
+                            json.dumps(
+                                {
+                                    "id": 3,
+                                    "method": "Browser.setWindowBounds",
+                                    "params": {
+                                        "windowId": wid,
+                                        "bounds": {
+                                            "left": left_pos,
+                                            "top": top_pos,
+                                            "width": 1240,
+                                            "height": 860,
+                                        },
+                                    },
+                                }
+                            )
+                        )
+                        ws.recv(timeout=2.0)
+                        ws.send(
+                            json.dumps(
+                                {"id": 4, "method": "Page.bringToFront", "params": {}}
+                            )
+                        )
+                        ws.recv(timeout=2.0)
+                    else:
+                        ws.send(
+                            json.dumps(
+                                {
+                                    "id": 3,
+                                    "method": "Browser.setWindowBounds",
+                                    "params": {
+                                        "windowId": wid,
+                                        "bounds": {
+                                            "left": -3200,
+                                            "top": -3200,
+                                            "width": 1100,
+                                            "height": 850,
+                                        },
+                                    },
+                                }
+                            )
+                        )
+                        ws.recv(timeout=2.0)
+                    changed += 1
+                    break
+        except Exception:
+            pass
+    return changed
+
+
+def set_chrome_window_visibility(
+    visible: bool = True, acc_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Ẩn toàn bộ cửa sổ Chrome xuống chạy ngầm (-3200, -3200) hoặc hiện lại lên màn hình.
+    Chuẩn API #3 trong Master Blueprint V6.0 (kết hợp CDP Browser.setWindowBounds + Win32 API).
+    """
+    target_accs = (
+        [acc_id]
+        if acc_id and acc_id in ACCOUNTS_CONFIG
+        else list(ACCOUNTS_CONFIG.keys())
+    )
+    total_moved = 0
+    for idx, aid in enumerate(target_accs):
+        cfg = ACCOUNTS_CONFIG[aid]
+        with _STATE_LOCK:
+            _CHROME_HIDDEN_STATE[aid] = not bool(visible)
+        total_moved += _set_single_port_cdp_window_bounds(
+            cfg["port"], visible=bool(visible), offset_idx=idx
+        )
+        pids = _get_pids_using_profile(cfg["profile_dir"], cfg["port"])
+        total_moved += _move_chrome_windows_for_pids(
+            pids, visible=bool(visible), bring_to_front=bool(visible)
+        )
+
+    log_info(
+        f"Đã {'hiện lại' if visible else 'ẩn ngầm (-3200, -3200)'} cửa sổ Chrome ({total_moved} cửa sổ bị tác động).",
+        category="CHROME",
+    )
+    return {
+        "success": True,
+        "ok": True,
+        "visible": bool(visible),
+        "acc_id": acc_id,
+        "windows_affected": total_moved,
+        "hidden_state": dict(_CHROME_HIDDEN_STATE),
+    }
+
+
+def ensure_chrome_debug_browser_open(
+    open_chatgpt_home: bool = True,
+    force_bring_to_front: bool = True,
+    run_hidden: bool = False,
+    acc_id: str = "acc_1",
+    fast_if_already_open: bool = False,
+    manual_open: bool = False,
+) -> Dict[str, Any]:
+    """
+    Đảm bảo trình duyệt Chrome của tài khoản (acc_1 .. acc_5) đã mở với cổng CDP.
+    Nếu chưa mở sẽ khởi chạy Chrome với Profile riêng biệt.
+    Chuẩn API #2 trong Master Blueprint V6.0.
+    """
+    if acc_id not in ACCOUNTS_CONFIG:
+        acc_id = "acc_1"
+    cfg = ACCOUNTS_CONFIG[acc_id]
+    port = cfg["port"]
+    profile_dir = cfg["profile_dir"]
+    os.makedirs(profile_dir, exist_ok=True)
+
+    now_ts = time.time()
+    _LAST_ACTIVITY_TS_BY_ACC[acc_id] = now_ts
+    if manual_open:
+        _MANUAL_OPEN_TS_BY_ACC[acc_id] = now_ts
+    _start_idle_browser_auto_shutdown_watcher()
+
+    acc_lock = _ACC_TAB_LOCKS.setdefault(acc_id, threading.RLock())
+    with acc_lock:
+        tabs = _cdp_get_tabs(port)
+        already_running = tabs is not None
+
+        if already_running and fast_if_already_open:
+            return {
+                "success": True,
+                "acc_id": acc_id,
+                "label": cfg["label"],
+                "port": port,
+                "profile_dir": profile_dir,
+                "browser_open": True,
+                "open_tabs_count": len(tabs) if tabs else 0,
+            }
+
+        if tabs is None:
+            chrome_exe = find_chrome_executable()
+            start_url = CHATGPT_GUARD_URL if open_chatgpt_home else "about:blank"
+            pos_arg = f"--window-position={'-3200,-3200' if run_hidden else '90,50'}"
+            args = [
+                chrome_exe,
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={profile_dir}",
+                "--remote-allow-origins=*",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-popup-blocking",
+                pos_arg,
+                "--window-size=1280,860",
+                start_url,
+            ]
+            is_interactive_winsta0 = True
+            if os.name == "nt":
+                try:
+                    import ctypes
+
+                    u32 = ctypes.windll.user32
+                    h_winsta = u32.GetProcessWindowStation()
+                    buf = ctypes.create_unicode_buffer(128)
+                    needed = ctypes.c_ulong(0)
+                    if u32.GetUserObjectInformationW(
+                        h_winsta, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed)
+                    ):
+                        winsta_name = (buf.value or "").strip()
+                        if winsta_name and "winsta0" not in winsta_name.lower():
+                            is_interactive_winsta0 = False
+                except Exception:
+                    is_interactive_winsta0 = True
+
+            launched_via_it = False
+            if os.name == "nt" and not is_interactive_winsta0:
+                try:
+                    bat_dir = os.path.join(
+                        os.environ.get("LOCALAPPDATA") or str(ROOT_DIR),
+                        "Mexico_Ong_Gia_Studio",
+                    )
+                    os.makedirs(bat_dir, exist_ok=True)
+                    bat_path = os.path.join(bat_dir, f"launch_chrome_{acc_id}.bat")
+                    with open(bat_path, "w", encoding="utf-8") as bf:
+                        bf.write(
+                            f'@echo off\r\n"{chrome_exe}" '
+                            f'--remote-debugging-port={port} --user-data-dir="{profile_dir}" '
+                            f"--remote-allow-origins=* --no-first-run --no-default-browser-check "
+                            f"--disable-blink-features=AutomationControlled "
+                            f"--disable-background-timer-throttling --disable-backgrounding-occluded-windows "
+                            f"--disable-renderer-backgrounding --disable-popup-blocking "
+                            f'--new-window {pos_arg} --window-size=1280,860 "{start_url}"\r\n'
+                        )
+                    task_name = f"DramaNhatStudio_Chrome_{acc_id}"
+                    subprocess.run(
+                        [
+                            "schtasks",
+                            "/Create",
+                            "/TN",
+                            task_name,
+                            "/TR",
+                            bat_path,
+                            "/SC",
+                            "ONCE",
+                            "/ST",
+                            "00:00",
+                            "/IT",
+                            "/F",
+                        ],
+                        capture_output=True,
+                        timeout=4,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    subprocess.run(
+                        ["schtasks", "/Run", "/TN", task_name],
+                        capture_output=True,
+                        timeout=4,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    for _ in range(18):
+                        time.sleep(0.35)
+                        tabs = _cdp_get_tabs(port)
+                        if tabs is not None:
+                            launched_via_it = True
+                            break
+                except Exception:
+                    launched_via_it = False
+
+            if not launched_via_it and tabs is None:
+                subprocess.Popen(
+                    args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                    if os.name == "nt"
+                    else 0,
+                )
+                for _ in range(30):
+                    time.sleep(0.35)
+                    tabs = _cdp_get_tabs(port)
+                    if tabs is not None:
+                        break
+
+    with _STATE_LOCK:
+        _CHROME_HIDDEN_STATE[acc_id] = bool(run_hidden)
+
+    if tabs is not None:
+        has_chatgpt = any("chatgpt.com" in (t.get("url") or "") for t in tabs)
+        if open_chatgpt_home and not has_chatgpt:
+            blank_tab = next(
+                (t for t in tabs if (t.get("url") or "").startswith("about:blank")),
+                None,
+            )
+            if blank_tab and blank_tab.get("webSocketDebuggerUrl"):
+                _cdp_navigate(
+                    blank_tab["webSocketDebuggerUrl"], CHATGPT_GUARD_URL, timeout=2.5
+                )
+                time.sleep(0.35)
+                tabs = _cdp_get_tabs(port) or tabs
+            else:
+                try:
+                    resp_new = requests.put(
+                        f"http://127.0.0.1:{port}/json/new?https://chatgpt.com/?studio_login_guard=1",
+                        timeout=3,
+                    )
+                    if resp_new.status_code == 200:
+                        t_info = resp_new.json()
+                        if t_info.get("webSocketDebuggerUrl"):
+                            _install_chatgpt_tab_protection_js(
+                                t_info["webSocketDebuggerUrl"]
+                            )
+                    tabs = _cdp_get_tabs(port) or tabs
+                except Exception:
+                    pass
+        for t in tabs or []:
+            t_url = t.get("url") or ""
+            t_ws = t.get("webSocketDebuggerUrl")
+            if t_ws and ("chatgpt.com" in t_url or "openai.com" in t_url):
+                _install_chatgpt_tab_protection_js(t_ws)
+
+    if not already_running or force_bring_to_front or run_hidden:
+        _set_single_port_cdp_window_bounds(port, visible=not run_hidden)
+        pids = _get_pids_using_profile(profile_dir, port)
+        if run_hidden:
+            _move_chrome_windows_for_pids(pids, visible=False, bring_to_front=False)
+        elif force_bring_to_front:
+            _move_chrome_windows_for_pids(pids, visible=True, bring_to_front=True)
+
+    _STATUS_CACHE["ts"] = 0.0
+    log_info(
+        f"Đã mở trình duyệt {cfg['label']} (Cổng {port} | Profile: {profile_dir} | Số tab: {len(tabs) if tabs else 0})",
+        category="CHROME",
+    )
+    return {
+        "success": tabs is not None,
+        "acc_id": acc_id,
+        "label": cfg["label"],
+        "port": port,
+        "profile_dir": profile_dir,
+        "browser_open": tabs is not None,
+        "open_tabs_count": len(tabs) if tabs else 0,
+    }
+
+
+def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
+    """
+    Kiểm tra trạng thái đăng nhập, email và danh sách tab của 1 tài khoản ChatGPT Web.
+    - Nếu Chrome đang TẮT (`tabs is None`): Vẫn đọc trạng thái đăng nhập đã lưu từ ổ cứng (`saved_logged_in`, `user_email`)
+      để giao diện và bộ lập lịch biết chính xác tài khoản nào đã login mà KHÔNG CẦN mở Chrome!
+    - Nếu Chrome đang MỞ: Kiểm tra trực tiếp phiên đăng nhập qua `/api/auth/session` và tự động lưu lại vào ổ cứng.
+    """
+    cfg = ACCOUNTS_CONFIG[acc_id]
+    port = cfg["port"]
+    tabs = _cdp_get_tabs(port, timeout=1.0)
+    with _STATE_LOCK:
+        active_map = dict(_ACTIVE_JOBS_BY_ACC.get(acc_id, {}))
+        pending_set = set(_PENDING_PROJECTS_BY_ACC.get(acc_id, set()))
+        is_hidden = bool(_CHROME_HIDDEN_STATE.get(acc_id, False))
+    all_active_projects = list(
+        dict.fromkeys(list(active_map.values()) + list(pending_set))
+    )
+
+    saved_disk_info = _load_saved_account_login_info(acc_id)
+    saved_logged_in = bool(
+        saved_disk_info.get("logged_in") and saved_disk_info.get("user_email")
+    )
+    saved_email = str(saved_disk_info.get("user_email") or "")
+    saved_plan = str(saved_disk_info.get("plan_type") or "")
+    in_cd, rem_cd_sec, cd_reason = is_account_in_cooldown(acc_id)
+
+    if tabs is None:
+        _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
+        return {
+            "acc_id": acc_id,
+            "label": cfg["label"],
+            "port": port,
+            "browser_open": False,
+            "browser_running": False,
+            "logged_in": saved_logged_in,
+            "saved_logged_in": saved_logged_in,
+            "email": (saved_email if saved_logged_in else "Chưa đăng nhập"),
+            "user_email": (saved_email if saved_logged_in else ""),
+            "plan_type": saved_plan,
+            "open_tabs_count": 0,
+            "chatgpt_tabs": 0,
+            "active_threads": len(all_active_projects),
+            "max_threads": MAX_THREADS_PER_ACCOUNT,
+            "active_projects": all_active_projects,
+            "hidden": is_hidden,
+            "in_cooldown": in_cd,
+            "cooldown_remaining_sec": rem_cd_sec,
+            "cooldown_reason": cd_reason,
+        }
+
+    chatgpt_tabs = [
+        t
+        for t in tabs
+        if "chatgpt.com" in (t.get("url") or "") or "openai.com" in (t.get("url") or "")
+    ]
+    gemini_tabs = [t for t in tabs if "gemini.google.com" in (t.get("url") or "")]
+    if not chatgpt_tabs and not gemini_tabs and tabs:
+        first_ws = tabs[0].get("webSocketDebuggerUrl")
+        now_nav = time.time()
+        if (
+            first_ws
+            and (tabs[0].get("url") or "").startswith("about:blank")
+            and (now_nav - _LAST_BLANK_NAV_TS_BY_PORT.get(port, 0.0)) > 25.0
+        ):
+            _LAST_BLANK_NAV_TS_BY_PORT[port] = now_nav
+            _cdp_navigate(first_ws, CHATGPT_GUARD_URL, timeout=2.5)
+            time.sleep(0.6)
+            tabs = _cdp_get_tabs(port, timeout=1.2) or tabs
+            chatgpt_tabs = [
+                t
+                for t in tabs
+                if "chatgpt.com" in (t.get("url") or "")
+                or "openai.com" in (t.get("url") or "")
+            ]
+
+    for ct in chatgpt_tabs:
+        ct_ws = ct.get("webSocketDebuggerUrl")
+        ct_url = ct.get("url") or ""
+        if ct_ws and "studio_login_guard" not in ct_url:
+            _install_chatgpt_tab_protection_js(ct_ws)
+
+    has_active_conv_url = any("/c/" in (t.get("url") or "") for t in chatgpt_tabs)
+    logged_in = False
+    email_or_user = "Chưa đăng nhập"
+
+    if chatgpt_tabs:
+        cached_login = _LAST_VERIFIED_LOGIN_BY_PORT.get(port)
+        if (
+            cached_login
+            and cached_login.get("logged_in")
+            and (
+                all_active_projects
+                or has_active_conv_url
+                or (time.time() - float(cached_login.get("ts") or 0)) < 25.0
+            )
+        ):
+            email_val = (
+                cached_login.get("user_email")
+                or cached_login.get("email")
+                or saved_email
+                or "Đã đăng nhập ChatGPT"
+            )
+            return {
+                "acc_id": acc_id,
+                "label": cfg["label"],
+                "port": port,
+                "browser_open": True,
+                "browser_running": True,
+                "logged_in": True,
+                "saved_logged_in": True,
+                "email": email_val,
+                "user_email": email_val,
+                "plan_type": str(cached_login.get("plan_type") or saved_plan),
+                "open_tabs_count": len(chatgpt_tabs) + len(gemini_tabs),
+                "chatgpt_tabs": len(chatgpt_tabs),
+                "total_tabs_count": len(tabs),
+                "active_threads": len(all_active_projects),
+                "max_threads": MAX_THREADS_PER_ACCOUNT,
+                "active_projects": all_active_projects,
+                "hidden": is_hidden,
+                "in_cooldown": in_cd,
+                "cooldown_remaining_sec": rem_cd_sec,
+                "cooldown_reason": cd_reason,
+            }
+
+        target_tab = chatgpt_tabs[0]
+        ws_url = target_tab.get("webSocketDebuggerUrl")
+        _install_chatgpt_tab_protection_js(ws_url)
+        js_check = r"""
+        (async () => {
+            try {
+                const r = await fetch('/api/auth/session', { credentials: 'include' });
+                if (r.ok) {
+                    const d = await r.json();
+                    const tok = (d && d.accessToken) ? d.accessToken : '';
+                    if (tok) window.__studioAccessToken = tok;
+                    const u = (d && d.user) ? d.user : {};
+                    if (tok || u.email) {
+                        return {
+                            logged_in: true,
+                            user: u.email || u.name || 'Đã đăng nhập ChatGPT',
+                            plan: (d.account && d.account.planType) || ''
+                        };
+                    }
+                    return { logged_in: false, user: 'Chưa đăng nhập ChatGPT' };
+                }
+            } catch (e) {}
+            try {
+                const url = location.href || "";
+                if (url.includes("/auth/login") || url.includes("auth0.openai.com")) {
+                    return { logged_in: false, user: "Đang ở trang Login" };
+                }
+                const loginBtn = document.querySelector('[data-testid="login-button"], [data-testid="mobile-login-button"]')
+                    || Array.from(document.querySelectorAll('button, a')).find(el => /^(log in|sign up|sign up for free|đăng nhập)$/i.test((el.innerText || '').trim()));
+                if (loginBtn) {
+                    return { logged_in: false, user: "Chưa đăng nhập" };
+                }
+                const profileBtn = document.querySelector(
+                    '[data-testid="profile-button"], button[aria-label*="profile" i], button[aria-label*="Open profile" i], img[alt*="User" i]'
+                );
+                let email = "";
+                try {
+                    const scripts = Array.from(document.querySelectorAll('script'));
+                    for (const s of scripts) {
+                        const txt = s.textContent || "";
+                        const m = txt.match(/"email"\s*:\s*"([^"@]+@[^"]+)"/);
+                        if (m && m[1]) { email = m[1]; break; }
+                    }
+                } catch (e) {}
+                if (profileBtn || email) {
+                    return { logged_in: true, user: email || "Đã đăng nhập ChatGPT" };
+                }
+                return { logged_in: false, user: "Đang tải trang..." };
+            } catch (err) {
+                return { logged_in: false, user: "Không rõ" };
+            }
+        })()
+        """
+        info = _cdp_eval_js(ws_url, js_check, await_promise=True, timeout=3.5)
+        if isinstance(info, dict):
+            logged_in = bool(info.get("logged_in") or has_active_conv_url)
+            raw_user = str(info.get("user") or "").strip()
+            email_or_user = str(
+                raw_user
+                or (saved_email if logged_in else "")
+                or ("Đã đăng nhập" if logged_in else "Chưa đăng nhập")
+            )
+            if logged_in:
+                plan_val = str(info.get("plan") or saved_plan or "")
+                new_cache = {
+                    "logged_in": True,
+                    "user_email": email_or_user,
+                    "plan_type": plan_val,
+                    "ts": time.time(),
+                }
+                _LAST_VERIFIED_LOGIN_BY_PORT[port] = new_cache
+                _save_account_login_info(acc_id, True, email_or_user, plan_val)
+                saved_logged_in = True
+                saved_email = email_or_user
+            else:
+                _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
+                if raw_user in (
+                    "Chưa đăng nhập",
+                    "Chưa đăng nhập ChatGPT",
+                    "Đang ở trang Login",
+                ):
+                    _save_account_login_info(acc_id, False, "", "")
+                    saved_logged_in = False
+                    saved_email = ""
+                elif saved_logged_in and raw_user in (
+                    "Đang tải trang...",
+                    "Không rõ",
+                    "",
+                ):
+                    logged_in = True
+                    email_or_user = saved_email
+        elif (
+            has_active_conv_url
+            or (cached_login and cached_login.get("logged_in"))
+            or saved_logged_in
+        ):
+            logged_in = True
+            email_or_user = (
+                (cached_login or {}).get("user_email")
+                or saved_email
+                or "Đã đăng nhập ChatGPT"
+            )
+    elif gemini_tabs:
+        gem_ws = gemini_tabs[0].get("webSocketDebuggerUrl")
+        gem_info = _cdp_eval_js(
+            gem_ws,
+            r"""
+            (() => {
+                const signedOutEl = document.querySelector('[data-test-id="signed-out-disclaimer"], a[href*="ServiceLogin"]');
+                const avatarEl = document.querySelector('a[aria-label*="Google Account" i], a[aria-label*="Tài khoản Google" i], a[aria-label*="@"]');
+                const hint = avatarEl ? (avatarEl.getAttribute('aria-label') || '') : '';
+                const m = hint.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+                const modeBtn = document.querySelector('[data-test-id="bard-mode-menu-button"], bard-mode-switcher button');
+                const modeTxt = modeBtn ? (modeBtn.innerText || '').trim() : '';
+                return {
+                    logged_in: !signedOutEl && Boolean(avatarEl || modeBtn),
+                    email: m ? m[1] : (modeTxt ? ('Gemini Pro (' + modeTxt + ')') : 'Đã đăng nhập Gemini')
+                };
+            })()
+            """,
+            await_promise=False,
+            timeout=2.5,
+        )
+        if isinstance(gem_info, dict) and gem_info.get("logged_in"):
+            logged_in = True
+            email_or_user = str(gem_info.get("email") or "Đã đăng nhập Gemini Pro")
+        else:
+            email_or_user = "Đang mở Gemini Web"
+    else:
+        if saved_logged_in:
+            logged_in = True
+            email_or_user = saved_email
+        else:
+            email_or_user = "Chưa mở tab ChatGPT/Gemini"
+
+    return {
+        "acc_id": acc_id,
+        "label": cfg["label"],
+        "port": port,
+        "browser_open": True,
+        "browser_running": True,
+        "logged_in": logged_in,
+        "saved_logged_in": bool(logged_in or saved_logged_in),
+        "email": email_or_user,
+        "user_email": email_or_user
+        if logged_in
+        else (saved_email if saved_logged_in else ""),
+        "plan_type": saved_plan,
+        "open_tabs_count": len(chatgpt_tabs) + len(gemini_tabs),
+        "chatgpt_tabs": len(chatgpt_tabs),
+        "total_tabs_count": len(tabs),
+        "active_threads": len(all_active_projects),
+        "max_threads": MAX_THREADS_PER_ACCOUNT,
+        "active_projects": all_active_projects,
+        "hidden": is_hidden,
+        "in_cooldown": in_cd,
+        "cooldown_remaining_sec": rem_cd_sec,
+        "cooldown_reason": cd_reason,
+    }
+
+
+def _profile_has_saved_chatgpt_login(
+    profile_dir: str, acc_id: Optional[str] = None
+) -> bool:
+    """
+    Kiểm tra chính xác trên ổ cứng xem Profile/Account này đã từng đăng nhập tài khoản ChatGPT thật hay chưa.
+    TUYỆT ĐỐI KHÔNG đoán mò qua dung lượng file Cookies (vì trang login chưa đăng nhập cũng tạo file Cookies > 45KB).
+    """
+    try:
+        if acc_id and acc_id in ACCOUNTS_CONFIG:
+            st = _load_saved_account_login_info(acc_id)
+            return bool(st.get("logged_in") and st.get("user_email"))
+        norm_target = os.path.normpath(profile_dir).lower()
+        for aid, cfg in ACCOUNTS_CONFIG.items():
+            if os.path.normpath(cfg["profile_dir"]).lower() == norm_target:
+                st = _load_saved_account_login_info(aid)
+                return bool(st.get("logged_in") and st.get("user_email"))
+        info_path = os.path.join(profile_dir, ".studio_account_info.json")
+        if os.path.exists(info_path):
+            with open(info_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            email_val = str(data.get("user_email") or data.get("email") or "").strip()
+            if (
+                data.get("logged_in")
+                and email_val
+                and email_val not in ("Chưa đăng nhập", "Chưa mở Chrome")
+            ):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def close_chatgpt_browser(acc_id: str, only_if_idle: bool = False) -> Dict[str, Any]:
+    """
+    Đóng hoàn toàn tiến trình trình duyệt Chrome của 1 tài khoản (`acc_id`) khi không còn sử dụng ChatGPT
+    để giải phóng RAM/CPU. Trạng thái đăng nhập (`saved_logged_in`, `user_email`) vẫn được giữ nguyên trên ổ cứng.
+    """
+    if acc_id not in ACCOUNTS_CONFIG:
+        return {
+            "success": False,
+            "closed": False,
+            "acc_id": acc_id,
+            "reason": "INVALID_ACC",
+        }
+    cfg = ACCOUNTS_CONFIG[acc_id]
+    port = cfg["port"]
+    profile_dir = cfg["profile_dir"]
+
+    with _STATE_LOCK:
+        active_jobs = dict(_ACTIVE_JOBS_BY_ACC.get(acc_id, {}))
+        pending_projs = set(_PENDING_PROJECTS_BY_ACC.get(acc_id, set()))
+
+    if only_if_idle and (active_jobs or pending_projs):
+        return {
+            "success": True,
+            "closed": False,
+            "acc_id": acc_id,
+            "reason": "BUSY",
+            "active_projects": list(active_jobs.values()) + list(pending_projs),
+        }
+
+    tabs = _cdp_get_tabs(port, timeout=0.8)
+    pids = _get_pids_using_profile(profile_dir, port)
+    if tabs is None and not pids:
+        with _STATE_LOCK:
+            _ACTIVE_JOBS_BY_ACC.get(acc_id, {}).clear()
+            _PENDING_PROJECTS_BY_ACC.get(acc_id, set()).clear()
+            _MANUAL_OPEN_TS_BY_ACC[acc_id] = 0.0
+        _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
+        _STATUS_CACHE["ts"] = 0.0
+        return {
+            "success": True,
+            "closed": False,
+            "acc_id": acc_id,
+            "reason": "ALREADY_CLOSED",
+        }
+
+    # Trước khi tắt, nếu đang mở thì cập nhật nhanh trạng thái login lần cuối để lưu email mới đăng nhập (nếu có)
+    if tabs:
+        try:
+            _inspect_account_login_state(acc_id)
+        except Exception:
+            pass
+        for t in tabs:
+            ws_url = t.get("webSocketDebuggerUrl")
+            if ws_url:
+                try:
+                    with ws_connect(ws_url, open_timeout=1.2, close_timeout=0.8) as ws:
+                        ws.send(
+                            json.dumps(
+                                {"id": 99, "method": "Browser.close", "params": {}}
+                            )
+                        )
+                    break
+                except Exception:
+                    pass
+        time.sleep(0.35)
+
+    pids = _get_pids_using_profile(profile_dir, port)
+    for pid in pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        except Exception:
+            pass
+
+    with _STATE_LOCK:
+        _ACTIVE_JOBS_BY_ACC.get(acc_id, {}).clear()
+        _PENDING_PROJECTS_BY_ACC.get(acc_id, set()).clear()
+        _MANUAL_OPEN_TS_BY_ACC[acc_id] = 0.0
+    _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
+    _STATUS_CACHE["ts"] = 0.0
+    log_info(
+        f"🛑 Đã tắt trình duyệt {cfg['label']} (Cổng {port}) khi không sử dụng ChatGPT.",
+        category="CHROME",
+    )
+    return {"success": True, "closed": True, "acc_id": acc_id, "port": port}
+
+
+def close_all_chatgpt_browsers(
+    acc_id: Optional[str] = None,
+    only_if_idle: bool = False,
+    reason: str = "",
+) -> Dict[str, Any]:
+    """
+    Đóng toàn bộ (hoặc 1) trình duyệt Chrome ChatGPT để giải phóng RAM khi không sử dụng ChatGPT.
+    """
+    target_accs = (
+        [acc_id] if (acc_id and acc_id in ACCOUNTS_CONFIG) else list(CHATGPT_ACCOUNTS)
+    )
+    closed_accs: List[str] = []
+    skipped_busy: List[str] = []
+    for aid in target_accs:
+        res = close_chatgpt_browser(aid, only_if_idle=only_if_idle)
+        if res.get("closed"):
+            closed_accs.append(aid)
+        elif res.get("reason") == "BUSY":
+            skipped_busy.append(aid)
+
+    _STATUS_CACHE["ts"] = 0.0
+    if closed_accs:
+        reason_str = f" ({reason})" if reason else ""
+        log_info(
+            f"🛑 Đã đóng {len(closed_accs)} trình duyệt Chrome ChatGPT: {closed_accs}{reason_str}",
+            category="CHROME",
+        )
+    return {
+        "success": True,
+        "closed_accounts": closed_accs,
+        "closed_count": len(closed_accs),
+        "skipped_busy": skipped_busy,
+        "reason": reason,
+    }
+
+
+def _start_idle_browser_auto_shutdown_watcher() -> None:
+    """
+    Luồng ngầm tự động:
+    1. Khi người dùng mở Chrome thủ công để đăng nhập: Tự động phát hiện ngay khi đăng nhập xong để lưu Email vào ổ cứng.
+    2. Khi tiến trình tự động (viết kịch bản / vẽ thumbnail) đã xong và không còn tác vụ ChatGPT nào chạy trong 45 giây:
+       Tự động tắt trình duyệt Chrome để không ngốn RAM vô ích.
+    """
+    global _IDLE_WATCHER_STARTED
+    with _STATE_LOCK:
+        if _IDLE_WATCHER_STARTED:
+            return
+        _IDLE_WATCHER_STARTED = True
+
+    def _watcher_loop():
+        while True:
+            time.sleep(10.0)
+            try:
+                now = time.time()
+                for aid in CHATGPT_ACCOUNTS:
+                    cfg = ACCOUNTS_CONFIG[aid]
+                    port = cfg["port"]
+                    tabs = _cdp_get_tabs(port, timeout=0.6)
+                    if tabs is None:
+                        continue
+                    with _STATE_LOCK:
+                        busy_now = bool(
+                            _ACTIVE_JOBS_BY_ACC.get(aid)
+                            or _PENDING_PROJECTS_BY_ACC.get(aid)
+                        )
+                        last_act = float(_LAST_ACTIVITY_TS_BY_ACC.get(aid) or 0.0)
+                        manual_ts = float(_MANUAL_OPEN_TS_BY_ACC.get(aid) or 0.0)
+                    if busy_now:
+                        _LAST_ACTIVITY_TS_BY_ACC[aid] = now
+                        continue
+                    # Nếu đang mở thủ công để login: quét trạng thái để lưu ngay khi user vừa đăng nhập xong
+                    if manual_ts > 0 and (now - manual_ts) < 300.0:
+                        try:
+                            _inspect_account_login_state(aid)
+                        except Exception:
+                            pass
+                        continue
+                    # Nếu mở bởi hệ thống tự động (hoặc đã quá 5 phút mở thủ công không dùng) và đã rảnh > 45 giây -> Tự động tắt Chrome!
+                    idle_sec = now - max(last_act, manual_ts)
+                    if idle_sec >= 45.0:
+                        close_chatgpt_browser(aid, only_if_idle=True)
+            except Exception:
+                pass
+
+    t = threading.Thread(
+        target=_watcher_loop, daemon=True, name="ChatGPTChromeIdleShutdownWatcher"
+    )
+    t.start()
+
+
+def ensure_all_saved_chatgpt_accounts_open(
+    run_hidden: bool = False,
+    max_accounts: Optional[int] = None,
+    open_browsers_now: bool = False,
+) -> List[str]:
+    """
+    Trả về danh sách các tài khoản (trong tối đa 5 Acc: acc_1 .. acc_5) ĐÃ ĐĂNG NHẬP và lưu trên ổ cứng.
+    - TUYỆT ĐỐI KHÔNG BAO GIỜ mở các tài khoản chưa đăng nhập!
+    - Mặc định `open_browsers_now=False`: Chỉ trả về danh sách các Acc đã lưu đăng nhập, chỉ khi nào luồng viết kịch bản
+      thực sự dùng đến Acc nào thì `ChatGPTWebSession.open_session_tab()` mới bật Chrome của đúng Acc đó lên!
+    """
+    saved_logged_accs: List[str] = []
+    for aid in CHATGPT_ACCOUNTS:
+        cfg = ACCOUNTS_CONFIG[aid]
+        prof = cfg["profile_dir"]
+        if _profile_has_saved_chatgpt_login(prof, aid):
+            saved_logged_accs.append(aid)
+        else:
+            # Kiểm tra nếu trình duyệt của acc này đang mở sẵn và đã login
+            tabs = _cdp_get_tabs(cfg["port"], timeout=0.5)
+            if tabs is not None:
+                st = _inspect_account_login_state(aid)
+                if st.get("logged_in"):
+                    saved_logged_accs.append(aid)
+
+    if open_browsers_now and saved_logged_accs:
+        target_to_open = (
+            saved_logged_accs[:max_accounts]
+            if (max_accounts and max_accounts > 0)
+            else saved_logged_accs
+        )
+        for aid in target_to_open:
+            cfg = ACCOUNTS_CONFIG[aid]
+            tabs = _cdp_get_tabs(cfg["port"], timeout=0.6)
+            if tabs is None:
+                ensure_chrome_debug_browser_open(
+                    open_chatgpt_home=True,
+                    force_bring_to_front=False,
+                    run_hidden=run_hidden,
+                    acc_id=aid,
+                    fast_if_already_open=True,
+                )
+                time.sleep(0.5)
+
+    return saved_logged_accs
+
+
+def check_all_web_accounts_status(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Kiểm tra trạng thái toàn bộ 5 tài khoản (Acc #1 .. Acc #5).
+    Ngay cả khi Chrome đang tắt, vẫn trả về chính xác `saved_logged_in` và `email` đã lưu.
+    """
+    now = time.time()
+    if (
+        not force_refresh
+        and _STATUS_CACHE["data"]
+        and (now - _STATUS_CACHE["ts"] < 2.5)
+    ):
+        return _STATUS_CACHE["data"]
+
+    accounts = {}
+    any_hidden = False
+    any_open = False
+    saved_count = 0
+    for aid in CHATGPT_ACCOUNTS:
+        st = _inspect_account_login_state(aid)
+        accounts[aid] = st
+        if st.get("browser_open"):
+            any_open = True
+        if st.get("hidden"):
+            any_hidden = True
+        if st.get("saved_logged_in") or st.get("logged_in"):
+            saved_count += 1
+
+    result = {
+        "success": True,
+        "accounts": accounts,
+        "max_accounts": len(CHATGPT_ACCOUNTS),
+        "saved_accounts_count": saved_count,
+        "any_browser_open": any_open,
+        "chrome_hidden": any_hidden,
+        "timestamp": int(now),
+    }
+    _STATUS_CACHE["ts"] = now
+    _STATUS_CACHE["data"] = result
+    return result
+
+
+def _close_inactive_tabs_on_account(
+    acc_id: str, keep_tab_id: Optional[str] = None
+) -> int:
+    """
+    Đóng ngay lập tức toàn bộ các Tab không hoạt động (inactive / đã xong bước trước / dư thừa)
+    trên trình duyệt Chrome của tài khoản `acc_id`.
+    """
+    if acc_id not in ACCOUNTS_CONFIG:
+        return 0
+    port = ACCOUNTS_CONFIG[acc_id]["port"]
+    tabs = _cdp_get_tabs(port, timeout=1.5)
+    if not tabs:
+        return 0
+
+    existing_ids = {t.get("id") for t in tabs if t.get("id")}
+    with _STATE_LOCK:
+        acc_jobs = _ACTIVE_JOBS_BY_ACC.setdefault(acc_id, {})
+        for tid in list(acc_jobs.keys()):
+            if tid not in existing_ids:
+                acc_jobs.pop(tid, None)
+        protected_ids = set(acc_jobs.keys())
+        if keep_tab_id:
+            protected_ids.add(keep_tab_id)
+
+    guarded_ids = [
+        t.get("id")
+        for t in tabs
+        if (
+            "gemini.google.com" in (t.get("url") or "")
+            or "studio_login_guard" in (t.get("url") or "")
+        )
+        and t.get("id")
+    ]
+    for gid in guarded_ids[:MAX_THREADS_PER_ACCOUNT]:
+        protected_ids.add(gid)
+
+    if not protected_ids and tabs:
+        first_chatgpt = next(
+            (t.get("id") for t in tabs if "chatgpt.com" in (t.get("url") or "")), None
+        )
+        protected_ids.add(first_chatgpt or tabs[0].get("id"))
+
+    closed_count = 0
+    for t in tabs:
+        tid = t.get("id")
+        if not tid or tid in protected_ids:
+            continue
+        if (len(tabs) - closed_count) <= 1:
+            break
+        try:
+            ws = t.get("webSocketDebuggerUrl")
+            if ws:
+                _cdp_eval_js(
+                    ws,
+                    "window.onbeforeunload = null; true;",
+                    await_promise=False,
+                    timeout=0.8,
+                )
+            requests.get(f"http://127.0.0.1:{port}/json/close/{tid}", timeout=1.5)
+            closed_count += 1
+        except Exception:
+            pass
+
+    _STATUS_CACHE["ts"] = 0.0
+    return closed_count
+
+
+def sweep_completed_and_idle_tabs_across_all_accounts(
+    close_idle_browsers: bool = False,
+) -> Dict[str, Any]:
+    """
+    Đóng toàn bộ các Tab kịch bản đã hoàn thành / không hoạt động trên các tài khoản.
+    Nếu `close_idle_browsers=True`, tắt luôn cửa sổ Chrome của tài khoản nào không còn tác vụ đang chạy.
+    """
+    closed_total = 0
+    details: Dict[str, int] = {}
+    closed_browsers: List[str] = []
+
+    for aid in CHATGPT_ACCOUNTS:
+        closed_acc = _close_inactive_tabs_on_account(aid, keep_tab_id=None)
+        details[aid] = closed_acc
+        closed_total += closed_acc
+        if close_idle_browsers:
+            res_b = close_chatgpt_browser(aid, only_if_idle=True)
+            if res_b.get("closed"):
+                closed_browsers.append(aid)
+
+    _STATUS_CACHE["ts"] = 0.0
+    log_info(
+        f"Đã dọn sạch {closed_total} tab không hoạt động (Đóng trình duyệt rảnh: {closed_browsers}).",
+        category="CHROME",
+    )
+    return {
+        "success": True,
+        "closed_tabs": closed_total,
+        "closed_browsers": closed_browsers,
+        "by_account": details,
+        "message": f"Đã dọn sạch {closed_total} tab không hoạt động!",
+    }
+
+
+def select_best_available_account(
+    preferred_acc_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    exclude_accs: Optional[set] = None,
+) -> str:
+    """
+    Chọn tài khoản ChatGPT ĐÃ ĐĂNG NHẬP (lưu trên ổ cứng), KHÔNG bị tạm dừng Limit 30 phút và đang rảnh nhất
+    (Load Balancing + Automatic Failover giữa tối đa 5 Acc: acc_1 .. acc_5).
+    TUYỆT ĐỐI KHÔNG tự ý chọn hoặc mở những Acc chưa đăng nhập!
+    """
+    global _ROUND_ROBIN_IDX
+    excl = set(exclude_accs or set())
+
+    status_all = check_all_web_accounts_status(force_refresh=False).get("accounts", {})
+    logged_in_accs = [
+        aid
+        for aid in CHATGPT_ACCOUNTS
+        if status_all.get(aid, {}).get("logged_in")
+        or status_all.get(aid, {}).get("saved_logged_in")
+    ]
+    if not logged_in_accs:
+        logged_in_accs = ensure_all_saved_chatgpt_accounts_open(
+            run_hidden=False, open_browsers_now=False
+        )
+
+    # Nếu có preferred_acc_id, đã đăng nhập, KHÔNG bị loại trừ và KHÔNG đang trong 30 phút tạm dừng Limit thì dùng luôn
+    if (
+        preferred_acc_id
+        and preferred_acc_id in ACCOUNTS_CONFIG
+        and preferred_acc_id not in excl
+        and (
+            preferred_acc_id in logged_in_accs
+            or status_all.get(preferred_acc_id, {}).get("browser_open")
+        )
+    ):
+        in_cd, _, _ = is_account_in_cooldown(preferred_acc_id)
+        if not in_cd:
+            if project_id:
+                with _STATE_LOCK:
+                    for aid in _PENDING_PROJECTS_BY_ACC:
+                        _PENDING_PROJECTS_BY_ACC[aid].discard(project_id)
+                    _PENDING_PROJECTS_BY_ACC.setdefault(preferred_acc_id, set()).add(
+                        project_id
+                    )
+            return preferred_acc_id
+
+    # Ưu tiên 1: Các tài khoản ĐÃ ĐĂNG NHẬP, KHÔNG nằm trong danh sách loại trừ (excl) và KHÔNG bị tạm dừng 30p (cooldown)
+    ready_accs = [
+        aid
+        for aid in logged_in_accs
+        if aid not in excl and not is_account_in_cooldown(aid)[0]
+    ]
+    # Ưu tiên 2: Nếu mọi tài khoản ngoài excl đều đang tạm dừng, lấy tài khoản ĐÃ ĐĂNG NHẬP không bị cooldown
+    if not ready_accs:
+        ready_accs = [
+            aid for aid in logged_in_accs if not is_account_in_cooldown(aid)[0]
+        ]
+    # Ưu tiên 3: Nếu tất cả các nick ĐÃ ĐĂNG NHẬP đều đang trong 30p cooldown, chọn nick ĐÃ ĐĂNG NHẬP có thời gian chờ ngắn nhất
+    if not ready_accs and logged_in_accs:
+        cand_pool = [aid for aid in logged_in_accs if aid not in excl] or list(
+            logged_in_accs
+        )
+        cand_pool.sort(key=lambda a: is_account_in_cooldown(a)[1])
+        ready_accs = [cand_pool[0]]
+
+    if ready_accs:
+        with _STATE_LOCK:
+            if project_id:
+                for aid in _PENDING_PROJECTS_BY_ACC:
+                    _PENDING_PROJECTS_BY_ACC[aid].discard(project_id)
+
+            def _live_load(a: str) -> int:
+                act_projs = set(_ACTIVE_JOBS_BY_ACC.get(a, {}).values())
+                pend_projs = set(_PENDING_PROJECTS_BY_ACC.get(a, set()))
+                return len(act_projs | pend_projs)
+
+            loads = {a: _live_load(a) for a in ready_accs}
+            min_load = min(loads.values())
+            least_loaded = [a for a in ready_accs if loads[a] == min_load]
+            chosen = least_loaded[_ROUND_ROBIN_IDX % len(least_loaded)]
+            _ROUND_ROBIN_IDX += 1
+            if project_id:
+                _PENDING_PROJECTS_BY_ACC.setdefault(chosen, set()).add(project_id)
+            return chosen
+
+    # Chỉ khi chưa có bất kỳ tài khoản nào đăng nhập trên máy thì mới fallback về acc_1
+    open_accs = [
+        aid
+        for aid in CHATGPT_ACCOUNTS
+        if status_all.get(aid, {}).get("browser_open")
+        and aid not in excl
+        and not is_account_in_cooldown(aid)[0]
+    ]
+    fallback = open_accs[0] if open_accs else "acc_1"
+    if project_id:
+        with _STATE_LOCK:
+            _PENDING_PROJECTS_BY_ACC.setdefault(fallback, set()).add(project_id)
+    return fallback
+
+
+class ChatGPTWebSession:
+    """
+    Phiên làm việc trực tiếp trên 1 Tab ChatGPT Web thông qua Chrome DevTools Protocol (CDP).
+    Hỗ trợ hội thoại nhiều bước liên tiếp (STEP 2 -> STEP 3 -> STEP 4 A/B/C -> STEP 5 -> STEP 6)
+    trong cùng 1 đoạn chat để giữ trọn vẹn ngữ cảnh, kèm cơ chế tự động đổi sang Nick khác khi bị Limit/Lỗi.
+    """
+
+    def __init__(
+        self,
+        project_id: str,
+        acc_id: Optional[str] = None,
+        exclude_accs: Optional[set] = None,
+    ):
+        self.project_id = project_id
+        self.excluded_accs: set = set(exclude_accs or set())
+        self.acc_id = select_best_available_account(
+            acc_id, project_id=project_id, exclude_accs=self.excluded_accs
+        )
+        self.cfg = ACCOUNTS_CONFIG[self.acc_id]
+        self.port = self.cfg["port"]
+        self.tab_id: Optional[str] = None
+        self.ws_url: Optional[str] = None
+        self.resumed_existing_chat: bool = False
+
+    def switch_to_another_account(self, extra_exclude: Optional[set] = None) -> bool:
+        """
+        Đóng tab hiện tại trên tài khoản vừa bị Limit/Lỗi và chuyển ngay phiên làm việc sang tài khoản (nick) khác đang rảnh.
+        """
+        old_acc = self.acc_id
+        try:
+            self.close_session_tab(keep_open=False)
+        except Exception:
+            pass
+        self.excluded_accs.add(old_acc)
+        if extra_exclude:
+            self.excluded_accs.update(extra_exclude)
+        new_acc = select_best_available_account(
+            preferred_acc_id=None,
+            project_id=self.project_id,
+            exclude_accs=self.excluded_accs,
+        )
+        self.acc_id = new_acc
+        self.cfg = ACCOUNTS_CONFIG[self.acc_id]
+        self.port = self.cfg["port"]
+        self.tab_id = None
+        self.ws_url = None
+        self.resumed_existing_chat = False
+        log_info(
+            f"[{self.project_id}] 🔀 Đã chuyển phiên từ {ACCOUNTS_CONFIG.get(old_acc, {}).get('label', old_acc)} "
+            f"sang {self.cfg['label']} (Cổng {self.port})!",
+            category="CHROME",
+            project_id=self.project_id,
+        )
+        return self.open_session_tab(force_new_chat=True)
+
+    def open_session_tab(self, force_new_chat: bool = True) -> bool:
+        """
+        Cấp phát 1 Tab độc lập 100% cho `self.project_id` trên trình duyệt của `self.acc_id`.
+        Sử dụng khóa `_ACC_TAB_LOCKS[self.acc_id]` để đảm bảo khi chạy 3 luồng song song,
+        3 luồng BẮT BUỘC nhận được 3 `tab_id` hoàn toàn khác nhau (Mở đủ 3 Tab trên Chrome),
+        tuyệt đối không bao giờ tranh chấp chung 1 Tab hoặc đóng nhầm Tab của luồng khác!
+        """
+        with _STATE_LOCK:
+            is_hidden = _CHROME_HIDDEN_STATE.get(self.acc_id, False)
+
+        ensure_chrome_debug_browser_open(
+            open_chatgpt_home=True,
+            force_bring_to_front=False,
+            run_hidden=is_hidden,
+            acc_id=self.acc_id,
+            fast_if_already_open=True,
+        )
+
+        acc_lock = _ACC_TAB_LOCKS.setdefault(self.acc_id, threading.RLock())
+        with acc_lock:
+            tabs = _cdp_get_tabs(self.port, timeout=3.0) or []
+            existing_tab_ids = {t.get("id") for t in tabs if t.get("id")}
+
+            with _STATE_LOCK:
+                acc_jobs = _ACTIVE_JOBS_BY_ACC.setdefault(self.acc_id, {})
+                # CHỈ dọn các tab_id mồ côi khi lấy được danh sách tab hợp lệ (existing_tab_ids không rỗng),
+                # TUYỆT ĐỐI KHÔNG xóa acc_jobs nếu _cdp_get_tabs tạm thời timeout khi Chrome đang tải nặng!
+                if existing_tab_ids:
+                    for tid_old in list(acc_jobs.keys()):
+                        if tid_old not in existing_tab_ids:
+                            acc_jobs.pop(tid_old, None)
+                # Nếu project_id này đã có tab đăng ký trước đó thì giải phóng để cấp mới
+                for tid_old, pid_old in list(acc_jobs.items()):
+                    if pid_old == self.project_id and tid_old != self.tab_id:
+                        acc_jobs.pop(tid_old, None)
+                busy_tabs = set(acc_jobs.keys())
+
+            # 0. Nếu không ép mở chat mới và đã có tab hội thoại (/c/...) chứa đúng mã dự án -> nối tiếp
+            if not force_new_chat and self.project_id:
+                for t in tabs:
+                    tid = t.get("id")
+                    turl = (t.get("url") or "").strip()
+                    ws = t.get("webSocketDebuggerUrl")
+                    if tid and tid not in busy_tabs and ws and "/c/" in turl:
+                        has_proj = _cdp_eval_js(
+                            ws,
+                            f"Boolean(document.body && (document.body.innerText || '').includes({json.dumps(self.project_id)}))",
+                            await_promise=False,
+                            timeout=2.0,
+                        )
+                        if has_proj:
+                            self.tab_id = tid
+                            self.ws_url = ws
+                            self.resumed_existing_chat = True
+                            break
+
+            # 1. Tái sử dụng tab rảnh trong Bể 3 Tab (Pool) của tài khoản nếu chưa bị bất kỳ luồng nào giữ
+            if not self.ws_url:
+                for t in tabs:
+                    tid = t.get("id")
+                    turl = (t.get("url") or "").strip()
+                    turl_base = turl.split("#")[0].split("?")[0].strip().rstrip("/")
+                    ws = t.get("webSocketDebuggerUrl")
+                    if tid and ws and tid not in busy_tabs:
+                        if turl_base in (
+                            "https://chatgpt.com",
+                            "https://chat.openai.com",
+                        ):
+                            _install_chatgpt_tab_protection_js(ws)
+                            self.tab_id = tid
+                            self.ws_url = ws
+                            break
+                        elif turl.startswith("about:blank") or (
+                            "/c/" in turl and force_new_chat
+                        ):
+                            _cdp_navigate(ws, CHATGPT_GUARD_URL, timeout=2.5)
+                            self.tab_id = tid
+                            self.ws_url = ws
+                            break
+
+            # 2. Mở 1 Tab ChatGPT mới tinh riêng biệt cho luồng này (Đảm bảo 3 luồng = 3 Tab độc lập!)
+            if not self.ws_url:
+                for _attempt in range(3):
+                    try:
+                        resp = requests.put(
+                            f"http://127.0.0.1:{self.port}/json/new?https://chatgpt.com/?studio_login_guard=1",
+                            timeout=5,
+                        )
+                        if resp.status_code == 200:
+                            tab_info = resp.json()
+                            new_tid = tab_info.get("id")
+                            new_ws = tab_info.get("webSocketDebuggerUrl")
+                            new_url = (tab_info.get("url") or "").strip()
+                            if new_tid and new_ws and new_tid not in busy_tabs:
+                                _install_chatgpt_tab_protection_js(new_ws)
+                                if not new_url or new_url.startswith("about:blank"):
+                                    _cdp_navigate(
+                                        new_ws, CHATGPT_GUARD_URL, timeout=2.5
+                                    )
+                                self.tab_id = new_tid
+                                self.ws_url = new_ws
+                                break
+                    except Exception:
+                        time.sleep(0.3)
+
+            # 3. Đăng ký NGAY LẬP TỨC tab_id của luồng này vào _ACTIVE_JOBS_BY_ACC bên trong khóa acc_lock!
+            if self.tab_id:
+                _install_chatgpt_tab_protection_js(self.ws_url)
+                with _STATE_LOCK:
+                    _PENDING_PROJECTS_BY_ACC.setdefault(self.acc_id, set()).discard(
+                        self.project_id
+                    )
+                    _ACTIVE_JOBS_BY_ACC.setdefault(self.acc_id, {})[self.tab_id] = (
+                        self.project_id
+                    )
+                    active_now = dict(_ACTIVE_JOBS_BY_ACC.get(self.acc_id, {}))
+                log_info(
+                    f"[{self.project_id}] Đã mở & khóa Tab độc lập ({self.tab_id[:8]}) trên {self.cfg['label']} "
+                    f"(Tổng {len(active_now)} luồng đang chạy song song trên {self.cfg['label']}: {list(active_now.values())})",
+                    category="CHROME",
+                    project_id=self.project_id,
+                )
+
+        if not self.ws_url or not self.tab_id:
+            return False
+
+        # Đợi ô nhập ChatGPT (ProseMirror / #prompt-textarea / #mobile-composer-prompt) xuất hiện trên Tab của luồng này
+        composer_sel = COMPOSER_SELECTOR
+        for tick in range(50):
+            _install_chatgpt_tab_protection_js(self.ws_url)
+            st = _cdp_eval_js(
+                self.ws_url,
+                f"""
+                (() => {{
+                    const href = window.location.href || '';
+                    if (href.startsWith('about:blank') || (!href.includes('chatgpt.com') && !href.includes('openai.com'))) {{
+                        return {{ blank: true, ready: false }};
+                    }}
+                    return {{ blank: false, ready: Boolean(document.querySelector('{composer_sel}')) }};
+                }})()
+                """,
+                await_promise=False,
+                timeout=3.0,
+            )
+            if isinstance(st, dict):
+                if st.get("ready"):
+                    time.sleep(0.4)
+                    self.ensure_thinking_effort_medium()
+                    return True
+                if st.get("blank") and tick in (0, 3, 8, 16):
+                    _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=2.5)
+            time.sleep(0.5)
+        return False
+
+    def ensure_thinking_effort_medium(self) -> Dict[str, Any]:
+        """
+        BẮT BUỘC KHÓA MODEL VIẾT Ở CHẾ ĐỘ 'Thinking effort: Medium' (Mốc 1/2 trên thanh trượt Power Slider hoặc menu Medium),
+        TUYỆT ĐỐI KHÔNG ĐỂ NGẪU NHIÊN (Instant / Low / High):
+        1. Chờ nút 'Select ChatGPT model' (`button[aria-label="Select ChatGPT model"]` hoặc `form button[aria-haspopup="menu"]`)
+           tải xong trên thanh công cụ dưới ô chat (tối đa 5 giây sau khi trang mở).
+        2. Nếu nút đã hiện 'Medium' -> Giữ nguyên.
+        3. Nếu đang ở 'Instant', 'High', 'Low', 'Auto'... -> Bấm mở menu bằng chuỗi sự kiện Radix UI (`pointerdown` + `mousedown` + `click`),
+           sau đó điều khiển thanh trượt `[data-reasoning-slider="true"]` / `[role="slider"]` (hoặc menu item truyền thống)
+           về đúng nấc **Medium** (`aria-valuenow="1"`) rồi đóng menu.
+        """
+        if not self.ws_url:
+            return {"ok": False, "reason": "NO_WS_URL"}
+
+        js_lock_medium = r"""
+        (async () => {
+            function dispatchMouseClickAt(el, x, y) {
+                if (!el) return;
+                const opts = {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    button: 0,
+                    buttons: 1,
+                    clientX: x,
+                    clientY: y,
+                    pointerId: 1,
+                    pointerType: 'mouse',
+                    isPrimary: true
+                };
+                el.dispatchEvent(new PointerEvent('pointerdown', opts));
+                el.dispatchEvent(new MouseEvent('mousedown', opts));
+                if (typeof el.focus === 'function') el.focus();
+                el.dispatchEvent(new PointerEvent('pointerup', opts));
+                el.dispatchEvent(new MouseEvent('mouseup', opts));
+                el.dispatchEvent(new MouseEvent('click', opts));
+            }
+
+            function radixClick(el) {
+                if (!el) return;
+                const r = el.getBoundingClientRect();
+                dispatchMouseClickAt(el, r.left + r.width / 2, r.top + r.height / 2);
+            }
+
+            function findModelEffortBtn() {
+                return (
+                    document.querySelector('button[aria-label="Select ChatGPT model"]')
+                    || document.querySelector('button[aria-label*="Select ChatGPT model" i]')
+                    || document.querySelector('button[aria-label*="Thinking effort" i]')
+                    || Array.from(document.querySelectorAll('form button[aria-haspopup="menu"]')).find(
+                        b => /thinking|effort|instant|medium|high|low|standard|extended|gpt/i.test((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || ''))
+                    )
+                    || document.querySelector('form button[aria-haspopup="menu"]')
+                );
+            }
+
+            // Nếu tab bị chuyển về about:blank thì điều hướng ngay lại https://chatgpt.com/
+            if (!window.location.href || window.location.href.startsWith('about:blank')) {
+                window.location.replace('https://chatgpt.com/');
+                await new Promise(r => setTimeout(r, 2500));
+            }
+
+            // Chờ nút chọn Model / Thinking effort render xong (vì nút này tải sau #prompt-textarea khoảng 0.5s - 2.5s)
+            let modelBtn = null;
+            for (let w = 0; w < 25; w++) {
+                modelBtn = findModelEffortBtn();
+                if (modelBtn && (modelBtn.innerText || '').trim().length > 0) break;
+                await new Promise(r => setTimeout(r, 220));
+            }
+            if (!modelBtn) {
+                return { ok: false, reason: 'NO_MODEL_BTN' };
+            }
+
+            const initTxt = (modelBtn.innerText || '').trim();
+            if (initTxt.toLowerCase().includes('medium')) {
+                return { ok: true, before: initTxt, after: initTxt, alreadyMedium: true };
+            }
+
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const curBtn = findModelEffortBtn() || modelBtn;
+                if ((curBtn.innerText || '').toLowerCase().includes('medium')) {
+                    break;
+                }
+
+                // Mở menu: Gọi .click() trước, chỉ dùng pointerdown nếu menu vẫn chưa mở (tránh toggle đóng ngược!)
+                let openMenuNow = document.querySelector('[role="menu"][data-state="open"], [data-reasoning-slider="true"], [role="slider"]');
+                if (!openMenuNow) {
+                    curBtn.click();
+                    await new Promise(r => setTimeout(r, 280));
+                    openMenuNow = document.querySelector('[role="menu"][data-state="open"], [data-reasoning-slider="true"], [role="slider"]');
+                }
+                if (!openMenuNow) {
+                    const rect = curBtn.getBoundingClientRect();
+                    curBtn.dispatchEvent(new PointerEvent('pointerdown', {
+                        bubbles: true, cancelable: true, view: window, button: 0, buttons: 1,
+                        clientX: rect.left + 10, clientY: rect.top + 10, pointerId: 1, pointerType: 'mouse', isPrimary: true
+                    }));
+                    await new Promise(r => setTimeout(r, 280));
+                }
+
+                const reasoningRow = document.querySelector('[data-reasoning-slider="true"], [aria-label="Power"]');
+                const slider = document.querySelector('[role="slider"]');
+                if (reasoningRow || slider) {
+                    const keyTarget = reasoningRow || slider;
+                    if (typeof keyTarget.focus === 'function') keyTarget.focus();
+
+                    // Bước 1: Đưa thanh trượt về mốc 0 (Instant / trái cùng) trước
+                    for (let i = 0; i < 4; i++) {
+                        keyTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true, cancelable: true }));
+                        keyTarget.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true, cancelable: true }));
+                        await new Promise(r => setTimeout(r, 85));
+                    }
+
+                    // Bước 2: Dịch từng nấc sang phải cho đến khi chữ trên nút đạt đúng "Medium" (mốc 1/2)
+                    for (let step = 0; step < 4; step++) {
+                        const nowTxt = ((findModelEffortBtn() || curBtn).innerText || '').toLowerCase();
+                        if (nowTxt.includes('medium')) break;
+                        keyTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }));
+                        keyTarget.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }));
+                        await new Promise(r => setTimeout(r, 120));
+                        if (((findModelEffortBtn() || curBtn).innerText || '').toLowerCase().includes('medium')) break;
+                    }
+
+                    // Bước 3 (Dự phòng): Nếu chưa sang Medium, click thẳng vào chính giữa (50%) thanh trượt Power Slider
+                    if (!((findModelEffortBtn() || curBtn).innerText || '').toLowerCase().includes('medium')) {
+                        const track = document.querySelector('[data-model-picker-power-slider] [data-orientation="horizontal"]')
+                            || document.querySelector('[data-model-picker-power-slider]')
+                            || reasoningRow;
+                        if (track) {
+                            const tr = track.getBoundingClientRect();
+                            if (tr.width > 10) {
+                                dispatchMouseClickAt(track, tr.left + tr.width * 0.5, tr.top + tr.height * 0.5);
+                                await new Promise(r => setTimeout(r, 180));
+                            }
+                        }
+                    }
+                } else {
+                    // Giao diện menu danh sách truyền thống
+                    const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]'));
+                    const medItem = items.find(x => (x.innerText || '').toLowerCase().includes('medium'));
+                    if (medItem) {
+                        medItem.click();
+                        await new Promise(r => setTimeout(r, 180));
+                    }
+                }
+
+                // Đóng menu bằng phím Escape để không che khung soạn thảo
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+                await new Promise(r => setTimeout(r, 140));
+
+                if (((findModelEffortBtn() || curBtn).innerText || '').toLowerCase().includes('medium')) {
+                    break;
+                }
+            }
+
+            const finalBtn = findModelEffortBtn() || modelBtn;
+            const finalTxt = (finalBtn.innerText || '').trim();
+            return {
+                ok: finalTxt.toLowerCase().includes('medium'),
+                before: initTxt,
+                after: finalTxt
+            };
+        })()
+        """
+        port_lock = _PORT_INJECT_LOCKS.setdefault(self.port, threading.Lock())
+        with port_lock:
+            res = _cdp_eval_js(
+                self.ws_url, js_lock_medium, await_promise=True, timeout=12.0
+            )
+        if isinstance(res, dict) and res.get("before") != res.get("after"):
+            log_info(
+                f"[{self.project_id}] 🎯 Đã tự động chuyển Model viết từ '{res.get('before', '').replace(chr(10), ' ')}' -> '{res.get('after', '').replace(chr(10), ' ')}' (Khóa cố định Medium)!",
+                category="CHROME",
+                project_id=self.project_id,
+            )
+        return res if isinstance(res, dict) else {"ok": False}
+
+    def start_fresh_chat(self, step_name: str = "") -> bool:
+        """
+        Chuyển về ĐOẠN CHAT MỚI HOÀN TOÀN (New Chat) ngay trên Tab đang khóa của chính luồng này (`self.tab_id`),
+        luôn duy trì chốt bảo vệ `#studio_login_guard` để không bao giờ bị tiến trình ngoài đóng Tab,
+        đồng thời TUYỆT ĐỐI KHÔNG ĐỤNG CHẠM tới các Tab của các luồng khác đang chạy song song!
+        """
+        if not self.ws_url or not self.tab_id:
+            return self.open_session_tab(force_new_chat=True)
+
+        self.resumed_existing_chat = False
+
+        # Kiểm tra xem tab hiện tại của luồng này còn sống trên trình duyệt hay không
+        tabs_now = _cdp_get_tabs(self.port, timeout=1.5) or []
+        if not any(t.get("id") == self.tab_id for t in tabs_now):
+            self.tab_id = None
+            self.ws_url = None
+            return self.open_session_tab(force_new_chat=True)
+
+        _install_chatgpt_tab_protection_js(self.ws_url)
+
+        # Kiểm tra xem tab hiện tại của luồng này có đang ở sẵn trang chủ New Chat (chưa vào /c/...) hay không
+        cur_path = _cdp_eval_js(
+            self.ws_url,
+            "window.location.pathname || '/'",
+            await_promise=False,
+            timeout=2.5,
+        )
+        if cur_path is None:
+            # Nếu renderer của tab cũ bị treo sau khi render DOM lớn (ví dụ STEP 3 GenUI), đóng ngay tab đó và mở tab mới!
+            try:
+                requests.get(
+                    f"http://127.0.0.1:{self.port}/json/close/{self.tab_id}",
+                    timeout=2.0,
+                )
+            except Exception:
+                pass
+            with _STATE_LOCK:
+                _ACTIVE_JOBS_BY_ACC.get(self.acc_id, {}).pop(self.tab_id, None)
+            self.tab_id = None
+            self.ws_url = None
+            return self.open_session_tab(force_new_chat=True)
+        elif (
+            isinstance(cur_path, str)
+            and not cur_path.startswith("/c/")
+            and cur_path != "blank"
+        ):
+            # Tab hiện tại của luồng này đã là trang chủ sạch sẽ -> dùng luôn!
+            pass
+        else:
+            # Điều hướng trực tiếp tab đã khóa của luồng này về trang chủ New Chat kèm chốt bảo vệ
+            nav_ok = _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=3.0)
+            if not nav_ok:
+                self.tab_id = None
+                self.ws_url = None
+                return self.open_session_tab(force_new_chat=True)
+
+        time.sleep(0.5)
+
+        composer_sel = COMPOSER_SELECTOR
+        none_nav_ticks = 0
+        for tick in range(45):
+            _install_chatgpt_tab_protection_js(self.ws_url)
+            st = _cdp_eval_js(
+                self.ws_url,
+                f"""
+                (() => {{
+                    const path = window.location.pathname || '/';
+                    const hasBox = Boolean(document.querySelector('{composer_sel}'));
+                    const isFresh = !path.includes('/c/');
+                    return {{ ready: Boolean(hasBox && isFresh), path: path, isFresh: isFresh }};
+                }})()
+                """,
+                await_promise=False,
+                timeout=3.0,
+            )
+            if isinstance(st, dict):
+                none_nav_ticks = 0
+                if st.get("ready"):
+                    time.sleep(0.4)
+                    self.ensure_thinking_effort_medium()
+                    return True
+                if not st.get("isFresh") and tick in (3, 10):
+                    _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=2.5)
+            else:
+                none_nav_ticks += 1
+                if none_nav_ticks >= 3:
+                    try:
+                        requests.get(
+                            f"http://127.0.0.1:{self.port}/json/close/{self.tab_id}",
+                            timeout=2.0,
+                        )
+                    except Exception:
+                        pass
+                    with _STATE_LOCK:
+                        _ACTIVE_JOBS_BY_ACC.get(self.acc_id, {}).pop(self.tab_id, None)
+                    self.tab_id = None
+                    self.ws_url = None
+                    return self.open_session_tab(force_new_chat=True)
+            time.sleep(0.5)
+        return False
+
+    def close_session_tab(self, keep_open: bool = False):
+        with _STATE_LOCK:
+            _PENDING_PROJECTS_BY_ACC.setdefault(self.acc_id, set()).discard(
+                self.project_id
+            )
+            _LAST_ACTIVITY_TS_BY_ACC[self.acc_id] = time.time()
+        if self.tab_id:
+            acc_lock = _ACC_TAB_LOCKS.setdefault(self.acc_id, threading.RLock())
+            with acc_lock:
+                if not keep_open:
+                    try:
+                        tabs = _cdp_get_tabs(self.port, timeout=1.5) or []
+                        if len(tabs) <= MAX_THREADS_PER_ACCOUNT and self.ws_url:
+                            # Giữ lại tối đa 3 Tab ấm (Pool 3 Tab) mỗi tài khoản ở trang chủ có gắn #studio_login_guard
+                            # để dự án kế tiếp tái sử dụng ngay lập tức mà không cần đóng/mở tab mới!
+                            _cdp_navigate(self.ws_url, _fresh_guard_url(), timeout=2.5)
+                            time.sleep(0.6)
+                        else:
+                            requests.get(
+                                f"http://127.0.0.1:{self.port}/json/close/{self.tab_id}",
+                                timeout=2.0,
+                            )
+                    except Exception:
+                        pass
+                with _STATE_LOCK:
+                    _ACTIVE_JOBS_BY_ACC.get(self.acc_id, {}).pop(self.tab_id, None)
+                    _LAST_ACTIVITY_TS_BY_ACC[self.acc_id] = time.time()
+
+    def _harvest_latest_turn_from_backend_api(self) -> str:
+        """
+        Tầng 1 (Master Blueprint V6.0): Gọi fetch('/backend-api/conversation/' + convId)
+        ngay bên trong Tab (kèm Bearer Token từ /api/auth/session) để thu hoạch 100% văn bản
+        Markdown gốc của lượt trả lời cuối cùng mà không bị ảnh hưởng bởi DOM ảo hóa.
+        """
+        if not self.ws_url:
+            return ""
+        harvest_js = r"""
+        (async () => {
+            try {
+                const mUrl = window.location.pathname.match(/\/c\/([0-9a-fA-F\-]{16,})/);
+                if (!mUrl || !mUrl[1]) return "";
+                const convId = mUrl[1];
+                if (!window.__studioAccessToken) {
+                    const sr = await fetch('/api/auth/session', { credentials: 'include' });
+                    if (sr.ok) {
+                        const sd = await sr.json();
+                        if (sd && sd.accessToken) window.__studioAccessToken = sd.accessToken;
+                    }
+                }
+                if (!window.__studioAccessToken) return "";
+                const cr = await fetch('/backend-api/conversation/' + convId, {
+                    credentials: 'include',
+                    headers: {
+                        'Authorization': 'Bearer ' + window.__studioAccessToken,
+                        'Accept': 'application/json'
+                    }
+                });
+                if (!cr.ok) return "";
+                const conv = await cr.json();
+                const mapping = conv.mapping || {};
+                let cur = conv.current_node;
+                const seen = new Set();
+                const chain = [];
+                while (cur && !seen.has(cur) && mapping[cur]) {
+                    seen.add(cur);
+                    chain.push(mapping[cur]);
+                    cur = mapping[cur].parent;
+                }
+                chain.reverse();
+                let lastUserIdx = -1;
+                for (let i = 0; i < chain.length; i++) {
+                    const msg = chain[i].message;
+                    if (!msg) continue;
+                    const role = (msg.author && msg.author.role) || "";
+                    if (role === "user") lastUserIdx = i;
+                }
+                if (lastUserIdx < 0) return "";
+                const asstParts = [];
+                for (let i = lastUserIdx + 1; i < chain.length; i++) {
+                    const msg = chain[i].message;
+                    if (!msg || (msg.metadata && msg.metadata.is_visually_hidden_from_conversation)) continue;
+                    const role = (msg.author && msg.author.role) || "";
+                    const content = msg.content || {};
+                    const ctype = content.content_type || "";
+                    const rec = msg.recipient || "all";
+                    const ch = msg.channel || "final";
+                    if (role === "assistant" && (ctype === "text" || ctype === "multimodal_text") && (rec === "all" || !msg.recipient) && (ch === "final" || !msg.channel)) {
+                        const parts = Array.isArray(content.parts) ? content.parts.filter(p => typeof p === "string") : [];
+                        const txt = parts.join("\n").trim();
+                        if (txt) asstParts.push(txt);
+                    }
+                }
+                return asstParts.join("\n\n").trim();
+            } catch (e) {
+                return "";
+            }
+        })()
+        """
+        res = _cdp_eval_js(self.ws_url, harvest_js, await_promise=True, timeout=10.0)
+        raw_md = str(res).strip() if isinstance(res, str) else ""
+        if raw_md:
+            # Làm sạch các thẻ GenUI nội bộ của ChatGPT (<box>, <title>, <text>, <badge>, <button>...) nếu có
+            raw_md = re.sub(
+                r"<button\b[^>]*>[\s\S]*?</button>", "", raw_md, flags=re.IGNORECASE
+            )
+            raw_md = re.sub(
+                r"<icon\b[^>]*/>|<icon\b[^>]*>[\s\S]*?</icon>",
+                "",
+                raw_md,
+                flags=re.IGNORECASE,
+            )
+            raw_md = re.sub(
+                r"</?(?:box|row|col|text|title|badge|list|list-item)\b[^>]*>",
+                "\n",
+                raw_md,
+                flags=re.IGNORECASE,
+            )
+            raw_md = re.sub(r"\n{3,}", "\n\n", raw_md).strip()
+        return raw_md
+
+    def send_prompt_and_wait(
+        self,
+        prompt_text: str,
+        step_label: str = "STEP",
+        timeout_sec: int = 900,
+        progress_cb: Optional[Callable[[str, int], None]] = None,
+        should_stop_cb: Optional[Callable[[], bool]] = None,
+    ) -> str:
+        """
+        Bơm prompt vào ô chat của ChatGPT Web, tự động khóa Thinking effort: Medium,
+        bấm Gửi kèm xác nhận sentConfirmed, theo dõi streaming (chống ảo hóa DOM đa lượt)
+        và thu hoạch 2 tầng (Backend API + DOM).
+        """
+        if not self.ws_url:
+            if not self.open_session_tab():
+                raise RuntimeError(
+                    f"Không thể kết nối tới khung chat ChatGPT trên {self.cfg['label']}. "
+                    f"Hãy bấm mở {self.cfg['label']} trên thanh điều khiển và đăng nhập ChatGPT trước!"
+                )
+
+        step_stamp = f"seen_{int(time.time() * 1000)}"
+        # Kiểm tra xem tab vừa nối tiếp có đang trong quá trình sinh câu trả lời dở (in_progress) hay không,
+        # đồng thời đóng dấu (data-studio-seen) toàn bộ các node cũ để chống hiện tượng ChatGPT Web
+        # ẩn/gỡ (unmount) các lượt đầu tiên khi hội thoại dài >= 4 lượt khiến nodes.length không tăng.
+        init_state = _cdp_eval_js(
+            self.ws_url,
+            f"""
+            (() => {{
+                const stamp = {json.dumps(step_stamp)};
+                const turnStates = Array.from(document.querySelectorAll('[data-talvt-turn-state]')).map(e => e.getAttribute('data-talvt-turn-state'));
+                const hasIncomplete = turnStates.some(s => s && s !== 'complete');
+                const stopBtn = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i], .result-streaming');
+                const isStreaming = Boolean(stopBtn || hasIncomplete);
+                let nodes = Array.from(document.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"]'));
+                if (nodes.length === 0) {{
+                    nodes = Array.from(document.querySelectorAll('[data-content-search-unit-key$=":assistant"], article[data-turn="assistant"], div[data-turn="assistant"]'));
+                }}
+                let prevLastHead = '';
+                if (nodes.length > 0) {{
+                    const lastMd = nodes[nodes.length - 1].querySelector('.markdown') || nodes[nodes.length - 1];
+                    prevLastHead = (lastMd.innerText || '').trim().slice(0, 120);
+                }}
+                return {{
+                    isStreaming: isStreaming,
+                    count: nodes.length,
+                    prevLastHead: prevLastHead
+                }};
+            }})()
+            """,
+            await_promise=False,
+            timeout=5.0,
+        )
+        already_streaming = bool(
+            isinstance(init_state, dict)
+            and init_state.get("isStreaming")
+            and self.resumed_existing_chat
+        )
+        prev_last_head = (
+            ""
+            if already_streaming
+            else (
+                str(init_state.get("prevLastHead") or "")
+                if isinstance(init_state, dict)
+                else ""
+            )
+        )
+
+        # Đóng dấu các node cũ trước khi gửi lệnh mới
+        _cdp_eval_js(
+            self.ws_url,
+            f"""
+            (() => {{
+                const stamp = {json.dumps(step_stamp)};
+                const keepLastUnmarked = {"true" if already_streaming else "false"};
+                let nodes = Array.from(document.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"]'));
+                if (nodes.length === 0) {{
+                    nodes = Array.from(document.querySelectorAll('[data-content-search-unit-key$=":assistant"], article[data-turn="assistant"], div[data-turn="assistant"]'));
+                }}
+                const limit = keepLastUnmarked ? Math.max(0, nodes.length - 1) : nodes.length;
+                for (let i = 0; i < limit; i++) {{
+                    nodes[i].setAttribute('data-studio-seen', stamp);
+                }}
+                return limit;
+            }})()
+            """,
+            await_promise=False,
+            timeout=4.0,
+        )
+        prev_backend_md = (
+            "" if already_streaming else self._harvest_latest_turn_from_backend_api()
+        )
+        prev_backend_head = prev_backend_md[:120].strip() if prev_backend_md else ""
+
+        if not already_streaming:
+            # BẮT BUỘC KHÓA MODEL VIẾT Ở CHẾ ĐỘ "Thinking effort: Medium" TRƯỚC MỖI LẦN GỬI LỆNH
+            self.ensure_thinking_effort_medium()
+
+            # Dùng ensure_ascii=True để mã hóa an toàn tuyệt đối mọi ký tự tiếng Nhật / Việt (\uXXXX)
+            escaped_prompt_json = json.dumps(prompt_text, ensure_ascii=True)
+            inject_js = f"""
+            (async () => {{
+                const text = {escaped_prompt_json};
+                // Kiểm tra chốt chặn lần cuối: nếu nút Model chưa phải Medium thì tự động gạt thanh trượt Power Slider về Medium (mốc 1/2)
+                try {{
+                    function dispatchMouseClickAt(el, x, y) {{
+                        if (!el) return;
+                        const opts = {{ bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse', isPrimary: true }};
+                        el.dispatchEvent(new PointerEvent('pointerdown', opts));
+                        el.dispatchEvent(new MouseEvent('mousedown', opts));
+                        if (typeof el.focus === 'function') el.focus();
+                        el.dispatchEvent(new PointerEvent('pointerup', opts));
+                        el.dispatchEvent(new MouseEvent('mouseup', opts));
+                        el.dispatchEvent(new MouseEvent('click', opts));
+                    }}
+                    const modelBtn = document.querySelector('button[aria-label="Select ChatGPT model"]')
+                        || document.querySelector('form button[aria-haspopup="menu"]');
+                    if (modelBtn && !(modelBtn.innerText || '').toLowerCase().includes('medium')) {{
+                        modelBtn.click();
+                        await new Promise(res => setTimeout(res, 280));
+                        const reasoningRow = document.querySelector('[data-reasoning-slider="true"], [aria-label="Power"]');
+                        const slider = document.querySelector('[role="slider"]');
+                        if (reasoningRow || slider) {{
+                            const keyTarget = reasoningRow || slider;
+                            if (typeof keyTarget.focus === 'function') keyTarget.focus();
+                            for (let i = 0; i < 4; i++) {{
+                                keyTarget.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true, cancelable: true }}));
+                                await new Promise(res => setTimeout(res, 80));
+                            }}
+                            for (let step = 0; step < 4; step++) {{
+                                if ((modelBtn.innerText || '').toLowerCase().includes('medium')) break;
+                                keyTarget.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }}));
+                                await new Promise(res => setTimeout(res, 110));
+                            }}
+                        }} else {{
+                            const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]'));
+                            const medItem = items.find(x => (x.innerText || '').toLowerCase().includes('medium'));
+                            if (medItem) medItem.click();
+                        }}
+                        document.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }}));
+                        await new Promise(res => setTimeout(res, 120));
+                    }}
+                }} catch (e) {{}}
+
+                document.querySelectorAll('button[aria-label="Remove pasted text attachment"]').forEach(b => b.click());
+
+                const el = document.querySelector(
+                    '#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [data-composer-markdown], div[role="textbox"][contenteditable="true"], main textarea'
+                );
+                if (!el) return {{ ok: false, err: 'NO_PROMPT_BOX' }};
+                el.focus();
+
+                if (el.tagName === 'TEXTAREA') {{
+                    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                    nativeSetter.call(el, text);
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    await new Promise(r => setTimeout(r, 120));
+                }} else {{
+                    // Master Blueprint V6.0: DataTransfer + ClipboardEvent('paste')
+                    el.focus();
+                    if ((el.innerText || '').trim().length > 0) {{
+                        const sel = window.getSelection();
+                        const range = document.createRange();
+                        range.selectNodeContents(el);
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                        document.execCommand('delete', false, null);
+                        await new Promise(r => setTimeout(r, 80));
+                    }}
+                    if (text.length > 12000) {{
+                        const headLine = text.slice(0, 1200) + '\\n\\n[xem toàn bộ nội dung đính kèm bên dưới]';
+                        const dtHead = new DataTransfer();
+                        dtHead.setData('text/plain', headLine);
+                        el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dtHead, bubbles: true, cancelable: true }}));
+                        await new Promise(r => setTimeout(r, 50));
+                        const dtFull = new DataTransfer();
+                        dtFull.setData('text/plain', text);
+                        el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dtFull, bubbles: true, cancelable: true }}));
+                    }} else {{
+                        const lines = text.split('\\n');
+                        const chunks = [];
+                        let cur = [];
+                        let curLen = 0;
+                        for (const ln of lines) {{
+                            if (cur.length >= 45 || (curLen + ln.length) > 3200) {{
+                                chunks.push(cur.join('\\n') + '\\n');
+                                cur = [];
+                                curLen = 0;
+                            }}
+                            cur.push(ln);
+                            curLen += ln.length + 1;
+                        }}
+                        if (cur.length > 0) chunks.push(cur.join('\\n'));
+                        for (const ch of chunks) {{
+                            const dt = new DataTransfer();
+                            dt.setData('text/plain', ch);
+                            el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
+                            await new Promise(r => setTimeout(r, 15));
+                        }}
+                    }}
+                }}
+
+                // Vòng lặp xác nhận gửi thật sự (sentConfirmed - Master Blueprint V6.0)
+                let sentConfirmed = false;
+                for (let s = 0; s < 25; s++) {{
+                    await new Promise(r => setTimeout(r, 320));
+                    const stopNow = document.querySelector('[data-testid="stop-button"], form button[aria-label*="Stop" i], button[aria-label*="Stop streaming" i]');
+                    const curBox = document.querySelector('#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], main textarea');
+                    const curTextLen = curBox ? ((curBox.tagName === 'TEXTAREA' ? curBox.value : curBox.innerText) || '').trim().length : 0;
+                    const hasAttachment = Array.from(document.querySelectorAll('form button')).some(
+                        b => (b.getAttribute('aria-label') || '').includes('Remove pasted text')
+                    );
+                    if (stopNow || (s > 0 && curTextLen === 0 && !hasAttachment)) {{
+                        sentConfirmed = true;
+                        break;
+                    }}
+                    const sendBtn = document.querySelector('button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], form button[aria-label*="Send" i], button[aria-label*="Send prompt" i], form button[type="submit"]');
+                    if (sendBtn && !sendBtn.disabled) {{
+                        sendBtn.click();
+                    }} else if (s >= 5 && !hasAttachment) {{
+                        const enterEvt = new KeyboardEvent('keydown', {{
+                            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
+                        }});
+                        el.dispatchEvent(enterEvt);
+                    }}
+                }}
+                return {{ ok: sentConfirmed, method: 'paste_sent_confirmed' }};
+            }})()
+            """
+            port_lock = _PORT_INJECT_LOCKS.setdefault(self.port, threading.Lock())
+            inj_res = None
+            for inj_attempt in range(3):
+                _install_chatgpt_tab_protection_js(self.ws_url)
+                with port_lock:
+                    inj_res = _cdp_eval_js(
+                        self.ws_url, inject_js, await_promise=True, timeout=45.0
+                    )
+                if isinstance(inj_res, dict) and inj_res.get("ok"):
+                    break
+                log_warn(
+                    f"[{self.project_id}] Thử gửi lệnh lại vào ChatGPT ({self.cfg['label']}) lần {inj_attempt + 2}/3 (kết quả trước: {inj_res})...",
+                    category="CHROME",
+                    project_id=self.project_id,
+                )
+                tabs_chk = _cdp_get_tabs(self.port, timeout=1.5) or []
+                if not any(t.get("id") == self.tab_id for t in tabs_chk):
+                    self.tab_id = None
+                    self.ws_url = None
+                    self.open_session_tab(force_new_chat=True)
+                else:
+                    _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=2.5)
+                    for _w in range(20):
+                        time.sleep(0.5)
+                        has_box = _cdp_eval_js(
+                            self.ws_url,
+                            f"Boolean(document.querySelector('{COMPOSER_SELECTOR}'))",
+                            await_promise=False,
+                            timeout=2.0,
+                        )
+                        if has_box:
+                            break
+                    self.ensure_thinking_effort_medium()
+            if not isinstance(inj_res, dict) or not inj_res.get("ok"):
+                raise RuntimeError(
+                    f"Không thể gửi lệnh vào ChatGPT ({self.cfg['label']}): {inj_res}"
+                )
+
+        # Chờ ChatGPT bắt đầu sinh câu trả lời và theo dõi streaming cho đến khi hoàn tất
+        start_t = time.time()
+        last_text = ""
+        stable_ticks = 0
+        started_responding = False
+
+        poll_js = f"""
+        (() => {{
+            try {{
+                if (!window.location.hash.includes('studio_login_guard')) {{
+                    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + '#studio_login_guard');
+                }}
+            }} catch (e) {{}}
+            const stamp = {json.dumps(step_stamp)};
+            const prevLastHead = {json.dumps(prev_last_head, ensure_ascii=True)};
+            // Tự động bấm nút Continue generating nếu xuất hiện
+            const btns = Array.from(document.querySelectorAll('button'));
+            for (const b of btns) {{
+                const t = (b.innerText || '').trim().toLowerCase();
+                if (t.includes('continue generating') || t.includes('tiếp tục tạo') || b.getAttribute('data-testid') === 'continue-button') {{
+                    b.click();
+                }}
+            }}
+            const turnStates = Array.from(document.querySelectorAll('[data-talvt-turn-state]')).map(e => e.getAttribute('data-talvt-turn-state'));
+            const hasIncompleteTurn = turnStates.some(s => s && s !== 'complete');
+            const stopBtn = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Dừng" i], .result-streaming');
+            const isStreaming = Boolean(stopBtn || hasIncompleteTurn);
+            let nodes = Array.from(document.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"]'));
+            if (nodes.length === 0) {{
+                nodes = Array.from(document.querySelectorAll('[data-content-search-unit-key$=":assistant"], article[data-turn="assistant"], div[data-turn="assistant"]'));
+            }}
+            if (nodes.length > 0) {{
+                try {{ nodes[nodes.length - 1].scrollIntoView({{ block: 'end' }}); }} catch (e) {{}}
+            }}
+            let newNodes = nodes.filter(n => n.getAttribute('data-studio-seen') !== stamp);
+            if (newNodes.length === 0 && nodes.length > 0 && prevLastHead) {{
+                const lastMd = nodes[nodes.length - 1].querySelector('.markdown') || nodes[nodes.length - 1];
+                const lastTxt = (lastMd.innerText || '').trim();
+                if (lastTxt && lastTxt.slice(0, 120) !== prevLastHead) {{
+                    newNodes = [nodes[nodes.length - 1]];
+                }}
+            }}
+            let latestText = '';
+            if (newNodes.length > 0) {{
+                const parts = [];
+                for (const n of newNodes) {{
+                    const md = n.querySelector('.markdown') || n;
+                    const txt = (md.innerText || '').trim();
+                    if (txt) parts.push(txt);
+                }}
+                latestText = parts.join('\\n\\n');
+            }}
+            let alertText = '';
+            try {{
+                const alertNodes = Array.from(document.querySelectorAll('[role="alert"], .toast-root, [data-testid*="limit"], [data-testid*="rate"], [class*="rate-limit"]'));
+                if (alertNodes.length > 0) {{
+                    alertText = alertNodes.map(a => (a.innerText || '').trim()).filter(Boolean).join(' | ').slice(0, 400);
+                }}
+            }} catch (e) {{}}
+            return {{
+                hasNewTurn: newNodes.length > 0,
+                isStreaming: isStreaming,
+                text: latestText,
+                alertText: alertText
+            }};
+        }})()
+        """
+
+        none_poll_ticks = 0
+        while time.time() - start_t < timeout_sec:
+            if should_stop_cb and should_stop_cb():
+                raise RuntimeError("Đã dừng tiến trình theo yêu cầu người dùng.")
+
+            time.sleep(1.5)
+            state = _cdp_eval_js(self.ws_url, poll_js, await_promise=False, timeout=6.0)
+            if not isinstance(state, dict):
+                none_poll_ticks += 1
+                # Nếu văn bản đã nhận được rất đầy đủ (>= 5.000 ký tự) và tab đột ngột đơ DOM khi hoàn tất render GenUI
+                if len(last_text) >= 5000 and none_poll_ticks >= 3:
+                    return last_text
+                continue
+            none_poll_ticks = 0
+
+            has_new_turn = bool(state.get("hasNewTurn"))
+            is_streaming = bool(state.get("isStreaming"))
+            curr_text = str(state.get("text") or "").strip()
+            alert_text = str(state.get("alertText") or "").strip()
+
+            rl_detected = _detect_rate_limit_in_text(alert_text, 500) or (
+                _detect_rate_limit_in_text(curr_text, 600) if not is_streaming else ""
+            )
+            if rl_detected:
+                mark_account_rate_limited(
+                    self.acc_id,
+                    reason=f"ChatGPT báo giới hạn tại {step_label}: {rl_detected}",
+                    cooldown_sec=ACCOUNT_LIMIT_COOLDOWN_SEC,
+                )
+                raise AccountRateLimitError(
+                    self.acc_id,
+                    f"Tài khoản {self.cfg['label']} bị giới hạn (Limit) tại {step_label}: {rl_detected}",
+                )
+
+            if has_new_turn and curr_text:
+                started_responding = True
+                if progress_cb:
+                    progress_cb(step_label, len(curr_text))
+
+                if curr_text == last_text and not is_streaming:
+                    stable_ticks += 1
+                    # Khi nút Stop đã biến mất và văn bản đứng yên suốt 4.5 giây (3 nhịp) -> Thu hoạch Tầng 1 Backend API + Tầng 2 DOM!
+                    if stable_ticks >= 3:
+                        backend_md = self._harvest_latest_turn_from_backend_api()
+                        if backend_md and len(backend_md) >= int(len(curr_text) * 0.85):
+                            return backend_md
+                        return curr_text
+                else:
+                    stable_ticks = 0
+                    last_text = curr_text
+            else:
+                # Dự phòng Tầng 1: Nếu không còn streaming sau 12s mà DOM chưa hiện node mới, kiểm tra thẳng Backend API
+                if not is_streaming and (time.time() - start_t) > 12:
+                    backend_md = self._harvest_latest_turn_from_backend_api()
+                    if (
+                        backend_md
+                        and backend_md[:120].strip() != prev_backend_head
+                        and len(backend_md) > 80
+                    ):
+                        if progress_cb:
+                            progress_cb(step_label, len(backend_md))
+                        return backend_md
+
+                # Nếu sau 25 giây vẫn chưa thấy phản hồi mới, kiểm tra xem nút Send còn đó không và bấm lại
+                if (
+                    not started_responding
+                    and not is_streaming
+                    and (time.time() - start_t) > 20
+                ):
+                    _cdp_eval_js(
+                        self.ws_url,
+                        """
+                        (() => {
+                            const b = document.querySelector('button[type="submit"], [data-testid="send-button"], button[aria-label="Send" i]');
+                            if (b && !b.disabled) b.click();
+                        })()
+                        """,
+                        await_promise=False,
+                        timeout=3.0,
+                    )
+
+        if last_text:
+            backend_md = self._harvest_latest_turn_from_backend_api()
+            if backend_md and len(backend_md) >= int(len(last_text) * 0.85):
+                return backend_md
+            return last_text
+        # Khi tài khoản hoàn toàn không phản hồi sau timeout_sec (600s) -> Đánh dấu tạm dừng 30 phút và đẩy sang nick khác!
+        mark_account_rate_limited(
+            self.acc_id,
+            reason=f"Quá thời gian chờ ({timeout_sec}s) không phản hồi tại bước {step_label}",
+            cooldown_sec=ACCOUNT_LIMIT_COOLDOWN_SEC,
+        )
+        raise AccountRateLimitError(
+            self.acc_id,
+            f"Quá thời gian chờ ({timeout_sec}s) phản hồi từ ChatGPT trên {self.cfg['label']} tại bước {step_label} -> Tạm dừng {self.cfg['label']} 30 phút và chuyển sang nick khác!",
+        )
+
+    def generate_image_and_harvest_base64(
+        self,
+        prompt_text: str,
+        step_label: str = "THUMBNAIL_GEN",
+        timeout_sec: int = 300,
+        progress_cb: Optional[Callable[[str, int], None]] = None,
+        should_stop_cb: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Gửi lệnh tạo ảnh Thumbnail vào ChatGPT Web, chờ công cụ tạo ảnh (GPT-4o / DALL-E)
+        vẽ xong ảnh thực tế và thu hoạch ảnh chất lượng gốc về dưới dạng Base64 PNG
+        (kết hợp Tầng 1 Backend API asset_pointer + Tầng 2 DOM <img> / Canvas).
+        """
+        if not self.ws_url:
+            if not self.open_session_tab(force_new_chat=True):
+                raise RuntimeError(
+                    f"Không thể kết nối tới khung chat ChatGPT trên {self.cfg['label']}."
+                )
+
+        img_stamp = f"img_seen_{int(time.time() * 1000)}"
+        # Đóng dấu toàn bộ ảnh và lượt trả lời cũ trước khi gửi lệnh tạo ảnh mới
+        _cdp_eval_js(
+            self.ws_url,
+            f"""
+            (() => {{
+                const stamp = {json.dumps(img_stamp)};
+                document.querySelectorAll('img').forEach(im => im.setAttribute('data-studio-img-seen', stamp));
+                document.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"], article[data-turn="assistant"], div[data-turn="assistant"]').forEach(n => n.setAttribute('data-studio-turn-seen', stamp));
+                return true;
+            }})()
+            """,
+            await_promise=False,
+            timeout=4.0,
+        )
+
+        escaped_prompt_json = json.dumps(prompt_text, ensure_ascii=True)
+        inject_js = f"""
+        (async () => {{
+            const text = {escaped_prompt_json};
+            document.querySelectorAll('button[aria-label="Remove pasted text attachment"]').forEach(b => b.click());
+            const el = document.querySelector(
+                '#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [data-composer-markdown], div[role="textbox"][contenteditable="true"], main textarea'
+            );
+            if (!el) return {{ ok: false, err: 'NO_PROMPT_BOX' }};
+            el.focus();
+            if (el.tagName === 'TEXTAREA') {{
+                const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                nativeSetter.call(el, text);
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                await new Promise(r => setTimeout(r, 120));
+            }} else {{
+                if ((el.innerText || '').trim().length > 0) {{
+                    const sel = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    document.execCommand('delete', false, null);
+                    await new Promise(r => setTimeout(r, 80));
+                }}
+                const dt = new DataTransfer();
+                dt.setData('text/plain', text);
+                el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
+                await new Promise(r => setTimeout(r, 80));
+            }}
+
+            let sentConfirmed = false;
+            for (let s = 0; s < 25; s++) {{
+                await new Promise(r => setTimeout(r, 320));
+                const stopNow = document.querySelector('[data-testid="stop-button"], form button[aria-label*="Stop" i], button[aria-label*="Stop streaming" i]');
+                const curBox = document.querySelector('#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], main textarea');
+                const curTextLen = curBox ? ((curBox.tagName === 'TEXTAREA' ? curBox.value : curBox.innerText) || '').trim().length : 0;
+                if (stopNow || (s > 0 && curTextLen === 0)) {{
+                    sentConfirmed = true;
+                    break;
+                }}
+                const sendBtn = document.querySelector('button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], form button[aria-label*="Send" i], button[aria-label*="Send prompt" i], form button[type="submit"]');
+                if (sendBtn && !sendBtn.disabled) {{
+                    sendBtn.click();
+                }} else if (s >= 6) {{
+                    el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }}));
+                }}
+            }}
+            return {{ ok: sentConfirmed }};
+        }})()
+        """
+        inj_res = _cdp_eval_js(self.ws_url, inject_js, await_promise=True, timeout=35.0)
+        if not isinstance(inj_res, dict) or not inj_res.get("ok"):
+            return {"success": False, "error": f"Không thể gửi lệnh tạo ảnh: {inj_res}"}
+
+        start_t = time.time()
+        idle_after_stream_ticks = 0
+
+        poll_img_js = f"""
+        (() => {{
+            const stamp = {json.dumps(img_stamp)};
+            const turnStates = Array.from(document.querySelectorAll('[data-talvt-turn-state]')).map(e => e.getAttribute('data-talvt-turn-state'));
+            const hasIncompleteTurn = turnStates.some(s => s && s !== 'complete');
+            const stopBtn = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Dừng" i], .result-streaming');
+            const bodyTxt = (document.body ? document.body.innerText : '').slice(-1500).toLowerCase();
+            const isCreatingImgText = bodyTxt.includes('creating image') || bodyTxt.includes('đang tạo hình ảnh') || bodyTxt.includes('generating image');
+            const isStreaming = Boolean(stopBtn || hasIncompleteTurn);
+
+            const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
+            const newImgs = allImgs.filter(im => {{
+                if (im.getAttribute('data-studio-img-seen') === stamp) return false;
+                const alt = (im.getAttribute('alt') || '').toLowerCase();
+                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar')) return false;
+                const nw = im.naturalWidth || 0;
+                const nh = im.naturalHeight || 0;
+                const src = im.currentSrc || im.src || '';
+                return im.complete && nw >= 350 && nh >= 200 && src.length > 10;
+            }});
+
+            if (newImgs.length > 0) {{
+                try {{ newImgs[newImgs.length - 1].scrollIntoView({{ block: 'center' }}); }} catch (e) {{}}
+            }}
+
+            let latestText = '';
+            const turns = Array.from(document.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"], article[data-turn="assistant"], div[data-turn="assistant"]'));
+            const newTurns = turns.filter(n => n.getAttribute('data-studio-turn-seen') !== stamp);
+            if (newTurns.length > 0) {{
+                latestText = newTurns.map(n => (n.innerText || '').trim()).join('\\n').trim();
+            }}
+            let alertText = '';
+            try {{
+                const alertNodes = Array.from(document.querySelectorAll('[role="alert"], .toast-root, [data-testid*="limit"], [data-testid*="rate"], [class*="rate-limit"]'));
+                if (alertNodes.length > 0) {{
+                    alertText = alertNodes.map(a => (a.innerText || '').trim()).filter(Boolean).join(' | ').slice(0, 400);
+                }}
+            }} catch (e) {{}}
+
+            return {{
+                isStreaming: isStreaming,
+                isCreatingImgText: isCreatingImgText,
+                newImgCount: newImgs.length,
+                latestText: latestText,
+                alertText: alertText
+            }};
+        }})()
+        """
+
+        harvest_img_js = f"""
+        (async () => {{
+            const stamp = {json.dumps(img_stamp)};
+            const blobToDataUrl = (blob) => new Promise((resolve) => {{
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result || '');
+                reader.onerror = () => resolve('');
+                reader.readAsDataURL(blob);
+            }});
+
+            // Tầng 1: Thu hoạch trực tiếp từ thẻ <img> đã tải xong trên giao diện
+            const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
+            const newImgs = allImgs.filter(im => {{
+                if (im.getAttribute('data-studio-img-seen') === stamp) return false;
+                const alt = (im.getAttribute('alt') || '').toLowerCase();
+                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar')) return false;
+                const nw = im.naturalWidth || 0;
+                const nh = im.naturalHeight || 0;
+                return im.complete && nw >= 350 && nh >= 200;
+            }});
+
+            if (newImgs.length > 0) {{
+                const targetImg = newImgs[newImgs.length - 1];
+                const src = targetImg.currentSrc || targetImg.src || '';
+                const nw = targetImg.naturalWidth || 1024;
+                const nh = targetImg.naturalHeight || 1024;
+                try {{
+                    const r = await fetch(src, {{ credentials: 'include' }});
+                    if (r.ok) {{
+                        const b = await r.blob();
+                        if (b && b.size > 15000) {{
+                            const dUrl = await blobToDataUrl(b);
+                            if (dUrl && dUrl.includes('base64,')) {{
+                                return {{ ok: true, b64: dUrl.split('base64,')[1], width: nw, height: nh, source: 'dom_fetch' }};
+                            }}
+                        }}
+                    }}
+                }} catch (e) {{}}
+                try {{
+                    const canvas = document.createElement('canvas');
+                    canvas.width = nw;
+                    canvas.height = nh;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(targetImg, 0, 0);
+                    const dUrl = canvas.toDataURL('image/png');
+                    if (dUrl && dUrl.includes('base64,')) {{
+                        return {{ ok: true, b64: dUrl.split('base64,')[1], width: nw, height: nh, source: 'dom_canvas' }};
+                    }}
+                }} catch (e) {{}}
+            }}
+
+            // Tầng 2: Thu hoạch từ Backend API (/backend-api/conversation/ -> asset_pointer -> /backend-api/files/download/)
+            try {{
+                const mUrl = window.location.pathname.match(/\\/c\\/([0-9a-fA-F\\-]{{16,}})/);
+                if (mUrl && mUrl[1]) {{
+                    const convId = mUrl[1];
+                    if (!window.__studioAccessToken) {{
+                        const sr = await fetch('/api/auth/session', {{ credentials: 'include' }});
+                        if (sr.ok) {{
+                            const sd = await sr.json();
+                            if (sd && sd.accessToken) window.__studioAccessToken = sd.accessToken;
+                        }}
+                    }}
+                    if (window.__studioAccessToken) {{
+                        const cr = await fetch('/backend-api/conversation/' + convId, {{
+                            credentials: 'include',
+                            headers: {{ 'Authorization': 'Bearer ' + window.__studioAccessToken, 'Accept': 'application/json' }}
+                        }});
+                        if (cr.ok) {{
+                            const conv = await cr.json();
+                            const mapping = conv.mapping || {{}};
+                            let cur = conv.current_node;
+                            const seen = new Set();
+                            let foundPointer = '';
+                            let w = 1536, h = 1024;
+                            while (cur && !seen.has(cur) && mapping[cur]) {{
+                                seen.add(cur);
+                                const msg = mapping[cur].message;
+                                if (msg && msg.content && Array.isArray(msg.content.parts)) {{
+                                    for (const pt of msg.content.parts) {{
+                                        if (pt && typeof pt === 'object' && pt.asset_pointer) {{
+                                            foundPointer = pt.asset_pointer;
+                                            w = pt.width || w;
+                                            h = pt.height || h;
+                                            break;
+                                        }}
+                                    }}
+                                }}
+                                if (foundPointer) break;
+                                cur = mapping[cur].parent;
+                            }}
+                            if (foundPointer) {{
+                                const fileId = foundPointer.replace('sediment://', '').replace('file-service://', '').trim();
+                                const dlResp = await fetch('/backend-api/files/download/' + fileId + '?inline=false', {{
+                                    credentials: 'include',
+                                    headers: {{ 'Authorization': 'Bearer ' + window.__studioAccessToken }}
+                                }});
+                                if (dlResp.ok) {{
+                                    const dlJson = await dlResp.json();
+                                    const dlUrl = dlJson.download_url || '';
+                                    if (dlUrl) {{
+                                        const imgResp = await fetch(dlUrl);
+                                        if (imgResp.ok) {{
+                                            const b = await imgResp.blob();
+                                            const dUrl = await blobToDataUrl(b);
+                                            if (dUrl && dUrl.includes('base64,')) {{
+                                                return {{ ok: true, b64: dUrl.split('base64,')[1], width: w, height: h, source: 'backend_api' }};
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }} catch (e) {{}}
+
+            return {{ ok: false }};
+        }})()
+        """
+
+        while time.time() - start_t < timeout_sec:
+            if should_stop_cb and should_stop_cb():
+                raise RuntimeError("Đã dừng tiến trình theo yêu cầu người dùng.")
+
+            time.sleep(2.5)
+            elapsed = int(time.time() - start_t)
+            st = _cdp_eval_js(
+                self.ws_url, poll_img_js, await_promise=False, timeout=6.0
+            )
+            if not isinstance(st, dict):
+                continue
+
+            is_streaming = bool(st.get("isStreaming"))
+            new_img_count = int(st.get("newImgCount") or 0)
+            latest_text = str(st.get("latestText") or "").strip()
+            alert_text = str(st.get("alertText") or "").strip()
+
+            rl_img = _detect_rate_limit_in_text(alert_text, 500) or (
+                _detect_rate_limit_in_text(latest_text, 700) if not is_streaming else ""
+            )
+            if rl_img:
+                mark_account_rate_limited(
+                    self.acc_id,
+                    reason=f"Giới hạn tạo ảnh Thumbnail ({step_label}): {rl_img}",
+                    cooldown_sec=ACCOUNT_LIMIT_COOLDOWN_SEC,
+                )
+                return {
+                    "success": False,
+                    "rate_limited": True,
+                    "acc_id": self.acc_id,
+                    "error": f"Tài khoản {self.cfg['label']} bị giới hạn (Limit) tạo ảnh: {rl_img}",
+                    "assistant_text": latest_text,
+                }
+
+            if progress_cb:
+                progress_cb(step_label, elapsed)
+
+            if new_img_count > 0 and not is_streaming:
+                # Chờ thêm 1.5s để ảnh render hoàn chỉnh độ phân giải cao nhất
+                time.sleep(1.5)
+                harv = _cdp_eval_js(
+                    self.ws_url, harvest_img_js, await_promise=True, timeout=25.0
+                )
+                if isinstance(harv, dict) and harv.get("ok") and harv.get("b64"):
+                    return {
+                        "success": True,
+                        "b64_data": harv["b64"],
+                        "width": int(harv.get("width") or 1024),
+                        "height": int(harv.get("height") or 1024),
+                        "source": harv.get("source", "dom"),
+                        "assistant_text": latest_text,
+                    }
+
+            if not is_streaming and elapsed > 18:
+                idle_after_stream_ticks += 1
+                if idle_after_stream_ticks >= 4:
+                    harv = _cdp_eval_js(
+                        self.ws_url, harvest_img_js, await_promise=True, timeout=25.0
+                    )
+                    if isinstance(harv, dict) and harv.get("ok") and harv.get("b64"):
+                        return {
+                            "success": True,
+                            "b64_data": harv["b64"],
+                            "width": int(harv.get("width") or 1024),
+                            "height": int(harv.get("height") or 1024),
+                            "source": harv.get("source", "api"),
+                            "assistant_text": latest_text,
+                        }
+                    if idle_after_stream_ticks >= 8 and latest_text:
+                        return {
+                            "success": False,
+                            "acc_id": self.acc_id,
+                            "error": f"ChatGPT trả lời văn bản nhưng chưa xuất ảnh: {latest_text[:150]}",
+                            "assistant_text": latest_text,
+                        }
+            else:
+                idle_after_stream_ticks = 0
+
+        return {
+            "success": False,
+            "acc_id": self.acc_id,
+            "timeout": True,
+            "error": f"Quá thời gian chờ tạo ảnh ({timeout_sec}s) tại bước {step_label}.",
+        }
+
+
+# ==============================================================================
+# MODEL PHẦN 2: BỘ MÁY VIẾT KỊCH BẢN ADAS 5-SKILL & THUMBNAIL (ADAS SCRIPT ENGINE)
+# ==============================================================================
 
 import importlib
+import json
+import os
+import re
+import shutil
+import sys
+import threading
+import time
+import unicodedata
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 from . import voice_service as _voice_service_mod
+
 try:
     importlib.reload(_voice_service_mod)
 except Exception:
     pass
-from .chatgpt_web_client import (
-    ChatGPTWebSession,
-    AccountRateLimitError,
-    mark_account_rate_limited,
-    is_account_in_cooldown,
-    get_earliest_cooldown_remaining_sec,
-    ACCOUNT_LIMIT_COOLDOWN_SEC,
-    check_all_web_accounts_status,
-    ensure_all_saved_chatgpt_accounts_open,
-    close_all_chatgpt_browsers,
-    CHATGPT_ACCOUNTS,
-    MAX_THREADS_PER_ACCOUNT,
-)
+from .logger_service import log_error, log_info, log_warn
 from .voice_service import split_japanese_script, strip_leaked_titles_and_metadata
-from .logger_service import log_info, log_warn, log_error
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -41,7 +3268,9 @@ if hasattr(sys.stdout, "reconfigure"):
 # ==============================================================================
 # 1. BỘ ĐẾM KÝ TỰ CHUẨN PADRE MX V3.0 (70.000 - 80.000 CHARS • 7 PARTS >= 8.500)
 # ==============================================================================
-_STANDALONE_PART_HEADING_LINE_RE = re.compile(r"^\s*\[\s*PART\s*([1-7])\s*\]\s*$", re.IGNORECASE | re.MULTILINE)
+_STANDALONE_PART_HEADING_LINE_RE = re.compile(
+    r"^\s*\[\s*PART\s*([1-7])\s*\]\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 
 def pure_char_count(text: str) -> int:
@@ -84,7 +3313,9 @@ def ensure_part_headings_for_stage(text: str, part_letter: str) -> str:
         "C": [6, 7],
     }
     expected_nums = stage_map.get((part_letter or "A").upper(), [1, 2])
-    present_nums = [int(m.group(1)) for m in re.finditer(r"(?m)^\[PART\s*([1-7])\]$", norm)]
+    present_nums = [
+        int(m.group(1)) for m in re.finditer(r"(?m)^\[PART\s*([1-7])\]$", norm)
+    ]
     if present_nums == expected_nums:
         return norm
 
@@ -397,16 +3628,36 @@ def split_raw_text_into_idea_blocks(raw_text: str) -> List[str]:
     return result_blocks if result_blocks else [text]
 
 
-def _infer_relationship_from_text(vi_text: str, keyword_text: str, draft_title: str) -> str:
+def _infer_relationship_from_text(
+    vi_text: str, keyword_text: str, draft_title: str
+) -> str:
     """Tự động nhận diện mối quan hệ nhân vật chính xác từ VI / Keyword / Tiêu đề Tây Ban Nha hoặc Nhật."""
     combined = f"{vi_text} {keyword_text} {draft_title}".lower()
     mapping = [
-        (("nuera", "con dâu", "nàng dâu", "mẹ chồng"), "Người cha già Mexico (Don) — Con trai & Con dâu tham lam"),
-        (("yerno", "con rể", "hija", "con gái"), "Người cha già Mexico (Don) — Con gái & Con rể thực dụng"),
-        (("hijos", "mis hijos", "các con", "ba người con", "herencia", "thừa kế"), "Người cha già Mexico (Don) và các con tranh giành tài sản"),
-        (("nietos", "nieto", "nieta", "cháu nội", "cháu ngoại"), "Người ông/cha già Mexico và con cháu trong gia đình"),
-        (("hermano", "cuñado", "anh em", "chú bác"), "Người cha già Mexico — Con cái & Họ hàng"),
-        (("rancho", "hacienda", "taller", "empresa", "nhà xưởng", "trang trại"), "Người cha già chủ trang trại/xưởng Mexico và các con"),
+        (
+            ("nuera", "con dâu", "nàng dâu", "mẹ chồng"),
+            "Người cha già Mexico (Don) — Con trai & Con dâu tham lam",
+        ),
+        (
+            ("yerno", "con rể", "hija", "con gái"),
+            "Người cha già Mexico (Don) — Con gái & Con rể thực dụng",
+        ),
+        (
+            ("hijos", "mis hijos", "các con", "ba người con", "herencia", "thừa kế"),
+            "Người cha già Mexico (Don) và các con tranh giành tài sản",
+        ),
+        (
+            ("nietos", "nieto", "nieta", "cháu nội", "cháu ngoại"),
+            "Người ông/cha già Mexico và con cháu trong gia đình",
+        ),
+        (
+            ("hermano", "cuñado", "anh em", "chú bác"),
+            "Người cha già Mexico — Con cái & Họ hàng",
+        ),
+        (
+            ("rancho", "hacienda", "taller", "empresa", "nhà xưởng", "trang trại"),
+            "Người cha già chủ trang trại/xưởng Mexico và các con",
+        ),
     ]
     for keys, label in mapping:
         if any(k in combined for k in keys):
@@ -414,7 +3665,9 @@ def _infer_relationship_from_text(vi_text: str, keyword_text: str, draft_title: 
     return "Người cha già Mexico (65–78 tuổi, ngôi kể 'yo') và con cái trong gia đình"
 
 
-def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Dict[str, Any]:
+def parse_idea_input_block(
+    raw_text: str, custom_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Bóc tách đoạn văn bản đầu vào của người dùng (Hỗ trợ cả Tây Ban Nha Mexico es-MX, tiếng Việt, tiếng Anh và tiếng Nhật).
     """
@@ -482,9 +3735,8 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
                     return v
         return default
 
-    draft_title_ja = (
-        header_draft_title
-        or _pick_exact_or_contains("tiêu đề", "title", "titulo", "título", "es", "mx", "04.")
+    draft_title_ja = header_draft_title or _pick_exact_or_contains(
+        "tiêu đề", "title", "titulo", "título", "es", "mx", "04."
     )
     if not draft_title_ja:
         for ln in raw_lines:
@@ -495,16 +3747,35 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
                 draft_title_ja = cleaned_ln
                 break
     else:
-        draft_title_ja = clean_single_title_line(draft_title_ja) or draft_title_ja.strip()
+        draft_title_ja = (
+            clean_single_title_line(draft_title_ja) or draft_title_ja.strip()
+        )
 
     vi_line = _pick_exact_or_contains("vi", "vn", "dịch ý", "05.")
-    summary_raw = _pick_exact_or_contains("tóm tắt", "premise gốc", "10.", "premise", "nội dung")
+    summary_raw = _pick_exact_or_contains(
+        "tóm tắt", "premise gốc", "10.", "premise", "nội dung"
+    )
     keyword_line = _pick_exact_or_contains("keyword", "keywords", "18.", "từ khóa")
-    evidence_line = _pick_exact_or_contains("evidence", "proof", "vật chứng", "bằng chứng", "12.")
-    reveal_line = _pick_exact_or_contains("reveal", "reveals", "ba lớp tiết lộ", "3 lớp tiết lộ", "lớp tiết lộ", "tiết lộ")
-    capacity_line = _pick_exact_or_contains("capacity", "longform_capacity", "longform step 1", "longform", "03.", default="PASS")
+    evidence_line = _pick_exact_or_contains(
+        "evidence", "proof", "vật chứng", "bằng chứng", "12."
+    )
+    reveal_line = _pick_exact_or_contains(
+        "reveal", "reveals", "ba lớp tiết lộ", "3 lớp tiết lộ", "lớp tiết lộ", "tiết lộ"
+    )
+    capacity_line = _pick_exact_or_contains(
+        "capacity",
+        "longform_capacity",
+        "longform step 1",
+        "longform",
+        "03.",
+        default="PASS",
+    )
 
-    dich_y_vi = vi_line or summary_raw or (f"Ý tưởng gốc: {draft_title_ja}" if draft_title_ja else "")
+    dich_y_vi = (
+        vi_line
+        or summary_raw
+        or (f"Ý tưởng gốc: {draft_title_ja}" if draft_title_ja else "")
+    )
 
     if summary_raw:
         summary_vi = summary_raw
@@ -516,11 +3787,21 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
             extra_parts.append(f"Tiết lộ / Đảo ngược cốt lõi: {reveal_line}")
         summary_vi = ". ".join(extra_parts) + "."
     else:
-        summary_vi = f"Triển khai câu chuyện người cha già Mexico (PADRE MX V3.0 — 7 Part, 70k–80k ký tự) bám sát ý tưởng: {draft_title_ja}" if draft_title_ja else ""
+        summary_vi = (
+            f"Triển khai câu chuyện người cha già Mexico (PADRE MX V3.0 — 7 Part, 70k–80k ký tự) bám sát ý tưởng: {draft_title_ja}"
+            if draft_title_ja
+            else ""
+        )
 
     relationship = _pick_exact_or_contains(
-        "quan hệ", "nhân vật", "06.", "relation", "relationship",
-        default=_infer_relationship_from_text(vi_line or summary_vi, keyword_line, draft_title_ja),
+        "quan hệ",
+        "nhân vật",
+        "06.",
+        "relation",
+        "relationship",
+        default=_infer_relationship_from_text(
+            vi_line or summary_vi, keyword_line, draft_title_ja
+        ),
     )
 
     inferred_conflict = "Con cái / con dâu / con rể coi thường người cha già sau khi nghĩ ông đã hết tiền và tài sản"
@@ -529,9 +3810,17 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
     elif vi_line:
         inferred_conflict = vi_line.strip()
 
-    conflict = _pick_exact_or_contains("xung đột", "09.", "conflict", default=inferred_conflict)
-    proof_object = evidence_line or "Escritura pública original, cláusula de usufructo vitalicio y estados de cuenta bancarios en MXN"
-    tu_khoa_goi_y = keyword_line or "historias de reflexión, padre mayor, hijos ingratos, herencia, justicia familiar, México"
+    conflict = _pick_exact_or_contains(
+        "xung đột", "09.", "conflict", default=inferred_conflict
+    )
+    proof_object = (
+        evidence_line
+        or "Escritura pública original, cláusula de usufructo vitalicio y estados de cuenta bancarios en MXN"
+    )
+    tu_khoa_goi_y = (
+        keyword_line
+        or "historias de reflexión, padre mayor, hijos ingratos, herencia, justicia familiar, México"
+    )
     longform_cap = capacity_line or "PASS"
 
     rev1 = _pick_exact_or_contains("13.", "lớp tiết lộ thứ nhất")
@@ -539,29 +3828,64 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
     rev3 = _pick_exact_or_contains("15.", "lớp tiết lộ thứ ba")
 
     if reveal_line and not (rev1 and rev2 and rev3):
-        parts = [p.strip().rstrip(".") for p in re.split(r"→|->|=>|;", reveal_line) if p.strip()]
+        parts = [
+            p.strip().rstrip(".")
+            for p in re.split(r"→|->|=>|;", reveal_line)
+            if p.strip()
+        ]
         if len(parts) >= 3:
             rev1 = rev1 or parts[0]
             rev2 = rev2 or parts[1]
             rev3 = rev3 or " → ".join(parts[2:])
         elif len(parts) == 2:
-            rev1 = rev1 or f"Phát hiện kế hoạch chiếm đoạt tài sản của các con liên quan đến ({proof_object}): {parts[0]}"
-            rev2 = rev2 or f"Người cha âm thầm làm việc với Notario Público để kích hoạt điều khoản bảo vệ tài sản"
+            rev1 = (
+                rev1
+                or f"Phát hiện kế hoạch chiếm đoạt tài sản của các con liên quan đến ({proof_object}): {parts[0]}"
+            )
+            rev2 = (
+                rev2
+                or f"Người cha âm thầm làm việc với Notario Público để kích hoạt điều khoản bảo vệ tài sản"
+            )
             rev3 = rev3 or parts[1]
         else:
             core_reveal = reveal_line.strip().rstrip(".")
-            vi_second_half = vi_line.split(";", 1)[1].strip() if (vi_line and ";" in vi_line) else (vi_line or "Sự thật pháp lý được công bố")
-            rev1 = rev1 or f"Phát hiện âm mưu qua mặt người cha ngay sau biến cố mở đầu ({inferred_conflict})"
-            rev2 = rev2 or f"Vật chứng pháp lý '{proof_object}' được chuẩn bị cùng công chứng viên: {vi_second_half}"
-            rev3 = rev3 or f"Đòn công lý hợp pháp đảo ngược toàn bộ thế cờ: {core_reveal}"
+            vi_second_half = (
+                vi_line.split(";", 1)[1].strip()
+                if (vi_line and ";" in vi_line)
+                else (vi_line or "Sự thật pháp lý được công bố")
+            )
+            rev1 = (
+                rev1
+                or f"Phát hiện âm mưu qua mặt người cha ngay sau biến cố mở đầu ({inferred_conflict})"
+            )
+            rev2 = (
+                rev2
+                or f"Vật chứng pháp lý '{proof_object}' được chuẩn bị cùng công chứng viên: {vi_second_half}"
+            )
+            rev3 = (
+                rev3 or f"Đòn công lý hợp pháp đảo ngược toàn bộ thế cờ: {core_reveal}"
+            )
 
-    rev1 = rev1 or "Phát hiện con cái âm mưu gạt người cha ra khỏi chính ngôi nhà/tài sản ông gây dựng"
-    rev2 = rev2 or "Người cha âm thầm kiểm tra sổ sách, tài khoản MXN và làm việc với Notario Público"
-    rev3 = rev3 or "Buổi công bố văn bản pháp lý chính thức khiến những kẻ phản bội mất trắng quyền kiểm soát"
+    rev1 = (
+        rev1
+        or "Phát hiện con cái âm mưu gạt người cha ra khỏi chính ngôi nhà/tài sản ông gây dựng"
+    )
+    rev2 = (
+        rev2
+        or "Người cha âm thầm kiểm tra sổ sách, tài khoản MXN và làm việc với Notario Público"
+    )
+    rev3 = (
+        rev3
+        or "Buổi công bố văn bản pháp lý chính thức khiến những kẻ phản bội mất trắng quyền kiểm soát"
+    )
 
     payoff = _pick_exact_or_contains(
-        "payoff", "hệ quả", "16.",
-        default=f"{reveal_line} — Đòi lại công lý, quyền sở hữu hợp pháp và phẩm giá người cha qua '{proof_object}'" if reveal_line else "Giành lại toàn bộ tài sản hợp pháp, phẩm giá và sự bình yên tuổi già",
+        "payoff",
+        "hệ quả",
+        "16.",
+        default=f"{reveal_line} — Đòi lại công lý, quyền sở hữu hợp pháp và phẩm giá người cha qua '{proof_object}'"
+        if reveal_line
+        else "Giành lại toàn bộ tài sản hợp pháp, phẩm giá và sự bình yên tuổi già",
     )
 
     # Bỏ qua mọi mã đầu dòng trong văn bản, luôn lấy Mã theo STT (custom_id truyền vào là STT "1", "2", "3"...)
@@ -569,15 +3893,24 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
     ma_id = re.sub(r"[^A-Za-z0-9_\-]", "_", ma_id)
 
     boi_canh = _pick_exact_or_contains(
-        "không gian", "bối cảnh", "08.", "setting",
-        default=f"Gia đình tại Mexico gắn với sự kiện: {vi_line or summary_vi[:80]}" if (vi_line or summary_vi) else "Ngôi nhà gia đình / Văn phòng công chứng (Notaría Pública) tại Mexico",
+        "không gian",
+        "bối cảnh",
+        "08.",
+        "setting",
+        default=f"Gia đình tại Mexico gắn với sự kiện: {vi_line or summary_vi[:80]}"
+        if (vi_line or summary_vi)
+        else "Ngôi nhà gia đình / Văn phòng công chứng (Notaría Pública) tại Mexico",
     )
     nhom_chu_de = _pick_exact_or_contains(
-        "trụ cột cảm xúc", "nhóm chủ đề", "chủ đề", "07.",
+        "trụ cột cảm xúc",
+        "nhóm chủ đề",
+        "chủ đề",
+        "07.",
         default=f"{relationship} — {tu_khoa_goi_y}",
     )
     cau_hoi = _pick_exact_or_contains(
-        "câu hỏi", "11.",
+        "câu hỏi",
+        "11.",
         default=f"Người cha già sẽ dùng '{proof_object}' như thế nào để lật ngược âm mưu của những đứa con bất hiếu?",
     )
 
@@ -600,13 +3933,37 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
         "reveal_3": rev3,
         "payoff": payoff,
         "longform_capacity_step1": longform_cap,
-        "uu_tien": _pick_exact_or_contains("01.", "ưu tiên", "priority", default="CAO (HIGH_PRIORITY)"),
-        "co_che_story": _pick_exact_or_contains("17.", "cơ chế", "mechanism", default="PATRIARCH_LEGAL_REVERSAL_MX (Vật chứng công chứng Mexico đảo ngược sự phản bội gia đình)"),
+        "uu_tien": _pick_exact_or_contains(
+            "01.", "ưu tiên", "priority", default="CAO (HIGH_PRIORITY)"
+        ),
+        "co_che_story": _pick_exact_or_contains(
+            "17.",
+            "cơ chế",
+            "mechanism",
+            default="PATRIARCH_LEGAL_REVERSAL_MX (Vật chứng công chứng Mexico đảo ngược sự phản bội gia đình)",
+        ),
         "tu_khoa_goi_y": tu_khoa_goi_y,
-        "ly_do_viet_dai": _pick_exact_or_contains("19.", "căn cứ", default=f"Capacity = {longform_cap}. Cấu trúc 7 Part (70.000–80.000 ký tự) với chuỗi nhân quả 3 lớp ({rev1} -> {rev2} -> {rev3})."),
-        "luu_y_logic": _pick_exact_or_contains("20.", "lưu ý", default="Đảm bảo tính xác thực của thủ tục pháp lý Mexico (Notario Público, Escritura Pública, Usufructo Vitalicio, đồng Peso MXN)."),
-        "goc_thumbnail": _pick_exact_or_contains("22.", "góc thumbnail", default=f"Layout 80/20: Bên trái 80% nền trắng chữ IN HOA Tây Ban Nha + Banner đỏ; Bên phải 20% chân dung người cha già Mexico (kèm bản nền xanh #00FF00)."),
-        "research_source": _pick_exact_or_contains("23.", "nguồn gốc", "research_source", default=f"PADRE MX V3.0 ({ma_id} — Keyword: {tu_khoa_goi_y})."),
+        "ly_do_viet_dai": _pick_exact_or_contains(
+            "19.",
+            "căn cứ",
+            default=f"Capacity = {longform_cap}. Cấu trúc 7 Part (70.000–80.000 ký tự) với chuỗi nhân quả 3 lớp ({rev1} -> {rev2} -> {rev3}).",
+        ),
+        "luu_y_logic": _pick_exact_or_contains(
+            "20.",
+            "lưu ý",
+            default="Đảm bảo tính xác thực của thủ tục pháp lý Mexico (Notario Público, Escritura Pública, Usufructo Vitalicio, đồng Peso MXN).",
+        ),
+        "goc_thumbnail": _pick_exact_or_contains(
+            "22.",
+            "góc thumbnail",
+            default=f"Layout 80/20: Bên trái 80% nền trắng chữ IN HOA Tây Ban Nha + Banner đỏ; Bên phải 20% chân dung người cha già Mexico (kèm bản nền xanh #00FF00).",
+        ),
+        "research_source": _pick_exact_or_contains(
+            "23.",
+            "nguồn gốc",
+            "research_source",
+            default=f"PADRE MX V3.0 ({ma_id} — Keyword: {tu_khoa_goi_y}).",
+        ),
         "dinh_vi_batch": DEFAULT_BATCH_POSITIONING,
         "tham_chieu_motif": DEFAULT_MOTIF_REFERENCES,
         "status": "SAVED_READY",
@@ -618,19 +3975,27 @@ def parse_idea_input_block(raw_text: str, custom_id: Optional[str] = None) -> Di
     }
 
 
-def build_step2_prompt_from_idea(idea: Dict[str, Any], custom_template: Optional[str] = None) -> str:
+def build_step2_prompt_from_idea(
+    idea: Dict[str, Any], custom_template: Optional[str] = None
+) -> str:
     """Điền đầy đủ thông tin ý tưởng đã lưu vào mẫu Prompt STEP 1/2 (kèm tự động nhúng SKILL 01 PADRE MX V3.0)."""
     tpl = (custom_template or DEFAULT_STEP2_PROMPT_TEMPLATE).strip()
     # Nếu file step2_prompt_template.txt cũ trên ổ cứng vẫn là bản tiếng Nhật cũ, tự động nâng cấp lên mẫu PADRE MX V3.0
-    if "TITLE MATRIX — VIẾT HOÀN TOÀN BẰNG TIẾNG NHẬT" in tpl or "40.001–50.000 PURE_CHARACTER_COUNT tiếng Nhật" in tpl:
+    if (
+        "TITLE MATRIX — VIẾT HOÀN TOÀN BẰNG TIẾNG NHẬT" in tpl
+        or "40.001–50.000 PURE_CHARACTER_COUNT tiếng Nhật" in tpl
+    ):
         tpl = DEFAULT_STEP2_PROMPT_TEMPLATE.strip()
     replacements = {
         "{{MÃ_ID}}": idea.get("ma_id", "PMX_001"),
         "{{ĐỊNH_VỊ_BATCH}}": idea.get("dinh_vi_batch", DEFAULT_BATCH_POSITIONING),
         "{{ƯU_TIÊN}}": idea.get("uu_tien", "CAO"),
-        "{{LONGFORM_CAPACITY_STEP1}}": idea.get("longform_capacity_step1", "PASS sơ bộ."),
+        "{{LONGFORM_CAPACITY_STEP1}}": idea.get(
+            "longform_capacity_step1", "PASS sơ bộ."
+        ),
         "{{TIÊU_ĐỀ_NHẬT_NHÁP_CHƯA_KHÓA}}": idea.get("draft_title_ja", ""),
-        "{{DỊCH_Ý_TIÊU_ĐỀ_VI}}": idea.get("dich_y_tieu_de_vi") or idea.get("summary_vi", ""),
+        "{{DỊCH_Ý_TIÊU_ĐỀ_VI}}": idea.get("dich_y_tieu_de_vi")
+        or idea.get("summary_vi", ""),
         "{{QUAN_HỆ_NHÂN_VẬT}}": idea.get("relationship", ""),
         "{{NHÓM_CHỦ_ĐỀ}}": idea.get("nhom_chu_de", ""),
         "{{BỐI_CẢNH_SỰ_KIỆN}}": idea.get("boi_canh_su_kien", ""),
@@ -648,7 +4013,9 @@ def build_step2_prompt_from_idea(idea: Dict[str, Any], custom_template: Optional
         "{{LƯU_Ý_LOGIC_PHÁP_LÝ_Y_TẾ}}": idea.get("luu_y_logic", ""),
         "{{GÓC_THUMBNAIL_ĐỀ_XUẤT}}": idea.get("goc_thumbnail", ""),
         "{{RESEARCH_SOURCE}}": idea.get("research_source", ""),
-        "{{THAM_CHIẾU_MOTIF_BATCH}}": idea.get("tham_chieu_motif", DEFAULT_MOTIF_REFERENCES),
+        "{{THAM_CHIẾU_MOTIF_BATCH}}": idea.get(
+            "tham_chieu_motif", DEFAULT_MOTIF_REFERENCES
+        ),
     }
     for k, v in replacements.items():
         tpl = tpl.replace(k, str(v or ""))
@@ -672,7 +4039,9 @@ def extract_locked_title_from_step2(step2_text: str, fallback_title: str = "") -
             return False
         if vi_re.search(c):
             return False
-        if c.upper().startswith(("YES", "NO", "PASS", "FAIL", "STEP", "CANDIDATE", "TITLE_LOCKED")):
+        if c.upper().startswith(
+            ("YES", "NO", "PASS", "FAIL", "STEP", "CANDIDATE", "TITLE_LOCKED")
+        ):
             return False
         if len(jp_re.findall(c)) >= 10:
             return True
@@ -692,11 +4061,20 @@ def extract_locked_title_from_step2(step2_text: str, fallback_title: str = "") -
     ]
     for pat in inline_pats:
         for m in re.finditer(pat, step2_text, flags=re.IGNORECASE):
-            cand = re.sub(r"<[^>]+>", "", m.group(1)).replace("**", "").strip().strip("`*'\"「」 ")
+            cand = (
+                re.sub(r"<[^>]+>", "", m.group(1))
+                .replace("**", "")
+                .strip()
+                .strip("`*'\"「」 ")
+            )
             if cand.upper() in ("VERBATIM", "YES", "PASS"):
                 continue
             if _is_valid_locked_candidate(cand):
-                return cand[:100].strip() if not jp_re.search(cand) and len(cand) > 100 else cand
+                return (
+                    cand[:100].strip()
+                    if not jp_re.search(cand) and len(cand) > 100
+                    else cand
+                )
 
     # 2. Quét các khối tiêu đề viết ở dòng kế tiếp bên dưới nhãn
     header_pats = [
@@ -777,19 +4155,26 @@ def extract_clean_japanese_narration(raw_text: str, part_letter: str = "") -> st
         if not ln:
             continue
         upper_ln = ln.upper().lstrip("#*>- `")
-        if any(upper_ln.startswith(mk) or f"**{mk}" in upper_ln or f"`{mk}" in upper_ln for mk in stop_markers):
+        if any(
+            upper_ln.startswith(mk) or f"**{mk}" in upper_ln or f"`{mk}" in upper_ln
+            for mk in stop_markers
+        ):
             break
         if ln.startswith(("```", "---", "===")):
             continue
 
         # Giữ nguyên hoặc chuẩn hóa dòng nhãn [PART 1] .. [PART 7] của PADRE MX V3.0
-        m_part_tag = re.match(r"^[#*>\-\s`]*\[\s*PART\s*([1-7])\s*\][*`\s]*$", ln, flags=re.IGNORECASE)
+        m_part_tag = re.match(
+            r"^[#*>\-\s`]*\[\s*PART\s*([1-7])\s*\][*`\s]*$", ln, flags=re.IGNORECASE
+        )
         if m_part_tag:
             clean_lines.append(f"[PART {m_part_tag.group(1)}]")
             continue
 
         if ln.startswith("#"):
-            m_hdr_part = re.match(r"^#+\s*\[?\s*PART\s*([1-7])\s*\]?\s*$", ln, flags=re.IGNORECASE)
+            m_hdr_part = re.match(
+                r"^#+\s*\[?\s*PART\s*([1-7])\s*\]?\s*$", ln, flags=re.IGNORECASE
+            )
             if m_hdr_part:
                 clean_lines.append(f"[PART {m_hdr_part.group(1)}]")
             continue
@@ -798,11 +4183,14 @@ def extract_clean_japanese_narration(raw_text: str, part_letter: str = "") -> st
         if not cleaned:
             continue
 
-        if re.match(
-            r"^(?:[A-Z]{1,6}\d{1,5}\s*[—–\-·:：]+\s*)?(?:STEP\s*[1-7]\b|BUILD\s+PART\s*[ABC]\b|STAGE\s*[ABC]\b|PART\s*[:：\-—–·]?\s*[ABC]\b|SCENE\s+[ABC]?\d+\b|CHAPTER\s+\d+\b|第\d+章|【.*】)\s*[:：\-—–·]?.*$",
-            cleaned,
-            re.IGNORECASE,
-        ) and len(cleaned) < 95:
+        if (
+            re.match(
+                r"^(?:[A-Z]{1,6}\d{1,5}\s*[—–\-·:：]+\s*)?(?:STEP\s*[1-7]\b|BUILD\s+PART\s*[ABC]\b|STAGE\s*[ABC]\b|PART\s*[:：\-—–·]?\s*[ABC]\b|SCENE\s+[ABC]?\d+\b|CHAPTER\s+\d+\b|第\d+章|【.*】)\s*[:：\-—–·]?.*$",
+                cleaned,
+                re.IGNORECASE,
+            )
+            and len(cleaned) < 95
+        ):
             continue
 
         if re.match(
@@ -876,7 +4264,7 @@ class ADASScriptEngine:
         if self.root_dir.name.lower() == "app":
             self.root_dir = self.root_dir.parent
         self.video_pipeline = video_pipeline
-        self.ideas_file = self.root_dir / "saved_ideas.json"
+        self.ideas_file = self.root_dir / "config" / "saved_ideas.json"
         self.step2_template_file = self.root_dir / "step2_prompt_template.txt"
         self.projects_dir = self.root_dir / "projects"
         self.final_video_dir = self.projects_dir
@@ -904,9 +4292,13 @@ class ADASScriptEngine:
             "logs": [],
         }
 
-        if self.video_pipeline and hasattr(self.video_pipeline, "set_job_status_callback"):
+        if self.video_pipeline and hasattr(
+            self.video_pipeline, "set_job_status_callback"
+        ):
             try:
-                self.video_pipeline.set_job_status_callback(self._on_video_pipeline_job_update)
+                self.video_pipeline.set_job_status_callback(
+                    self._on_video_pipeline_job_update
+                )
             except Exception:
                 pass
 
@@ -921,20 +4313,33 @@ class ADASScriptEngine:
     ):
         """Nhận thông báo trực tiếp từ ProductionPipeline khi dự án đang tạo Voice / Render MP4 / Hoàn tất."""
         now_ts = time.time()
-        if not hasattr(self, "_vp_job_update_tracker") or not isinstance(getattr(self, "_vp_job_update_tracker", None), dict):
+        if not hasattr(self, "_vp_job_update_tracker") or not isinstance(
+            getattr(self, "_vp_job_update_tracker", None), dict
+        ):
             self._vp_job_update_tracker = {}
         prev_st, prev_ts = self._vp_job_update_tracker.get(ma_id, ("", 0.0))
 
         # Tránh bão I/O ổ cứng (ghi đè saved_ideas.json + quét 300 thư mục liên tục mỗi giây) khi đang ở trạng thái trung gian VIDEO_RENDERING
-        is_status_transition = (status != prev_st) or (status in ("COMPLETED_VIDEO", "ERROR_VIDEO", "ERROR", "SCRIPT_DONE"))
-        if not is_status_transition and status == "VIDEO_RENDERING" and (now_ts - prev_ts) < 20.0:
+        is_status_transition = (status != prev_st) or (
+            status in ("COMPLETED_VIDEO", "ERROR_VIDEO", "ERROR", "SCRIPT_DONE")
+        )
+        if (
+            not is_status_transition
+            and status == "VIDEO_RENDERING"
+            and (now_ts - prev_ts) < 20.0
+        ):
             return
 
         self._vp_job_update_tracker[ma_id] = (status, now_ts)
         fields: Dict[str, Any] = {"status": status, "current_step": step_desc}
         if status == "COMPLETED_VIDEO":
             fields["has_video_mp4"] = True
-        elif status in ("ERROR_VIDEO", "VIDEO_RENDERING", "VIDEO_QUEUED", "SCRIPT_DONE"):
+        elif status in (
+            "ERROR_VIDEO",
+            "VIDEO_RENDERING",
+            "VIDEO_QUEUED",
+            "SCRIPT_DONE",
+        ):
             fields["has_video_mp4"] = False
         if extra:
             if extra.get("video_path") and status == "COMPLETED_VIDEO":
@@ -1002,7 +4407,10 @@ class ADASScriptEngine:
         return clean
 
     def _get_persistent_appdata_dir(self) -> Path:
-        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "Mexico_Ong_Gia_Studio"
+        base = (
+            Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+            / "Mexico_Ong_Gia_Studio"
+        )
         try:
             base.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -1047,9 +4455,21 @@ class ADASScriptEngine:
             if f_root == p_root or not f_root.exists():
                 return
 
-            ignore_names = {"renders", "assets", "sentences", "stook", "ssd_render_staging", "__pycache__"}
+            ignore_names = {
+                "renders",
+                "assets",
+                "sentences",
+                "stook",
+                "ssd_render_staging",
+                "__pycache__",
+            }
             for sub in list(f_root.iterdir()):
-                if not sub.is_dir() or sub.name.lower() in ignore_names or sub.name.startswith(".") or sub.name.startswith("_"):
+                if (
+                    not sub.is_dir()
+                    or sub.name.lower() in ignore_names
+                    or sub.name.startswith(".")
+                    or sub.name.startswith("_")
+                ):
                     continue
                 mid = sub.name.strip()
                 target_proj = p_root / mid
@@ -1062,20 +4482,35 @@ class ADASScriptEngine:
                             dest_it = dest_assets / item.name
                             if item.is_dir():
                                 shutil.copytree(item, dest_it, dirs_exist_ok=True)
-                            elif not dest_it.exists() or item.stat().st_size > dest_it.stat().st_size:
+                            elif (
+                                not dest_it.exists()
+                                or item.stat().st_size > dest_it.stat().st_size
+                            ):
                                 shutil.copy2(item, dest_it)
                         shutil.rmtree(misplaced_assets, ignore_errors=True)
                     except Exception:
                         pass
 
                 # Chuyển các file kịch bản / thông tin dự án về Folder Project nếu bên Folder Project chưa có
-                for fn in ("script_clean.txt", "script.txt", "idea_info.json", "00_TIEU_DE_VA_SEO_YOUTUBE.txt", "step2_title_thumbnail.txt", "part_a.txt", "part_b.txt", "part_c.txt"):
+                for fn in (
+                    "script_clean.txt",
+                    "script.txt",
+                    "idea_info.json",
+                    "00_TIEU_DE_VA_SEO_YOUTUBE.txt",
+                    "step2_title_thumbnail.txt",
+                    "part_a.txt",
+                    "part_b.txt",
+                    "part_c.txt",
+                ):
                     src_f = sub / fn
                     if src_f.exists():
                         try:
                             target_proj.mkdir(parents=True, exist_ok=True)
                             dst_f = target_proj / fn
-                            if not dst_f.exists() or src_f.stat().st_size > dst_f.stat().st_size:
+                            if (
+                                not dst_f.exists()
+                                or src_f.stat().st_size > dst_f.stat().st_size
+                            ):
                                 shutil.copy2(src_f, dst_f)
                         except Exception:
                             pass
@@ -1084,9 +4519,9 @@ class ADASScriptEngine:
                 mp4_in_renders = sub / "renders" / f"{mid}_master.mp4"
                 mp4_direct = sub / f"{mid}_master.mp4"
                 has_finished_mp4 = (
-                    (mp4_in_renders.exists() and mp4_in_renders.stat().st_size > 1_000_000)
-                    or (mp4_direct.exists() and mp4_direct.stat().st_size > 1_000_000)
-                )
+                    mp4_in_renders.exists()
+                    and mp4_in_renders.stat().st_size > 1_000_000
+                ) or (mp4_direct.exists() and mp4_direct.stat().st_size > 1_000_000)
                 if not has_finished_mp4 and target_proj.exists():
                     try:
                         shutil.rmtree(sub, ignore_errors=True)
@@ -1106,7 +4541,10 @@ class ADASScriptEngine:
             except Exception:
                 pass
         try:
-            for root_sp in (self.root_dir / "storage_paths.json", self.root_dir / "app" / "storage_paths.json"):
+            for root_sp in (
+                self.root_dir / "config" / "storage_paths.json",
+                self.root_dir / "app" / "storage_paths.json",
+            ):
                 if root_sp.parent.exists():
                     root_sp.write_text(
                         json.dumps(
@@ -1123,7 +4561,9 @@ class ADASScriptEngine:
                     )
         except Exception:
             pass
-        threading.Thread(target=self._migrate_misplaced_voice_assets_from_final_dir, daemon=True).start()
+        threading.Thread(
+            target=self._migrate_misplaced_voice_assets_from_final_dir, daemon=True
+        ).start()
 
     def _load_storage_paths_config(self):
         """
@@ -1134,7 +4574,7 @@ class ADASScriptEngine:
         """
         appdata_dir = self._get_persistent_appdata_dir()
         sp_file = appdata_dir / "storage_paths.json"
-        cfg_file = self.root_dir / "config.json"
+        cfg_file = self.root_dir / "config" / "config.json"
 
         raw_cfg: Dict[str, Any] = {}
         for fp in (cfg_file, sp_file):
@@ -1185,7 +4625,7 @@ class ADASScriptEngine:
 
         # Nếu dùng chung thư mục mặc định root_dir/projects thì giữ saved_ideas.json, đồng thời lưu bản index trong projects_dir
         local_idx = self.projects_dir / "_saved_ideas_index.json"
-        root_idx = self.root_dir / "saved_ideas.json"
+        root_idx = self.root_dir / "config" / "saved_ideas.json"
         if self.projects_dir.resolve() == default_proj:
             self.ideas_file = root_idx
             if root_idx.exists() and not local_idx.exists():
@@ -1229,11 +4669,15 @@ class ADASScriptEngine:
 
         old_proj = self.projects_dir.resolve()
         old_final = self.final_video_dir.resolve()
-        was_same = (old_proj == old_final)
+        was_same = old_proj == old_final
 
         if projects_dir is not None and str(projects_dir).strip():
-            self.projects_dir = self._normalize_projects_folder_path(str(projects_dir).strip())
-            if was_same and (final_video_dir is None or not str(final_video_dir).strip()):
+            self.projects_dir = self._normalize_projects_folder_path(
+                str(projects_dir).strip()
+            )
+            if was_same and (
+                final_video_dir is None or not str(final_video_dir).strip()
+            ):
                 self.final_video_dir = self.projects_dir
 
         if final_video_dir is not None and str(final_video_dir).strip():
@@ -1253,7 +4697,7 @@ class ADASScriptEngine:
 
         default_proj = (self.root_dir / "projects").resolve()
         if self.projects_dir.resolve() == default_proj:
-            self.ideas_file = self.root_dir / "saved_ideas.json"
+            self.ideas_file = self.root_dir / "config" / "saved_ideas.json"
         else:
             self.ideas_file = self.projects_dir / "_saved_ideas_index.json"
 
@@ -1266,16 +4710,24 @@ class ADASScriptEngine:
         }
         sp_file = self._get_persistent_appdata_dir() / "storage_paths.json"
         try:
-            sp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            sp_file.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         except Exception:
             pass
 
-        cfg_file = self.root_dir / "config.json"
+        cfg_file = self.root_dir / "config" / "config.json"
         try:
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
+            cfg = (
+                json.loads(cfg_file.read_text(encoding="utf-8"))
+                if cfg_file.exists()
+                else {}
+            )
             cfg.update(payload)
             cfg["output_dir"] = str(self.final_video_dir)
-            cfg_file.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            cfg_file.write_text(
+                json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         except Exception:
             pass
 
@@ -1315,17 +4767,21 @@ class ADASScriptEngine:
         f_dir = getattr(self, "final_video_dir", None)
         if f_dir:
             f_path = Path(f_dir)
-            candidates.extend([
-                f_path / ma_id / "renders" / f"{ma_id}_master.mp4",
-                f_path / ma_id / f"{ma_id}_master.mp4",
-                f_path / "renders" / f"{ma_id}_master.mp4",
-                f_path / f"{ma_id}_master.mp4",
-            ])
+            candidates.extend(
+                [
+                    f_path / ma_id / "renders" / f"{ma_id}_master.mp4",
+                    f_path / ma_id / f"{ma_id}_master.mp4",
+                    f_path / "renders" / f"{ma_id}_master.mp4",
+                    f_path / f"{ma_id}_master.mp4",
+                ]
+            )
         p_dir = self.projects_dir / ma_id
-        candidates.extend([
-            p_dir / "renders" / f"{ma_id}_master.mp4",
-            p_dir / f"{ma_id}_master.mp4",
-        ])
+        candidates.extend(
+            [
+                p_dir / "renders" / f"{ma_id}_master.mp4",
+                p_dir / f"{ma_id}_master.mp4",
+            ]
+        )
         loc_file = p_dir / "renders" / "video_location.json"
         if loc_file.exists():
             try:
@@ -1355,7 +4811,14 @@ class ADASScriptEngine:
         để trả về bảng ánh xạ `{ma_id: project_dir}` giúp ứng dụng luôn load được 100% dự án và MP4!
         """
         found: Dict[str, Path] = {}
-        ignore_names = {"renders", "assets", "sentences", "stook", "ssd_render_staging", "__pycache__"}
+        ignore_names = {
+            "renders",
+            "assets",
+            "sentences",
+            "stook",
+            "ssd_render_staging",
+            "__pycache__",
+        }
 
         def _natural_dir_sort_key(d: Path):
             nm = d.name.strip()
@@ -1405,7 +4868,7 @@ class ADASScriptEngine:
         """Đọc danh sách các mã dự án/tiêu đề mà người dùng đã chủ động xóa để không bao giờ tự load lại khi bật app."""
         deleted: set[str] = set()
         for fp in (
-            self.root_dir / "deleted_ideas.json",
+            self.root_dir / "config" / "deleted_ideas.json",
             self._get_persistent_appdata_dir() / "deleted_ideas.json",
         ):
             if fp.exists():
@@ -1420,7 +4883,7 @@ class ADASScriptEngine:
     def _save_deleted_ids(self, deleted_set: set[str]):
         payload = json.dumps(sorted(deleted_set), ensure_ascii=False, indent=2)
         for fp in (
-            self.root_dir / "deleted_ideas.json",
+            self.root_dir / "config" / "deleted_ideas.json",
             self._get_persistent_appdata_dir() / "deleted_ideas.json",
         ):
             try:
@@ -1468,7 +4931,10 @@ class ADASScriptEngine:
         if curr_str not in known_dirs:
             known_dirs.insert(0, curr_str)
             try:
-                reg_file.write_text(json.dumps(known_dirs[:15], ensure_ascii=False, indent=2), encoding="utf-8")
+                reg_file.write_text(
+                    json.dumps(known_dirs[:15], ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
             except Exception:
                 pass
 
@@ -1494,7 +4960,9 @@ class ADASScriptEngine:
                         raw_list = None
 
             if raw_list is None:
-                bak_file = self._get_persistent_appdata_dir() / "saved_ideas_backup.json"
+                bak_file = (
+                    self._get_persistent_appdata_dir() / "saved_ideas_backup.json"
+                )
                 if bak_file.exists():
                     try:
                         data = json.loads(bak_file.read_text(encoding="utf-8"))
@@ -1512,7 +4980,8 @@ class ADASScriptEngine:
             filtered_list = [
                 it
                 for it in raw_list
-                if isinstance(it, dict) and str(it.get("ma_id", "")).strip() in existing_dirs
+                if isinstance(it, dict)
+                and str(it.get("ma_id", "")).strip() in existing_dirs
             ]
             if len(filtered_list) != len(raw_list):
                 self.save_ideas_list(filtered_list)
@@ -1524,7 +4993,7 @@ class ADASScriptEngine:
             for target_idx in {
                 self.ideas_file,
                 self.projects_dir / "_saved_ideas_index.json",
-                self.root_dir / "saved_ideas.json",
+                self.root_dir / "config" / "saved_ideas.json",
             }:
                 try:
                     target_idx.parent.mkdir(parents=True, exist_ok=True)
@@ -1538,14 +5007,18 @@ class ADASScriptEngine:
                         pass
             # Luôn đồng bộ cả khi ideas == [] để khi xóa hết folder trong projects/, bản backup cũng được làm sạch 100%
             try:
-                bak_file = self._get_persistent_appdata_dir() / "saved_ideas_backup.json"
+                bak_file = (
+                    self._get_persistent_appdata_dir() / "saved_ideas_backup.json"
+                )
                 bak_tmp = bak_file.with_suffix(".json.tmp")
                 bak_tmp.write_text(payload, encoding="utf-8")
                 os.replace(str(bak_tmp), str(bak_file))
             except Exception:
                 pass
 
-    def _sanitize_and_note_script_text(self, ma_id: str, raw_text: str, source_label: str = "") -> Tuple[str, int]:
+    def _sanitize_and_note_script_text(
+        self, ma_id: str, raw_text: str, source_label: str = ""
+    ) -> Tuple[str, int]:
         """
         Quét, ghi nhận (note) và xóa sạch 100% các dòng [LOCKED_TITLE], SELECTED_TITLE,
         PART A/B/C header, CONTINUITY, ENDING hoặc thẻ XML bị rò rỉ trong kịch bản.
@@ -1556,7 +5029,10 @@ class ADASScriptEngine:
         cleaned, removed_lines = strip_leaked_titles_and_metadata(raw_text)
         if removed_lines:
             lbl = f" ({source_label})" if source_label else ""
-            removed_strs = [str(ln[1] if isinstance(ln, (tuple, list)) and len(ln) > 1 else ln) for ln in removed_lines]
+            removed_strs = [
+                str(ln[1] if isinstance(ln, (tuple, list)) and len(ln) > 1 else ln)
+                for ln in removed_lines
+            ]
             sample_preview = " | ".join([s[:55] for s in removed_strs[:2]])
             log_info(
                 "SCRIPT",
@@ -1571,13 +5047,20 @@ class ADASScriptEngine:
                     existing_pool: List[str] = []
                     if leaked_log_f.exists():
                         try:
-                            existing_pool = json.loads(leaked_log_f.read_text(encoding="utf-8", errors="ignore"))
+                            existing_pool = json.loads(
+                                leaked_log_f.read_text(
+                                    encoding="utf-8", errors="ignore"
+                                )
+                            )
                         except Exception:
                             existing_pool = []
                     for rs in removed_strs:
                         if rs not in existing_pool:
                             existing_pool.append(rs)
-                    leaked_log_f.write_text(json.dumps(existing_pool, ensure_ascii=False, indent=2), encoding="utf-8")
+                    leaked_log_f.write_text(
+                        json.dumps(existing_pool, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
 
                 audit_note_file = p_dir / "step5_audit_report.txt"
                 note_block = (
@@ -1587,14 +5070,20 @@ class ADASScriptEngine:
                     + "\n"
                 )
                 if audit_note_file.exists():
-                    existing_audit = audit_note_file.read_text(encoding="utf-8", errors="ignore")
+                    existing_audit = audit_note_file.read_text(
+                        encoding="utf-8", errors="ignore"
+                    )
                     if removed_strs[0] not in existing_audit:
-                        audit_note_file.write_text(existing_audit + note_block, encoding="utf-8")
+                        audit_note_file.write_text(
+                            existing_audit + note_block, encoding="utf-8"
+                        )
             except Exception:
                 pass
         return cleaned, len(removed_lines)
 
-    def get_script_parts_progress(self, ma_id: str, min_part_chars: int = 9500) -> Dict[str, Any]:
+    def get_script_parts_progress(
+        self, ma_id: str, min_part_chars: int = 9500
+    ) -> Dict[str, Any]:
         """
         Kiểm tra chi tiết tiến độ 3 phần (`part_a.txt`, `part_b.txt`, `part_c.txt`) của dự án `ma_id`.
         Giúp phát hiện chính xác các dự án bị thiếu Part (ví dụ mới xong Part A 15.848 chữ hoặc Part A+B 32.684 chữ)
@@ -1613,7 +5102,9 @@ class ADASScriptEngine:
             if p_file.exists():
                 try:
                     raw_p = p_file.read_text(encoding="utf-8").strip()
-                    txt, rem_cnt = self._sanitize_and_note_script_text(ma_id, raw_p, source_label=f"part_{p_let.lower()}.txt")
+                    txt, rem_cnt = self._sanitize_and_note_script_text(
+                        ma_id, raw_p, source_label=f"part_{p_let.lower()}.txt"
+                    )
                     if rem_cnt > 0 and txt:
                         p_file.write_text(txt, encoding="utf-8")
                     cnt = pure_char_count(txt)
@@ -1636,7 +5127,9 @@ class ADASScriptEngine:
             "all_three_valid": len(done_parts) == 3,
         }
 
-    def has_valid_script_on_disk(self, ma_id: str, min_pure_chars: int = 35000, min_part_chars: int = 9500) -> Tuple[bool, str, int]:
+    def has_valid_script_on_disk(
+        self, ma_id: str, min_pure_chars: int = 35000, min_part_chars: int = 9500
+    ) -> Tuple[bool, str, int]:
         """
         Kiểm tra nghiêm ngặt xem dự án `ma_id` đã có kịch bản tiếng Nhật ĐỦ 3 PART (A + B + C) và ĐỦ ĐỘ DÀI CHUẨN hay chưa:
         - Kiểm tra trên cả `projects_dir` và `final_video_dir`.
@@ -1648,7 +5141,11 @@ class ADASScriptEngine:
         if not proj_dir.exists() and not final_proj_dir.exists():
             return False, "", 0
 
-        pa, pb, pc = proj_dir / "part_a.txt", proj_dir / "part_b.txt", proj_dir / "part_c.txt"
+        pa, pb, pc = (
+            proj_dir / "part_a.txt",
+            proj_dir / "part_b.txt",
+            proj_dir / "part_c.txt",
+        )
         script_file = proj_dir / "script_clean.txt"
         render_script_file = proj_dir / "renders" / f"{ma_id}_KICH_BAN.txt"
         has_any_part_file = pa.exists() or pb.exists() or pc.exists()
@@ -1656,14 +5153,24 @@ class ADASScriptEngine:
         if has_any_part_file:
             prog = self.get_script_parts_progress(ma_id, min_part_chars=min_part_chars)
             if prog["all_three_valid"]:
-                combined = "\n\n".join([prog["part_texts"]["A"], prog["part_texts"]["B"], prog["part_texts"]["C"]]).strip()
-                combined, _ = self._sanitize_and_note_script_text(ma_id, combined, source_label="combined_parts")
+                combined = "\n\n".join(
+                    [
+                        prog["part_texts"]["A"],
+                        prog["part_texts"]["B"],
+                        prog["part_texts"]["C"],
+                    ]
+                ).strip()
+                combined, _ = self._sanitize_and_note_script_text(
+                    ma_id, combined, source_label="combined_parts"
+                )
                 cnt = pure_char_count(combined)
                 if cnt >= min_pure_chars:
                     try:
                         need_sync_sc = not script_file.exists()
                         if not need_sync_sc:
-                            cur_sc_raw = script_file.read_text(encoding="utf-8", errors="ignore")
+                            cur_sc_raw = script_file.read_text(
+                                encoding="utf-8", errors="ignore"
+                            )
                             _, sc_rem = strip_leaked_titles_and_metadata(cur_sc_raw)
                             if sc_rem or pure_char_count(cur_sc_raw) != cnt:
                                 need_sync_sc = True
@@ -1673,10 +5180,14 @@ class ADASScriptEngine:
                         pass
                     try:
                         if render_script_file.exists():
-                            cur_ren_raw = render_script_file.read_text(encoding="utf-8", errors="ignore")
+                            cur_ren_raw = render_script_file.read_text(
+                                encoding="utf-8", errors="ignore"
+                            )
                             _, ren_rem = strip_leaked_titles_and_metadata(cur_ren_raw)
                             if ren_rem or pure_char_count(cur_ren_raw) != cnt:
-                                render_script_file.write_text(combined, encoding="utf-8")
+                                render_script_file.write_text(
+                                    combined, encoding="utf-8"
+                                )
                     except Exception:
                         pass
                     return True, combined, cnt
@@ -1692,7 +5203,10 @@ class ADASScriptEngine:
             if script_file.exists():
                 try:
                     sc_txt = script_file.read_text(encoding="utf-8").strip()
-                    if pure_char_count(sc_txt) < min_pure_chars or not prog["all_three_valid"]:
+                    if (
+                        pure_char_count(sc_txt) < min_pure_chars
+                        or not prog["all_three_valid"]
+                    ):
                         script_file.unlink()
                 except Exception:
                     pass
@@ -1711,8 +5225,12 @@ class ADASScriptEngine:
         for cand_f in alt_script_candidates:
             if cand_f.exists():
                 try:
-                    raw_txt = cand_f.read_text(encoding="utf-8", errors="ignore").strip()
-                    txt, rem_cnt = self._sanitize_and_note_script_text(ma_id, raw_txt, source_label=cand_f.name)
+                    raw_txt = cand_f.read_text(
+                        encoding="utf-8", errors="ignore"
+                    ).strip()
+                    txt, rem_cnt = self._sanitize_and_note_script_text(
+                        ma_id, raw_txt, source_label=cand_f.name
+                    )
                     cnt = pure_char_count(txt)
                     if cnt >= min_pure_chars:
                         if rem_cnt > 0:
@@ -1725,7 +5243,9 @@ class ADASScriptEngine:
                                 script_file.write_text(txt, encoding="utf-8")
                             except Exception:
                                 pass
-                        if render_script_file.exists() and (cand_f != render_script_file or rem_cnt > 0):
+                        if render_script_file.exists() and (
+                            cand_f != render_script_file or rem_cnt > 0
+                        ):
                             try:
                                 render_script_file.write_text(txt, encoding="utf-8")
                             except Exception:
@@ -1736,16 +5256,27 @@ class ADASScriptEngine:
 
         # Quét dự phòng các file .txt lớn trong thư mục dự án
         ignore_kw = ("SEO", "STEP", "AUDIT", "TIEU_DE", "PROMPT", "IDEA_INFO")
-        for scan_dir in (proj_dir, proj_dir / "renders", final_proj_dir, final_proj_dir / "renders"):
+        for scan_dir in (
+            proj_dir,
+            proj_dir / "renders",
+            final_proj_dir,
+            final_proj_dir / "renders",
+        ):
             if not scan_dir.exists():
                 continue
             for tf in sorted(scan_dir.glob("*.txt")):
                 up_name = tf.name.upper()
-                if any(k in up_name for k in ignore_kw) or up_name in ("PART_A.TXT", "PART_B.TXT", "PART_C.TXT"):
+                if any(k in up_name for k in ignore_kw) or up_name in (
+                    "PART_A.TXT",
+                    "PART_B.TXT",
+                    "PART_C.TXT",
+                ):
                     continue
                 try:
                     raw_txt = tf.read_text(encoding="utf-8", errors="ignore").strip()
-                    txt, rem_cnt = self._sanitize_and_note_script_text(ma_id, raw_txt, source_label=tf.name)
+                    txt, rem_cnt = self._sanitize_and_note_script_text(
+                        ma_id, raw_txt, source_label=tf.name
+                    )
                     cnt = pure_char_count(txt)
                     if cnt >= min_pure_chars:
                         if rem_cnt > 0:
@@ -1835,9 +5366,9 @@ class ADASScriptEngine:
                 pass
 
             # Đảm bảo luôn có ảnh nền xanh THUMBNAIL-NENXANH.png đi kèm THUMBNAIL.png
-            has_green = (target_green.exists() and target_green.stat().st_size > 10_000) or (
-                target_green_id.exists() and target_green_id.stat().st_size > 10_000
-            )
+            has_green = (
+                target_green.exists() and target_green.stat().st_size > 10_000
+            ) or (target_green_id.exists() and target_green_id.stat().st_size > 10_000)
             if not has_green:
                 for g_cand in (
                     proj_dir / "THUMBNAIL-NENXANH.png",
@@ -1854,9 +5385,15 @@ class ADASScriptEngine:
                             break
                         except Exception:
                             pass
-            if not has_green and hasattr(self, "_create_matched_green_screen_from_thumbnail_bytes"):
+            if not has_green and hasattr(
+                self, "_create_matched_green_screen_from_thumbnail_bytes"
+            ):
                 try:
-                    green_bytes = self._create_matched_green_screen_from_thumbnail_bytes(found_thumb.read_bytes())
+                    green_bytes = (
+                        self._create_matched_green_screen_from_thumbnail_bytes(
+                            found_thumb.read_bytes()
+                        )
+                    )
                     if green_bytes and len(green_bytes) > 10_000:
                         target_green.write_bytes(green_bytes)
                         target_green_id.write_bytes(green_bytes)
@@ -1868,8 +5405,13 @@ class ADASScriptEngine:
                 try:
                     part1_chk = proj_dir / "script_green_images" / "green_part_01.png"
                     if not part1_chk.exists():
-                        from backend.visual_cue_director import ensure_project_script_green_images
-                        ensure_project_script_green_images(proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id)
+                        from backend.renderer import (
+                            ensure_project_script_green_images,
+                        )
+
+                        ensure_project_script_green_images(
+                            proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
+                        )
                 except Exception:
                     pass
 
@@ -1901,7 +5443,11 @@ class ADASScriptEngine:
             except Exception:
                 pass
 
-        return (found_thumb is not None), (found_seo is not None), (str(found_thumb) if found_thumb else "")
+        return (
+            (found_thumb is not None),
+            (found_seo is not None),
+            (str(found_thumb) if found_thumb else ""),
+        )
 
     def has_valid_video_mp4_on_disk(
         self,
@@ -1916,8 +5462,14 @@ class ADASScriptEngine:
         if not hasattr(self, "_mp4_valid_cache"):
             self._mp4_valid_cache: Dict[str, Tuple[int, int, bool, str]] = {}
 
-        vp_running = bool(self.video_pipeline and getattr(self.video_pipeline, "is_running", False))
-        vp_active = set(getattr(self.video_pipeline, "active_projects", set())) if vp_running else set()
+        vp_running = bool(
+            self.video_pipeline and getattr(self.video_pipeline, "is_running", False)
+        )
+        vp_active = (
+            set(getattr(self.video_pipeline, "active_projects", set()))
+            if vp_running
+            else set()
+        )
         is_actively_rendering = ma_id in vp_active
 
         p_dir = self._get_effective_project_dir(ma_id)
@@ -1937,7 +5489,11 @@ class ADASScriptEngine:
         mp4_file = self.resolve_project_mp4_path(ma_id)
         if mp4_file is None or not mp4_file.exists():
             self._mp4_valid_cache.pop(ma_id, None)
-            return False, None, "rendering_in_progress" if is_actively_rendering else "missing"
+            return (
+                False,
+                None,
+                "rendering_in_progress" if is_actively_rendering else "missing",
+            )
 
         if is_actively_rendering:
             return False, None, "rendering_in_progress"
@@ -1955,7 +5511,8 @@ class ADASScriptEngine:
         if sc_chars <= 0:
             _, _, sc_chars = self.has_valid_script_on_disk(ma_id)
 
-        from backend.sync_checker import validate_completed_mp4_file
+        from backend.voice_service import validate_completed_mp4_file
+
         master_wav = p_dir / "assets" / "master_voice.wav"
         if not master_wav.exists():
             master_wav = final_p_dir / "assets" / "master_voice.wav"
@@ -1983,7 +5540,9 @@ class ADASScriptEngine:
                 pass
         return False, None, reason
 
-    def _reconstruct_idea_from_project_dir(self, p_dir: Path) -> Optional[Dict[str, Any]]:
+    def _reconstruct_idea_from_project_dir(
+        self, p_dir: Path
+    ) -> Optional[Dict[str, Any]]:
         """
         Khôi phục bản ghi dự án từ thư mục `projects_dir/<ma_id>` hoặc `final_video_dir/<ma_id>` khi dự án đó:
         - ĐÃ TẠO XONG KỊCH BẢN ĐỦ 3 PART (`has_sc = True`), HOẶC
@@ -1997,7 +5556,9 @@ class ADASScriptEngine:
         prog = self.get_script_parts_progress(mid)
         partial_chars = prog["partial_chars"]
         has_partial = len(prog["done_parts"]) > 0 and not has_sc
-        has_mp4, mp4_f, mp4_reason = self.has_valid_video_mp4_on_disk(mid, sc_chars=sc_chars if has_sc else partial_chars)
+        has_mp4, mp4_f, mp4_reason = self.has_valid_video_mp4_on_disk(
+            mid, sc_chars=sc_chars if has_sc else partial_chars
+        )
 
         info_file = eff_dir / "idea_info.json"
         if not info_file.exists():
@@ -2016,22 +5577,35 @@ class ADASScriptEngine:
                     info_data["has_video_mp4"] = has_mp4
                     if has_mp4 and mp4_f:
                         info_data["video_mp4_path"] = str(mp4_f)
-                    info_data["completed_parts_count"] = 3 if has_sc else len(prog["done_parts"])
+                    info_data["completed_parts_count"] = (
+                        3 if has_sc else len(prog["done_parts"])
+                    )
                     info_data["missing_parts"] = [] if has_sc else prog["missing_parts"]
                     if has_mp4:
                         info_data["status"] = "COMPLETED_VIDEO"
-                        info_data["current_step"] = f"✅ Đã xuất Video MP4 ({sc_chars:,} chữ)"
+                        info_data["current_step"] = (
+                            f"✅ Đã xuất Video MP4 ({sc_chars:,} chữ)"
+                        )
                     elif has_sc:
-                        if mp4_reason not in ("missing", "rendering_in_progress", "ok") or info_data.get("status") == "ERROR_VIDEO":
+                        if (
+                            mp4_reason not in ("missing", "rendering_in_progress", "ok")
+                            or info_data.get("status") == "ERROR_VIDEO"
+                        ):
                             info_data["status"] = "ERROR_VIDEO"
-                            info_data["current_step"] = f"❌ Video bị ngắt/lỗi ({mp4_reason if mp4_reason != 'missing' else 'Chưa hoàn tất'}) — Chờ Render lại ({sc_chars:,} chữ)"
+                            info_data["current_step"] = (
+                                f"❌ Video bị ngắt/lỗi ({mp4_reason if mp4_reason != 'missing' else 'Chưa hoàn tất'}) — Chờ Render lại ({sc_chars:,} chữ)"
+                            )
                         else:
                             info_data["status"] = "SCRIPT_DONE"
-                            info_data["current_step"] = f"📝 Đã xong Kịch bản ({sc_chars:,} chữ) — Sẵn sàng Render MP4"
+                            info_data["current_step"] = (
+                                f"📝 Đã xong Kịch bản ({sc_chars:,} chữ) — Sẵn sàng Render MP4"
+                            )
                     elif has_partial:
                         miss_str = ", ".join(prog["missing_parts"])
                         info_data["status"] = "PARTIAL_SCRIPT"
-                        info_data["current_step"] = f"⚠️ Thiếu Part {miss_str} (Mới có {len(prog['done_parts'])}/3 Part: {partial_chars:,} chữ)"
+                        info_data["current_step"] = (
+                            f"⚠️ Thiếu Part {miss_str} (Mới có {len(prog['done_parts'])}/3 Part: {partial_chars:,} chữ)"
+                        )
                     else:
                         info_data["status"] = "SAVED_READY"
                     return info_data
@@ -2049,14 +5623,19 @@ class ADASScriptEngine:
         locked_title = ""
         if step2_f.exists():
             try:
-                locked_title = extract_locked_title_from_step2(step2_f.read_text(encoding="utf-8"), fallback_title="")
+                locked_title = extract_locked_title_from_step2(
+                    step2_f.read_text(encoding="utf-8"), fallback_title=""
+                )
             except Exception:
                 pass
         if not locked_title and seo_f.exists():
             try:
                 for ln in seo_f.read_text(encoding="utf-8").splitlines():
                     ln_s = ln.strip()
-                    if any("\u3040" <= ch <= "\u9fff" for ch in ln_s) and len(ln_s) >= 15:
+                    if (
+                        any("\u3040" <= ch <= "\u9fff" for ch in ln_s)
+                        and len(ln_s) >= 15
+                    ):
                         locked_title = ln_s.lstrip("-•*0123456789. ").strip()
                         break
             except Exception:
@@ -2065,14 +5644,18 @@ class ADASScriptEngine:
             first_line = sc_txt.splitlines()[0].strip() if sc_txt.splitlines() else ""
             locked_title = first_line[:95] if first_line else f"Dự án khôi phục [{mid}]"
 
-        reconstructed = parse_idea_input_block(locked_title or f"{mid} — Dự án khôi phục từ ổ cứng", custom_id=mid)
+        reconstructed = parse_idea_input_block(
+            locked_title or f"{mid} — Dự án khôi phục từ ổ cứng", custom_id=mid
+        )
         if locked_title:
             reconstructed["locked_title"] = locked_title
             reconstructed["draft_title_ja"] = locked_title
         reconstructed["has_script"] = has_sc
         reconstructed["pure_char_count"] = sc_chars if has_sc else partial_chars
         reconstructed["has_video_mp4"] = has_mp4
-        reconstructed["completed_parts_count"] = 3 if has_sc else len(prog["done_parts"])
+        reconstructed["completed_parts_count"] = (
+            3 if has_sc else len(prog["done_parts"])
+        )
         reconstructed["missing_parts"] = [] if has_sc else prog["missing_parts"]
         if has_mp4:
             reconstructed["status"] = "COMPLETED_VIDEO"
@@ -2080,15 +5663,22 @@ class ADASScriptEngine:
             reconstructed["video_mp4_path"] = str(mp4_f)
         elif has_sc:
             reconstructed["status"] = "SCRIPT_DONE"
-            reconstructed["current_step"] = f"📝 Đã xong Kịch bản ({sc_chars:,} chữ) — Sẵn sàng Render MP4"
+            reconstructed["current_step"] = (
+                f"📝 Đã xong Kịch bản ({sc_chars:,} chữ) — Sẵn sàng Render MP4"
+            )
         else:
             miss_str = ", ".join(prog["missing_parts"])
             reconstructed["status"] = "PARTIAL_SCRIPT"
-            reconstructed["current_step"] = f"⚠️ Thiếu Part {miss_str} (Mới có {len(prog['done_parts'])}/3 Part: {partial_chars:,} chữ)"
+            reconstructed["current_step"] = (
+                f"⚠️ Thiếu Part {miss_str} (Mới có {len(prog['done_parts'])}/3 Part: {partial_chars:,} chữ)"
+            )
 
         try:
             if eff_dir.exists() and eff_dir.is_dir():
-                (eff_dir / "idea_info.json").write_text(json.dumps(reconstructed, ensure_ascii=False, indent=2), encoding="utf-8")
+                (eff_dir / "idea_info.json").write_text(
+                    json.dumps(reconstructed, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
         except Exception:
             pass
         return reconstructed
@@ -2102,7 +5692,9 @@ class ADASScriptEngine:
         now_sync = time.time()
         if getattr(self, "is_checking_repairing", False):
             return
-        if not force_restore_deleted and (now_sync - getattr(self, "_last_disk_sync_ts", 0.0) < 6.0):
+        if not force_restore_deleted and (
+            now_sync - getattr(self, "_last_disk_sync_ts", 0.0) < 6.0
+        ):
             return
         with self.ideas_io_lock:
             self._last_disk_sync_ts = time.time()
@@ -2135,7 +5727,9 @@ class ADASScriptEngine:
             if changed:
                 self._save_deleted_ids(deleted_ids)
 
-            existing_ids = {str(it.get("ma_id", "")).strip() for it in ideas if it.get("ma_id")}
+            existing_ids = {
+                str(it.get("ma_id", "")).strip() for it in ideas if it.get("ma_id")
+            }
 
             # Bước 1: Quét thư mục con trong projects_dir & final_video_dir để tự động khôi phục các dự án
             if disk_proj_map:
@@ -2147,7 +5741,11 @@ class ADASScriptEngine:
                     del_marker = p_dir / ".deleted_by_user"
                     has_sc_probe, _, _ = self.has_valid_script_on_disk(mid)
                     has_mp4_probe = self.resolve_project_mp4_path(mid) is not None
-                    if (has_sc_probe or has_mp4_probe) and not del_marker.exists() and mid in deleted_ids:
+                    if (
+                        (has_sc_probe or has_mp4_probe)
+                        and not del_marker.exists()
+                        and mid in deleted_ids
+                    ):
                         unblocked_deleted.add(mid)
                         deleted_ids.discard(mid)
                     elif del_marker.exists() or mid in deleted_ids:
@@ -2172,7 +5770,9 @@ class ADASScriptEngine:
 
                 if restored_items:
                     ideas = restored_items + ideas
-                    restored_ids_str = ", ".join([x.get("ma_id", "") for x in restored_items])
+                    restored_ids_str = ", ".join(
+                        [x.get("ma_id", "") for x in restored_items]
+                    )
                     log_info(
                         "SCRIPT",
                         f"🔄 Đã tự động nhận & khôi phục {len(restored_items)} dự án từ ổ cứng vào Kho Dự Án: [{restored_ids_str}]",
@@ -2184,13 +5784,24 @@ class ADASScriptEngine:
             if not hasattr(self, "_mp4_valid_cache"):
                 self._mp4_valid_cache: Dict[str, Tuple[int, int, bool, str]] = {}
 
-            vp_running = bool(self.video_pipeline and getattr(self.video_pipeline, "is_running", False))
-            vp_active_set = set(getattr(self.video_pipeline, "active_projects", set())) if vp_running else set()
-            vp_pending_set = {
-                str(j.get("name") or "")
-                for j in getattr(self.video_pipeline, "pending_jobs", [])
-                if isinstance(j, dict)
-            } if vp_running else set()
+            vp_running = bool(
+                self.video_pipeline
+                and getattr(self.video_pipeline, "is_running", False)
+            )
+            vp_active_set = (
+                set(getattr(self.video_pipeline, "active_projects", set()))
+                if vp_running
+                else set()
+            )
+            vp_pending_set = (
+                {
+                    str(j.get("name") or "")
+                    for j in getattr(self.video_pipeline, "pending_jobs", [])
+                    if isinstance(j, dict)
+                }
+                if vp_running
+                else set()
+            )
 
             f_dir = getattr(self, "final_video_dir", None)
             for it in ideas:
@@ -2224,10 +5835,18 @@ class ADASScriptEngine:
                     and dir_sig != (0, 0, 0)
                     and self._proj_dir_mtime_cache.get(mid) == dir_sig
                     and (
-                        curr_st not in ("RUNNING", "VIDEO_RENDERING", "VIDEO_QUEUED", "COMPLETED_VIDEO")
+                        curr_st
+                        not in (
+                            "RUNNING",
+                            "VIDEO_RENDERING",
+                            "VIDEO_QUEUED",
+                            "COMPLETED_VIDEO",
+                        )
                         or is_vp_busy_for_mid
                     )
-                    and not (it.get("has_video_mp4") and mid not in self._mp4_valid_cache)
+                    and not (
+                        it.get("has_video_mp4") and mid not in self._mp4_valid_cache
+                    )
                 ):
                     continue
                 if (
@@ -2298,7 +5917,9 @@ class ADASScriptEngine:
                 if not it.get("locked_title") and step2_f.exists():
                     try:
                         s2_txt = step2_f.read_text(encoding="utf-8")
-                        lt = extract_locked_title_from_step2(s2_txt, fallback_title=it.get("draft_title_ja", ""))
+                        lt = extract_locked_title_from_step2(
+                            s2_txt, fallback_title=it.get("draft_title_ja", "")
+                        )
                         if lt:
                             it["locked_title"] = lt
                             changed = True
@@ -2310,7 +5931,9 @@ class ADASScriptEngine:
                 if has_mp4:
                     if curr_st != "COMPLETED_VIDEO":
                         it["status"] = "COMPLETED_VIDEO"
-                        it["current_step"] = f"✅ Đã xuất Video MP4 ({effective_chars:,} chữ)"
+                        it["current_step"] = (
+                            f"✅ Đã xuất Video MP4 ({effective_chars:,} chữ)"
+                        )
                         changed = True
                         item_changed = True
                 elif has_sc and not has_mp4:
@@ -2319,7 +5942,10 @@ class ADASScriptEngine:
                         if (p_dir / "renders" / f"_{mid}_master_resume_cache").exists():
                             try:
                                 from backend.renderer import get_saved_render_progress
-                                ckpt_d = get_saved_render_progress(str(p_dir / "renders" / f"{mid}_master.mp4"))
+
+                                ckpt_d = get_saved_render_progress(
+                                    str(p_dir / "renders" / f"{mid}_master.mp4")
+                                )
                                 if ckpt_d.get("has_checkpoint"):
                                     ckpt_step_msg = (
                                         f"⏸️ Đã lưu Checkpoint Render {ckpt_d['percent']}% "
@@ -2329,14 +5955,24 @@ class ADASScriptEngine:
                                 ckpt_step_msg = ""
 
                         if ckpt_step_msg:
-                            if curr_st != "ERROR_VIDEO" or it.get("current_step") != ckpt_step_msg:
+                            if (
+                                curr_st != "ERROR_VIDEO"
+                                or it.get("current_step") != ckpt_step_msg
+                            ):
                                 it["status"] = "ERROR_VIDEO"
                                 it["current_step"] = ckpt_step_msg
                                 changed = True
                                 item_changed = True
-                        elif mp4_reason not in ("missing", "rendering_in_progress", "ok"):
+                        elif mp4_reason not in (
+                            "missing",
+                            "rendering_in_progress",
+                            "ok",
+                        ):
                             err_step = f"❌ Video bị ngắt/lỗi ({mp4_reason}) — Chờ Render lại ({effective_chars:,} chữ)"
-                            if curr_st != "ERROR_VIDEO" or it.get("current_step") != err_step:
+                            if (
+                                curr_st != "ERROR_VIDEO"
+                                or it.get("current_step") != err_step
+                            ):
                                 it["status"] = "ERROR_VIDEO"
                                 it["current_step"] = err_step
                                 changed = True
@@ -2353,24 +5989,44 @@ class ADASScriptEngine:
                             it["current_step"] = err_step
                             changed = True
                             item_changed = True
-                        elif curr_st == "RUNNING" and self.is_running and not (has_seo and has_thumb):
+                        elif (
+                            curr_st == "RUNNING"
+                            and self.is_running
+                            and not (has_seo and has_thumb)
+                        ):
                             # Dự án vừa ghép xong 3 Part kịch bản (Step 4) nhưng vẫn đang chạy tiếp Step 5 (Kiểm toán) / Step 6 (SEO) / Step 7 (Thumbnail) trên ChatGPT -> Giữ nguyên trạng thái RUNNING!
                             pass
-                        elif curr_st in ("", "SAVED_READY", "CHƯA_CHẠY_STEP2", "ERROR", "RUNNING", "PARTIAL_SCRIPT", "COMPLETED_HANDOFF", "VIDEO_QUEUED"):
+                        elif curr_st in (
+                            "",
+                            "SAVED_READY",
+                            "CHƯA_CHẠY_STEP2",
+                            "ERROR",
+                            "RUNNING",
+                            "PARTIAL_SCRIPT",
+                            "COMPLETED_HANDOFF",
+                            "VIDEO_QUEUED",
+                        ):
                             it["status"] = "SCRIPT_DONE"
-                            it["current_step"] = f"📝 Đã xong Kịch bản ({effective_chars:,} chữ) — Sẵn sàng Render MP4"
+                            it["current_step"] = (
+                                f"📝 Đã xong Kịch bản ({effective_chars:,} chữ) — Sẵn sàng Render MP4"
+                            )
                             changed = True
                             item_changed = True
                 elif not has_sc and not has_mp4 and done_cnt > 0:
                     # Dự án mới viết được 1 hoặc 2 Part (VD: P16 = 15,848 chữ, P17 = 32,684 chữ) -> Đánh dấu thiếu Part để viết tiếp!
                     miss_str = ", ".join(missing_list)
                     expected_step = f"⚠️ Thiếu Part {miss_str} (Mới xong {done_cnt}/3 Part: {effective_chars:,} chữ)"
-                    if (curr_st != "RUNNING" or not self.is_running) and (curr_st != "PARTIAL_SCRIPT" or it.get("current_step") != expected_step):
+                    if (curr_st != "RUNNING" or not self.is_running) and (
+                        curr_st != "PARTIAL_SCRIPT"
+                        or it.get("current_step") != expected_step
+                    ):
                         it["status"] = "PARTIAL_SCRIPT"
                         it["current_step"] = expected_step
                         changed = True
                         item_changed = True
-                elif not has_sc and not has_mp4 and done_cnt == 0 and not self.is_running:
+                elif (
+                    not has_sc and not has_mp4 and done_cnt == 0 and not self.is_running
+                ):
                     # Tự động dọn trạng thái RUNNING / ERROR bị treo từ phiên cũ khi máy đang ở trạng thái nghỉ (Idle)
                     step3_f = p_dir / "step3_architecture.txt"
                     has_s3 = step3_f.exists() and step3_f.stat().st_size > 2500
@@ -2378,9 +6034,13 @@ class ADASScriptEngine:
                     if curr_st in ("RUNNING", "ERROR"):
                         it["status"] = "SAVED_READY"
                         if has_s3:
-                            it["current_step"] = "♻️ Đã xong Step 2 & Step 3 — Bấm Chạy để viết tiếp Step 4 (Part A/B/C)"
+                            it["current_step"] = (
+                                "♻️ Đã xong Step 2 & Step 3 — Bấm Chạy để viết tiếp Step 4 (Part A/B/C)"
+                            )
                         elif has_s2:
-                            it["current_step"] = "♻️ Đã xong Step 2 — Bấm Chạy để viết tiếp Step 3"
+                            it["current_step"] = (
+                                "♻️ Đã xong Step 2 — Bấm Chạy để viết tiếp Step 3"
+                            )
                         else:
                             it["current_step"] = "CHƯA CHẠY (Sẵn sàng từ Step 2)"
                         changed = True
@@ -2390,18 +6050,27 @@ class ADASScriptEngine:
                     info_f = p_dir / "idea_info.json"
                     if info_f.exists():
                         try:
-                            info_f.write_text(json.dumps(it, ensure_ascii=False, indent=2), encoding="utf-8")
+                            info_f.write_text(
+                                json.dumps(it, ensure_ascii=False, indent=2),
+                                encoding="utf-8",
+                            )
                         except Exception:
                             pass
 
             if changed:
                 self.save_ideas_list(ideas)
 
-    def restore_scripts_from_disk(self, custom_folder: Optional[str] = None) -> Dict[str, Any]:
+    def restore_scripts_from_disk(
+        self, custom_folder: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Quét lại toàn bộ thư mục `projects/` (hoặc thư mục tùy chỉnh) để cập nhật chính xác 100% các folder hiện có (thêm folder mới, xóa bỏ hoàn toàn các folder đã bị xóa)."""
         if custom_folder and str(custom_folder).strip():
             cand_dir = Path(str(custom_folder).strip())
-            if cand_dir.exists() and cand_dir.is_dir() and cand_dir.resolve() != self.projects_dir.resolve():
+            if (
+                cand_dir.exists()
+                and cand_dir.is_dir()
+                and cand_dir.resolve() != self.projects_dir.resolve()
+            ):
                 try:
                     self.import_external_projects_folder(str(cand_dir))
                 except Exception:
@@ -2448,7 +6117,9 @@ class ADASScriptEngine:
                 return cand
         return self.projects_dir
 
-    def check_and_repair_all_projects(self, custom_folder: Optional[str] = None) -> Dict[str, Any]:
+    def check_and_repair_all_projects(
+        self, custom_folder: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Nút "🛡️ Check Toàn Bộ" (2 Giai đoạn siêu tốc):
         1. GIAI ĐOẠN 1 (1–2s): Quét toàn bộ thư mục `projects/` để xóa sạch `[LOCKED_TITLE]` / Metadata trong tất cả kịch bản `.txt`.
@@ -2459,7 +6130,9 @@ class ADASScriptEngine:
 
         target_dir = self._resolve_target_projects_dir(custom_folder)
         self.is_checking_repairing = True
-        if not hasattr(self, "_check_repair_state") or not isinstance(getattr(self, "_check_repair_state", None), dict):
+        if not hasattr(self, "_check_repair_state") or not isinstance(
+            getattr(self, "_check_repair_state", None), dict
+        ):
             self._check_repair_state = {
                 "running": False,
                 "completed": False,
@@ -2470,15 +6143,17 @@ class ADASScriptEngine:
                 "error": "",
             }
 
-        self._check_repair_state.update({
-            "running": True,
-            "completed": False,
-            "progress": 2.0,
-            "status_text": f"🛡️ Đang quét kịch bản tại [{target_dir}]...",
-            "logs": [],
-            "result": None,
-            "error": "",
-        })
+        self._check_repair_state.update(
+            {
+                "running": True,
+                "completed": False,
+                "progress": 2.0,
+                "status_text": f"🛡️ Đang quét kịch bản tại [{target_dir}]...",
+                "logs": [],
+                "result": None,
+                "error": "",
+            }
+        )
 
         self._emit(
             status="running",
@@ -2486,7 +6161,10 @@ class ADASScriptEngine:
             progress=2.0,
             message=f"🛡️ Đang quét toàn bộ thư mục [{target_dir}] để dọn sạch [LOCKED_TITLE] trong Kịch bản & Video MP4...",
         )
-        log_info("SCRIPT", f"🛡️ Bắt đầu chạy Check Toàn Bộ Kịch Bản & Video tại [{target_dir}]...")
+        log_info(
+            "SCRIPT",
+            f"🛡️ Bắt đầu chạy Check Toàn Bộ Kịch Bản & Video tại [{target_dir}]...",
+        )
 
         def _prog_cb(pct: float, msg: str):
             self._check_repair_state["progress"] = pct
@@ -2503,18 +6181,32 @@ class ADASScriptEngine:
             log_info("SCRIPT", msg)
 
         try:
-            summary = check_and_repair_all_projects_sync(target_dir, progress_cb=_prog_cb, log_cb=_log_cb)
-            touched_ids = set((summary.get("repaired_script_ids") or []) + (summary.get("repaired_video_ids") or []))
-            if hasattr(self, "_proj_dir_mtime_cache") and isinstance(self._proj_dir_mtime_cache, dict):
+            summary = check_and_repair_all_projects_sync(
+                target_dir, progress_cb=_prog_cb, log_cb=_log_cb
+            )
+            touched_ids = set(
+                (summary.get("repaired_script_ids") or [])
+                + (summary.get("repaired_video_ids") or [])
+            )
+            if hasattr(self, "_proj_dir_mtime_cache") and isinstance(
+                self._proj_dir_mtime_cache, dict
+            ):
                 for tid in touched_ids:
                     self._proj_dir_mtime_cache.pop(tid, None)
-            if hasattr(self, "_mp4_valid_cache") and isinstance(self._mp4_valid_cache, dict):
-                for vid in (summary.get("repaired_video_ids") or []):
+            if hasattr(self, "_mp4_valid_cache") and isinstance(
+                self._mp4_valid_cache, dict
+            ):
+                for vid in summary.get("repaired_video_ids") or []:
                     mp4_p = target_dir / vid / "renders" / f"{vid}_master.mp4"
                     if mp4_p.exists():
                         try:
                             st_v = mp4_p.stat()
-                            self._mp4_valid_cache[vid] = (st_v.st_mtime_ns, st_v.st_size, True, "ok")
+                            self._mp4_valid_cache[vid] = (
+                                st_v.st_mtime_ns,
+                                st_v.st_size,
+                                True,
+                                "ok",
+                            )
                         except Exception:
                             self._mp4_valid_cache.pop(vid, None)
         finally:
@@ -2550,7 +6242,9 @@ class ADASScriptEngine:
         self._check_repair_state["result"] = final_res
         return final_res
 
-    def start_check_and_repair_async(self, custom_folder: Optional[str] = None) -> Dict[str, Any]:
+    def start_check_and_repair_async(
+        self, custom_folder: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Khởi chạy Check Toàn Bộ trong luồng ngầm để giao diện nhận tiến độ thời gian thực từng giây mà không bao giờ bị treo HTTP."""
         st = getattr(self, "_check_repair_state", None)
         if isinstance(st, dict) and st.get("running"):
@@ -2581,7 +6275,9 @@ class ADASScriptEngine:
                 self._check_repair_state["running"] = False
                 self._check_repair_state["completed"] = True
                 self._check_repair_state["error"] = str(e)
-                self._check_repair_state["status_text"] = f"❌ Lỗi khi Check Toàn Bộ: {e}"
+                self._check_repair_state["status_text"] = (
+                    f"❌ Lỗi khi Check Toàn Bộ: {e}"
+                )
 
         t = threading.Thread(target=_bg_worker, daemon=True)
         t.start()
@@ -2677,7 +6373,14 @@ class ADASScriptEngine:
                 sub_dirs = [d for d in sorted(sub_dirs[0].iterdir()) if d.is_dir()]
 
             for sd in sub_dirs:
-                if sd.name.startswith(".") or sd.name.lower() in ("__pycache__", "stook", "bin", "backend", "frontend", "app"):
+                if sd.name.startswith(".") or sd.name.lower() in (
+                    "__pycache__",
+                    "stook",
+                    "bin",
+                    "backend",
+                    "frontend",
+                    "app",
+                ):
                     continue
                 _copy_project_dir(sd, sd.name)
 
@@ -2686,14 +6389,27 @@ class ADASScriptEngine:
             for f in sorted(src_path.iterdir()):
                 if not f.is_file():
                     continue
-                if f.suffix.lower() not in (".txt", ".png", ".jpg", ".jpeg", ".webp", ".mp4"):
+                if f.suffix.lower() not in (
+                    ".txt",
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".webp",
+                    ".mp4",
+                ):
                     continue
                 stem = f.stem
-                m_id = re.match(r"^([A-Za-z0-9]+(?:_[0-9]+)?)_(?:KICH_BAN|SEO|THUMBNAIL|MASTER|SCRIPT)", stem, flags=re.IGNORECASE)
+                m_id = re.match(
+                    r"^([A-Za-z0-9]+(?:_[0-9]+)?)_(?:KICH_BAN|SEO|THUMBNAIL|MASTER|SCRIPT)",
+                    stem,
+                    flags=re.IGNORECASE,
+                )
                 if m_id:
                     gid = m_id.group(1).upper()
                 else:
-                    gid = re.sub(r"_(?:KICH_BAN|SEO|THUMBNAIL.*)$", "", stem, flags=re.IGNORECASE).strip()
+                    gid = re.sub(
+                        r"_(?:KICH_BAN|SEO|THUMBNAIL.*)$", "", stem, flags=re.IGNORECASE
+                    ).strip()
                 if gid:
                     loose_groups.setdefault(gid, []).append(f)
 
@@ -2749,7 +6465,9 @@ class ADASScriptEngine:
             parsed = parse_idea_input_block(sample_raw, custom_id="1")
             self.save_ideas_list([parsed])
 
-    def add_or_update_ideas_bulk_from_raw(self, raw_text: str, custom_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def add_or_update_ideas_bulk_from_raw(
+        self, raw_text: str, custom_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Phân tích danh sách tiêu đề người dùng dán (MỖI TIÊU ĐỀ 1 DÒNG),
         tự động bỏ qua mọi Mã đầu dòng và gán Mã dự án theo Số Thứ Tự (STT: 1, 2, 3...).
@@ -2781,7 +6499,9 @@ class ADASScriptEngine:
 
             # Bảo toàn tiến độ nếu mã này đã có sẵn kịch bản / thumbnail / SEO trên ổ cứng
             has_sc_disk, _, sc_chars_disk = self.has_valid_script_on_disk(mid_cur)
-            has_th_disk, has_seo_disk, th_path_disk = self.has_thumbnail_and_seo_on_disk(mid_cur)
+            has_th_disk, has_seo_disk, th_path_disk = (
+                self.has_thumbnail_and_seo_on_disk(mid_cur)
+            )
             if has_sc_disk:
                 parsed["has_script"] = True
                 parsed["pure_char_count"] = sc_chars_disk
@@ -2792,7 +6512,9 @@ class ADASScriptEngine:
                 if th_path_disk:
                     parsed["thumbnail_path"] = th_path_disk
                 parsed["status"] = "SCRIPT_DONE"
-                parsed["current_step"] = f"📝 Đã xong Kịch bản ({sc_chars_disk:,} chữ) & {1 if has_th_disk else 0}/1 Thumbnail — Sẵn sàng Render MP4"
+                parsed["current_step"] = (
+                    f"📝 Đã xong Kịch bản ({sc_chars_disk:,} chữ) & {1 if has_th_disk else 0}/1 Thumbnail — Sẵn sàng Render MP4"
+                )
 
             replaced = False
             for i, it in enumerate(ideas):
@@ -2813,7 +6535,9 @@ class ADASScriptEngine:
                     del_marker.unlink()
                 except Exception:
                     pass
-            (proj_dir / "idea_info.json").write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
+            (proj_dir / "idea_info.json").write_text(
+                json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             (proj_dir / "step2_prompt_ready.txt").write_text(
                 build_step2_prompt_from_idea(parsed, self.get_step2_template()),
                 encoding="utf-8",
@@ -2830,20 +6554,29 @@ class ADASScriptEngine:
         self._last_disk_sync_ts = 0.0
         self._sync_projects_disk_state()
         ids_str = ", ".join([f"#{it.get('ma_id', '')}" for it in saved_items])
-        log_info("SCRIPT", f"📥 Đã phân tích và lưu {len(saved_items)} tiêu đề theo STT vào Kho Dự Án: [{ids_str}]")
+        log_info(
+            "SCRIPT",
+            f"📥 Đã phân tích và lưu {len(saved_items)} tiêu đề theo STT vào Kho Dự Án: [{ids_str}]",
+        )
         return saved_items
 
-    def add_or_update_idea_from_raw(self, raw_text: str, custom_id: Optional[str] = None) -> Dict[str, Any]:
+    def add_or_update_idea_from_raw(
+        self, raw_text: str, custom_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Phân tích khối văn bản người dùng dán vào và lưu vào danh sách."""
         items = self.add_or_update_ideas_bulk_from_raw(raw_text, custom_id=custom_id)
-        return items[0] if items else parse_idea_input_block(raw_text, custom_id=custom_id)
+        return (
+            items[0] if items else parse_idea_input_block(raw_text, custom_id=custom_id)
+        )
 
     def delete_idea(self, ma_id: str) -> List[Dict[str, Any]]:
         target = (ma_id or "").strip()
         with self.ideas_io_lock:
             self._mark_ids_deleted([target])
             before_list = self.load_saved_ideas()
-            ideas = [it for it in before_list if str(it.get("ma_id", "")).strip() != target]
+            ideas = [
+                it for it in before_list if str(it.get("ma_id", "")).strip() != target
+            ]
             self.save_ideas_list(ideas)
             # Cập nhật đồng bộ bản backup và file phụ trong app/saved_ideas.json
             for extra_fp in (
@@ -2852,7 +6585,10 @@ class ADASScriptEngine:
             ):
                 if extra_fp.exists():
                     try:
-                        extra_fp.write_text(json.dumps(ideas, ensure_ascii=False, indent=2), encoding="utf-8")
+                        extra_fp.write_text(
+                            json.dumps(ideas, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
                     except Exception:
                         pass
 
@@ -2873,17 +6609,25 @@ class ADASScriptEngine:
                             except Exception:
                                 pass
                     try:
-                        (p_dir / ".deleted_by_user").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+                        (p_dir / ".deleted_by_user").write_text(
+                            time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8"
+                        )
                     except Exception:
                         pass
-        log_info("SCRIPT", f"🗑️ Đã xóa vĩnh viễn mã [{target}] khỏi Kho Dự Án (Còn lại {len(ideas)} mã).", project_id=target)
+        log_info(
+            "SCRIPT",
+            f"🗑️ Đã xóa vĩnh viễn mã [{target}] khỏi Kho Dự Án (Còn lại {len(ideas)} mã).",
+            project_id=target,
+        )
         return ideas
 
     def delete_all_ideas(self) -> List[Dict[str, Any]]:
         with self.ideas_io_lock:
             old_ideas = self.load_saved_ideas()
             count = len(old_ideas)
-            all_ids = [str(it.get("ma_id", "")).strip() for it in old_ideas if it.get("ma_id")]
+            all_ids = [
+                str(it.get("ma_id", "")).strip() for it in old_ideas if it.get("ma_id")
+            ]
             if self.projects_dir.exists():
                 for p_dir in self.projects_dir.iterdir():
                     if p_dir.is_dir():
@@ -2935,7 +6679,9 @@ class ADASScriptEngine:
                     it["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
                     proj_dir = self.projects_dir / ma_id
                     proj_dir.mkdir(parents=True, exist_ok=True)
-                    (proj_dir / "idea_info.json").write_text(json.dumps(it, ensure_ascii=False, indent=2), encoding="utf-8")
+                    (proj_dir / "idea_info.json").write_text(
+                        json.dumps(it, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
                     break
             self.save_ideas_list(ideas)
 
@@ -2952,12 +6698,23 @@ class ADASScriptEngine:
         bỏ qua Chrome (đã có sẵn kịch bản) hoặc khi Step 6 bị quá thời gian chờ.
         Luôn nhúng sẵn khối chữ 80/20 và <THUMBNAIL_PROMPT_1> + <THUMBNAIL_GREEN_PROMPT_1> để STEP 7 tạo đủ 2 ảnh (`THUMBNAIL.png` & `THUMBNAIL-NENXANH.png`).
         """
-        kw_raw = idea.get("keywords_ja") or "historias de reflexión, drama familiar méxico, padre anciano, justicia familiar, herencia"
+        kw_raw = (
+            idea.get("keywords_ja")
+            or "historias de reflexión, drama familiar méxico, padre anciano, justicia familiar, herencia"
+        )
         summary_vi = idea.get("summary_vi") or ""
-        evidence = idea.get("proof_object") or "la escritura original y el acta notarial"
-        setting = idea.get("boi_canh_su_kien") or "una notaría y casa familiar en México"
-        six_lines = self._extract_six_lines_from_outputs("", step2_out or "", locked_title=locked_title, idea=idea)
-        l_block = "\n".join(f"L{idx + 1}: {six_lines[idx]}" for idx in range(len(six_lines)))
+        evidence = (
+            idea.get("proof_object") or "la escritura original y el acta notarial"
+        )
+        setting = (
+            idea.get("boi_canh_su_kien") or "una notaría y casa familiar en México"
+        )
+        six_lines = self._extract_six_lines_from_outputs(
+            "", step2_out or "", locked_title=locked_title, idea=idea
+        )
+        l_block = "\n".join(
+            f"L{idx + 1}: {six_lines[idx]}" for idx in range(len(six_lines))
+        )
         return (
             f"ID: {ma_id}\n"
             f"COMPLETED_STEP: STEP 6 — PADRE MX V3.0 SEO & MATCHED THUMBNAIL PAIR\n"
@@ -3014,13 +6771,27 @@ class ADASScriptEngine:
                         pass
         return ""
 
-    def _build_step3_prompt(self, ma_id: str, locked_title: str, step2_context: str = "", in_same_chat: bool = False) -> str:
+    def _build_step3_prompt(
+        self,
+        ma_id: str,
+        locked_title: str,
+        step2_context: str = "",
+        in_same_chat: bool = False,
+    ) -> str:
         skill_md = self._load_skill_markdown("02_gian_y_padre_mx")
-        skill_block = f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 02 (PADRE MX OUTLINE WRITER V3.0) ==========\n{skill_md}\n====================================================================================" if skill_md else ""
+        skill_block = (
+            f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 02 (PADRE MX OUTLINE WRITER V3.0) ==========\n{skill_md}\n===================================================================================="
+            if skill_md
+            else ""
+        )
         ctx_block = (
             ""
             if in_same_chat
-            else (f"\n\n========== DỮ LIỆU ĐẦU RA & HANDOFF TỪ STEP 1/2 ==========\n{step2_context[-8000:]}\n==========================================================" if step2_context else "")
+            else (
+                f"\n\n========== DỮ LIỆU ĐẦU RA & HANDOFF TỪ STEP 1/2 ==========\n{step2_context[-8000:]}\n=========================================================="
+                if step2_context
+                else ""
+            )
         )
         return f"""[NEW CHAT #1 — TIẾP TỤC CHẠY SKILL 02 NGAY TRÊN CÙNG ĐOẠN CHAT VỚI SKILL 01]
 Chạy STEP 2 (OUTLINE 7 PHẦN — `padre-mx-outline-writer` V3.0.0) cho mã {ma_id} theo đúng tiêu đề đã khóa từ STEP 1 ở trên.
@@ -3039,7 +6810,9 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
    - Thiết kế chi tiết 7 Phần `[PART 1]` đến `[PART 7]` (mỗi Part gồm `Dramatic Role`, `Causal Chain`, `Key Scenes`, `Evidence/Legal Mechanism`, `Retention Cliffhanger`, `Target Character Budget`).
    - Chốt `APPROVED_FOR_DRAFTING: YES`. Không viết văn bản kịch bản ở bước này."""
 
-    def _extract_compact_step3_for_part(self, step3_context: str, part_letter: str) -> str:
+    def _extract_compact_step3_for_part(
+        self, step3_context: str, part_letter: str
+    ) -> str:
         """
         Rút gọn thông minh ngữ cảnh Dàn ý 7 Phần (STEP 3) nếu quá dài (> 26.000 ký tự):
         Giữ nguyên phần CANON_CONTINUITY_HANDOFF + TIMELINE_AGE_LEDGER ở đầu và các PART thuộc Stage đang viết.
@@ -3057,7 +6830,11 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
         if m_part:
             start_idx = max(0, m_part.start() - 120)
             part_slice = step3_context[start_idx : start_idx + 14500]
-            handoff_tail = step3_context[-4500:] if (start_idx + 14500) < len(step3_context) - 4500 else ""
+            handoff_tail = (
+                step3_context[-4500:]
+                if (start_idx + 14500) < len(step3_context) - 4500
+                else ""
+            )
             return f"{head_bible}\n\n...[TRÍCH XUẤT TRỌNG TÂM DÀN Ý STAGE {p_up}]...\n\n{part_slice}\n\n{handoff_tail}".strip()
         return f"{head_bible}\n\n...\n\n{step3_context[-14500:]}".strip()
 
@@ -3073,13 +6850,25 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
         prev_part_tail: str = "",
         in_same_writer_chat: bool = False,
     ) -> str:
-        skill_md = "" if in_same_writer_chat else self._load_skill_markdown("03_viet_kich_ban_padre_mx")
+        skill_md = (
+            ""
+            if in_same_writer_chat
+            else self._load_skill_markdown("03_viet_kich_ban_padre_mx")
+        )
         compact_s3 = self._extract_compact_step3_for_part(step3_context, part_letter)
-        skill_block = f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 03 (PADRE MX SCRIPT WRITER V3.0) ==========\n{skill_md}\n===================================================================================" if (skill_md and compact_s3) else ""
+        skill_block = (
+            f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 03 (PADRE MX SCRIPT WRITER V3.0) ==========\n{skill_md}\n==================================================================================="
+            if (skill_md and compact_s3)
+            else ""
+        )
         ctx_block = (
             f"\n\n========== NHẮC LẠI DÀN Ý TRỌNG TÂM CỦA STAGE {part_letter.upper()} ==========\n{compact_s3[-10000:]}\n======================================================================"
             if in_same_writer_chat and compact_s3
-            else (f"\n\n========== DÀN Ý 7 PHẦN & CANON CONTINUITY TỪ BƯỚC TRƯỚC ==========\n{compact_s3}\n===================================================================" if compact_s3 else "")
+            else (
+                f"\n\n========== DÀN Ý 7 PHẦN & CANON CONTINUITY TỪ BƯỚC TRƯỚC ==========\n{compact_s3}\n==================================================================="
+                if compact_s3
+                else ""
+            )
         )
         prev_block = (
             f"\n\n========== ĐOẠN KẾT CỦA STAGE TRƯỚC (ĐỂ NỐI MẠCH TRUYỆN LIỀN MẠCH 100%, TUYỆT ĐỐI KHÔNG LẶP LẠI) ==========\n"
@@ -3125,7 +6914,11 @@ QUY TẮC BẮT BUỘC (`padre-mx-script-writer` V3.0.0 — TIẾNG TÂY BAN NHA
         expected_parts_str = (
             "`[PART 1]` và `[PART 2]`"
             if p_up == "A"
-            else ("`[PART 3]`, `[PART 4]` và `[PART 5]`" if p_up == "B" else "`[PART 6]` và `[PART 7]`")
+            else (
+                "`[PART 3]`, `[PART 4]` và `[PART 5]`"
+                if p_up == "B"
+                else "`[PART 6]` và `[PART 7]`"
+            )
         )
         ctx_reminder = (
             f"\n\n========== NHẮC LẠI DÀN Ý STAGE {p_up} ({expected_parts_str}) ==========\n"
@@ -3157,8 +6950,16 @@ YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG TÂY BAN NHA MEXICO (
         step3_context: str = "",
     ) -> str:
         skill_md = self._load_skill_markdown("04_kiem_dinh_kich_ban_padre_mx")
-        skill_block = f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 04 (PADRE MX INDEPENDENT QA V3.0 — ROUND 1 LOGIC AUDIT) ==========\n{skill_md}\n=========================================================================================================" if skill_md else ""
-        arch_excerpt = f"\n\n========== TÓM TẮT DÀN Ý & CANON CONTINUITY LEDGER ==========\n{step3_context[:4000]}\n=============================================================" if step3_context else ""
+        skill_block = (
+            f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 04 (PADRE MX INDEPENDENT QA V3.0 — ROUND 1 LOGIC AUDIT) ==========\n{skill_md}\n========================================================================================================="
+            if skill_md
+            else ""
+        )
+        arch_excerpt = (
+            f"\n\n========== TÓM TẮT DÀN Ý & CANON CONTINUITY LEDGER ==========\n{step3_context[:4000]}\n============================================================="
+            if step3_context
+            else ""
+        )
         script_payload = ""
         if part_a_text or part_b_text or part_c_text:
             script_payload = (
@@ -3239,19 +7040,43 @@ CHẠY NGAY STEP 5 (VÒNG 2 — HOLISTIC FULL-SCRIPT QUALITY, PACING, ANTI-REPET
 4. NẾU CẢ 3 STAGE ĐỀU ĐẠT CHẤT LƯỢNG XUẤT SẮC (`>= 95/100`):
    - Không cần mở thẻ `<REWRITE_PART_...>`, chỉ xuất báo cáo `PMX_QA_ROUND2_QUALITY.md` + `PMX_QA_FINAL.md` và chốt `RELEASE_DECISION: READY`! TUYỆT ĐỐI KHÔNG bật Python/Code Interpreter."""
 
-    def _build_step6_seo_prompt(self, ma_id: str, locked_title: str, total_count: int, step2_context: str = "", script_excerpt: str = "") -> str:
+    def _build_step6_seo_prompt(
+        self,
+        ma_id: str,
+        locked_title: str,
+        total_count: int,
+        step2_context: str = "",
+        script_excerpt: str = "",
+    ) -> str:
         skill_md = self._load_skill_markdown("05_seo_thumbnail_padre_mx")
-        skill_block = f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 05 (PADRE MX SEO & 80/20 MATCHED THUMBNAIL PAIR V3.0) ==========\n{skill_md}\n======================================================================================================" if skill_md else ""
+        skill_block = (
+            f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 05 (PADRE MX SEO & 80/20 MATCHED THUMBNAIL PAIR V3.0) ==========\n{skill_md}\n======================================================================================================"
+            if skill_md
+            else ""
+        )
         step2_tail = step2_context[-12000:] if step2_context else ""
-        step2_six_lines = self._extract_six_lines_from_single_source(step2_context or "")
+        step2_six_lines = self._extract_six_lines_from_single_source(
+            step2_context or ""
+        )
         locked_6_lines_block = ""
         if len(step2_six_lines) >= 4:
             locked_6_lines_block = (
                 "\n- LOCKED_THUMBNAIL_TEXT_STACK (Các dòng chữ Tây Ban Nha in hoa từ STEP 1/2):\n"
-                + "\n".join(f"  + L{i+1}: {step2_six_lines[i]}" for i in range(len(step2_six_lines)))
+                + "\n".join(
+                    f"  + L{i + 1}: {step2_six_lines[i]}"
+                    for i in range(len(step2_six_lines))
+                )
             )
-        ctx_block = f"\n\n========== DỮ LIỆU TIÊU ĐỀ & THUMBNAIL TỪ STEP 1/2 ==========\n{step2_tail}\n=============================================================" if step2_tail else ""
-        script_block = f"\n\n========== TRÍCH ĐOẠN MỞ ĐẦU & CAO TRÀO KỊCH BẢN ĐÃ KHÓA ==========\n{script_excerpt[:3000]}\n===================================================================" if script_excerpt else ""
+        ctx_block = (
+            f"\n\n========== DỮ LIỆU TIÊU ĐỀ & THUMBNAIL TỪ STEP 1/2 ==========\n{step2_tail}\n============================================================="
+            if step2_tail
+            else ""
+        )
+        script_block = (
+            f"\n\n========== TRÍCH ĐOẠN MỞ ĐẦU & CAO TRÀO KỊCH BẢN ĐÃ KHÓA ==========\n{script_excerpt[:3000]}\n==================================================================="
+            if script_excerpt
+            else ""
+        )
         return f"""CHẠY NGAY STEP 6 (TRÊN ĐOẠN CHAT SEO MỚI HOÀN TOÀN) — SEO YOUTUBE `es-MX` & BỘ ĐÔI THUMBNAIL 80/20 (`THUMBNAIL.png` + `THUMBNAIL-NENXANH.png`) (`padre-mx-seo-packaging` V3.0.0) CHO MÃ {ma_id}
 - FULL_SCRIPT_CHAR_COUNT_VERIFIED: {total_count:,} chars (7 PARTS `[PART 1]`..`[PART 7]` — PASS 70.000–80.000)
 - RELEASE_DECISION: READY (ĐÃ QUA 2 VÒNG KIỂM ĐỊNH ĐỘC LẬP LOGIC & QUALITY)
@@ -3288,7 +7113,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         def _clean_thumb_line(raw_s: str) -> str:
             s = re.sub(r"<[^>]+>", "", raw_s or "").strip().strip("`*'\" ")
-            s = re.sub(r"^[A-Z0-9\s/_\-\(\)\[\]—]+[:：]\s*", "", s, flags=re.IGNORECASE).strip()
+            s = re.sub(
+                r"^[A-Z0-9\s/_\-\(\)\[\]—]+[:：]\s*", "", s, flags=re.IGNORECASE
+            ).strip()
             s = re.sub(
                 r"\s*[\(（\[][^\)）\]]*(?:White|Yellow|Pink|Magenta|Cyan|Teal|Orange|Black|Red|Banner|Kicker|Trắng|Vàng|Hồng|Xanh|Đen|Đỏ|Cam|Relationship|Situation|Conflict|Escalation|Reversal|Reaction)[^\)）\]]*[\)）\]]\s*",
                 "",
@@ -3346,7 +7173,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         ).strip()
 
         # Nếu là tiêu đề tiếng Tây Ban Nha / Latin: tách thành 6 cụm IN HOA mạnh mẽ cho bố cục 80/20
-        words = [w.strip(".,;:()[]\"'") for w in raw_title.split() if w.strip(".,;:()[]\"'")]
+        words = [
+            w.strip(".,;:()[]\"'") for w in raw_title.split() if w.strip(".,;:()[]\"'")
+        ]
         if words and not any("\u3040" <= ch <= "\u9fff" for ch in raw_title):
             chunks: List[str] = []
             cur: List[str] = []
@@ -3419,9 +7248,19 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0]
-        txt = re.sub(r"\b(?:3840\s*x\s*2160|1920\s*x\s*1080|1536\s*x\s*864|1280\s*x\s*720)\b", "1536x1024", txt, flags=re.IGNORECASE)
+        txt = re.sub(
+            r"\b(?:3840\s*x\s*2160|1920\s*x\s*1080|1536\s*x\s*864|1280\s*x\s*720)\b",
+            "1536x1024",
+            txt,
+            flags=re.IGNORECASE,
+        )
         txt = re.sub(r"target\s+1536x1024", "size 1536x1024", txt, flags=re.IGNORECASE)
-        txt = re.sub(r"\b16\s*:\s*9(?:\s*aspect\s*ratio)?\b", "widescreen landscape (1536x1024)", txt, flags=re.IGNORECASE)
+        txt = re.sub(
+            r"\b16\s*:\s*9(?:\s*aspect\s*ratio)?\b",
+            "widescreen landscape (1536x1024)",
+            txt,
+            flags=re.IGNORECASE,
+        )
         txt = re.sub(
             r"\b(?:schoolboy|schoolgirl|elementary\s+school\s+student|middle\s+school\s+student|high\s+school\s+student|little\s+boy|little\s+girl|young\s+boy|young\s+girl|teenager|teenagers|teenage|teens|teen|children|child|kids|kid|minor|minors)\b",
             "adult family member (aged 35s)",
@@ -3451,7 +7290,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         )
         cleaned_lines: List[str] = []
         for ln in txt.splitlines():
-            if any(re.search(fp, ln, flags=re.IGNORECASE) for fp in forbidden_line_pats):
+            if any(
+                re.search(fp, ln, flags=re.IGNORECASE) for fp in forbidden_line_pats
+            ):
                 continue
             ln = re.sub(r"\bOverlay\b", "Include", ln)
             ln = re.sub(r"\boverlay\b", "include", ln)
@@ -3505,8 +7346,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             "Right 22% zone depicts a close-up photorealistic chest-up portrait of an older Mexican father (aged 70, deeply expressive eyes, dignified face, wearing a dark jacket over a white shirt) looking toward the camera with quiet authority, while the left 78% is a clean solid white background (#FFFFFF) carrying stacked uppercase Spanish text and a red bottom banner.",
         ]
 
-        safe_proof = self._sanitize_raw_thumbnail_prompt(str(idea.get("proof_object") or "notarized Mexican property deed")) or "notarized Mexican property deed"
-        safe_setting = self._sanitize_raw_thumbnail_prompt(str(idea.get("boi_canh_su_kien") or "Mexican family house")) or "Mexican family house"
+        safe_proof = (
+            self._sanitize_raw_thumbnail_prompt(
+                str(idea.get("proof_object") or "notarized Mexican property deed")
+            )
+            or "notarized Mexican property deed"
+        )
+        safe_setting = (
+            self._sanitize_raw_thumbnail_prompt(
+                str(idea.get("boi_canh_su_kien") or "Mexican family house")
+            )
+            or "Mexican family house"
+        )
         safe_title_ctx = self._sanitize_raw_thumbnail_prompt(locked_title or "")
 
         while len(prompts) < 3:
@@ -3535,17 +7386,26 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             final_prompts.append(enforced)
         return final_prompts
 
-    def _create_matched_green_screen_from_thumbnail_bytes(self, thumb_1080p_bytes: bytes) -> bytes:
+    def _create_matched_green_screen_from_thumbnail_bytes(
+        self, thumb_1080p_bytes: bytes
+    ) -> bytes:
         """
         Tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (1920x1080) từ `THUMBNAIL.png`:
         - Tuyệt đối KHÔNG CÓ CHỮ (loại bỏ 100% khối chữ bên trái, băng rôn đỏ và giấy tờ văn bản).
         - Tách sạch phông nền sau đầu/vai nhân vật bằng AI DeepLabV3_ResNet50.
         - Phóng to chân dung nhân vật rõ nét, uy nghi ở bên phải khung hình trên nền xanh lá `#00FF00` (`RGB(0, 255, 0)`).
         """
-        from backend.visual_cue_director import extract_clean_large_green_character_bytes
-        return extract_clean_large_green_character_bytes(thumb_1080p_bytes, part_index=1)
+        from backend.renderer import (
+            extract_clean_large_green_character_bytes,
+        )
 
-    def _validate_thumbnail_pair_bytes(self, thumb_bytes: bytes, green_bytes: bytes) -> Dict[str, Any]:
+        return extract_clean_large_green_character_bytes(
+            thumb_1080p_bytes, part_index=1
+        )
+
+    def _validate_thumbnail_pair_bytes(
+        self, thumb_bytes: bytes, green_bytes: bytes
+    ) -> Dict[str, Any]:
         """
         Kiểm định cặp ảnh `THUMBNAIL.png` và `THUMBNAIL-NENXANH.png`:
         - Cùng độ phân giải 16:9 (`1920x1080`).
@@ -3553,9 +7413,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         - Vùng bên phải chứa nhân vật người cha Mexico kích thước lớn, rõ nét (`right_character_ratio >= 0.35`).
         """
         try:
-            from PIL import Image
             import io
+
             import numpy as np
+            from PIL import Image
 
             im_t = Image.open(io.BytesIO(thumb_bytes)).convert("RGB")
             im_g = Image.open(io.BytesIO(green_bytes)).convert("RGB")
@@ -3565,13 +7426,23 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             arr_g = np.asarray(im_g, dtype=np.uint8)
             left_x = int(round(w * 0.57))
             left_zone = arr_g[:, :left_x, :]
-            exact_green = (left_zone[:, :, 0] == 0) & (left_zone[:, :, 1] == 255) & (left_zone[:, :, 2] == 0)
+            exact_green = (
+                (left_zone[:, :, 0] == 0)
+                & (left_zone[:, :, 1] == 255)
+                & (left_zone[:, :, 2] == 0)
+            )
             left_exact_ratio = float(np.mean(exact_green))
 
             right_x = int(round(w * 0.64))
             right_zone = arr_g[:, right_x:, :]
             non_green = ~(
-                (right_zone[:, :, 1].astype(np.int16) - np.maximum(right_zone[:, :, 0], right_zone[:, :, 2]).astype(np.int16) > 80)
+                (
+                    right_zone[:, :, 1].astype(np.int16)
+                    - np.maximum(right_zone[:, :, 0], right_zone[:, :, 2]).astype(
+                        np.int16
+                    )
+                    > 80
+                )
                 & (right_zone[:, :, 1] > 170)
             )
             right_char_ratio = float(np.mean(non_green))
@@ -3591,9 +7462,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         Tự động phát hiện biên trên/dưới của khối chữ và băng rôn ở nửa trái để cắt thông minh sang 16:9 mà không cắt phạm vào chữ.
         """
         try:
-            from PIL import Image
             import io
+
             import numpy as np
+            from PIL import Image
 
             im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
             w, h = im.size
@@ -3634,9 +7506,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         except Exception:
             return img_bytes
 
-    def _is_image_distinct_from_existing(self, new_img_bytes: bytes, existing_files: List[Path]) -> bool:
+    def _is_image_distinct_from_existing(
+        self, new_img_bytes: bytes, existing_files: List[Path]
+    ) -> bool:
         """Kiểm tra ảnh Thumbnail mới có thực sự khác biệt so với các ảnh Thumbnail đã lưu trước đó hay không."""
         import hashlib
+
         new_sha = hashlib.sha256(new_img_bytes).hexdigest()
         for ef in existing_files:
             if not ef.exists():
@@ -3645,10 +7520,16 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             if hashlib.sha256(old_bytes).hexdigest() == new_sha:
                 return False
             try:
-                from PIL import Image
                 import io
+
                 import numpy as np
-                im1 = Image.open(io.BytesIO(new_img_bytes)).convert("RGB").resize((64, 64))
+                from PIL import Image
+
+                im1 = (
+                    Image.open(io.BytesIO(new_img_bytes))
+                    .convert("RGB")
+                    .resize((64, 64))
+                )
                 im2 = Image.open(io.BytesIO(old_bytes)).convert("RGB").resize((64, 64))
                 arr1 = np.asarray(im1, dtype=np.float32) / 255.0
                 arr2 = np.asarray(im2, dtype=np.float32) / 255.0
@@ -3683,7 +7564,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         renders_dir.mkdir(parents=True, exist_ok=True)
         proj_dir.mkdir(parents=True, exist_ok=True)
-        prompts_list = self._extract_three_thumbnail_prompts(step6_out, step2_out, locked_title, idea)
+        prompts_list = self._extract_three_thumbnail_prompts(
+            step6_out, step2_out, locked_title, idea
+        )
         saved_paths: List[Path] = []
 
         target_file = renders_dir / f"{ma_id}_THUMBNAIL_1.png"
@@ -3699,15 +7582,24 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             proj_std_file.write_bytes(thumb_1080p_bytes)
             out_list = [target_file]
             try:
-                green_bytes = self._create_matched_green_screen_from_thumbnail_bytes(thumb_1080p_bytes)
-                val_pair = self._validate_thumbnail_pair_bytes(thumb_1080p_bytes, green_bytes)
+                green_bytes = self._create_matched_green_screen_from_thumbnail_bytes(
+                    thumb_1080p_bytes
+                )
+                val_pair = self._validate_thumbnail_pair_bytes(
+                    thumb_1080p_bytes, green_bytes
+                )
                 green_file.write_bytes(green_bytes)
                 green_id_file.write_bytes(green_bytes)
                 proj_green_file.write_bytes(green_bytes)
                 out_list.append(green_file)
                 try:
-                    from backend.visual_cue_director import ensure_project_script_green_images
-                    ensure_project_script_green_images(proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id)
+                    from backend.renderer import (
+                        ensure_project_script_green_images,
+                    )
+
+                    ensure_project_script_green_images(
+                        proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
+                    )
                 except Exception:
                     pass
                 log_info(
@@ -3717,7 +7609,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     project_id=ma_id,
                 )
             except Exception as e_gr:
-                log_warn("SCRIPT", f"[{ma_id}] ⚠️ Lỗi tách nền tạo THUMBNAIL-NENXANH.png: {e_gr}", project_id=ma_id)
+                log_warn(
+                    "SCRIPT",
+                    f"[{ma_id}] ⚠️ Lỗi tách nền tạo THUMBNAIL-NENXANH.png: {e_gr}",
+                    project_id=ma_id,
+                )
             return out_list
 
         if target_file.exists() and target_file.stat().st_size > 30000:
@@ -3735,7 +7631,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             if self.should_stop:
                 raise RuntimeError("Đã dừng theo yêu cầu người dùng.")
 
-            acc_lbl = getattr(session, "cfg", {}).get("label", getattr(session, "acc_id", "AI"))
+            acc_lbl = getattr(session, "cfg", {}).get(
+                "label", getattr(session, "acc_id", "AI")
+            )
             self._update_idea_record(
                 ma_id,
                 current_step=f"New Chat #4 (Vẽ Thumbnail): Đang tạo cặp Thumbnail 80/20 + Ảnh Nền Xanh trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
@@ -3774,14 +7672,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 self._emit(
                     message=f"[{ma_id}] ⚠️ Lượt {attempt} ({acc_lbl}): Chưa thu được ảnh Thumbnail ({err_txt}) -> {'Tài khoản bị Limit 30p, đang đổi sang nick khác...' if is_rl else 'Đang đổi nick / tạo lại...'}"
                 )
-                if isinstance(session, ChatGPTWebSession) and hasattr(session, "switch_to_another_account"):
+                if isinstance(session, ChatGPTWebSession) and hasattr(
+                    session, "switch_to_another_account"
+                ):
                     if not is_rl and attempt >= 2:
                         mark_account_rate_limited(
                             session.acc_id,
                             reason=f"Lỗi tạo Thumbnail liên tiếp ({err_txt})",
                             cooldown_sec=ACCOUNT_LIMIT_COOLDOWN_SEC,
                         )
-                    switched = session.switch_to_another_account(extra_exclude=tried_thumb_accs)
+                    switched = session.switch_to_another_account(
+                        extra_exclude=tried_thumb_accs
+                    )
                     if switched:
                         tried_thumb_accs.add(session.acc_id)
                         self._emit(
@@ -3860,7 +7762,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         - Tự động xoay vòng qua tất cả các tài khoản ChatGPT đang có (`acc_1`, `acc_2`, `acc_3`),
         - Nếu tài khoản nào bị limit thì tạm dừng tài khoản đó 30 phút và chuyển sang nick khác tạo ngay.
         """
-        from .chatgpt_web_client import ensure_all_saved_chatgpt_accounts_open, CHATGPT_ACCOUNTS
 
         proj_dir = self.projects_dir / ma_id
         proj_dir.mkdir(parents=True, exist_ok=True)
@@ -3872,34 +7773,51 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         if target_thumb.exists() and target_thumb.stat().st_size > 20000:
             if not (target_green.exists() and target_green.stat().st_size > 10000):
                 try:
-                    g_bytes = self._create_matched_green_screen_from_thumbnail_bytes(target_thumb.read_bytes())
+                    g_bytes = self._create_matched_green_screen_from_thumbnail_bytes(
+                        target_thumb.read_bytes()
+                    )
                     target_green.write_bytes(g_bytes)
-                    (renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png").write_bytes(g_bytes)
+                    (renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png").write_bytes(
+                        g_bytes
+                    )
                     (proj_dir / "THUMBNAIL-NENXANH.png").write_bytes(g_bytes)
                 except Exception:
                     pass
             self._update_idea_record(ma_id, has_thumbnail=True)
-            return [str(target_thumb), str(target_green)] if target_green.exists() else [str(target_thumb)]
+            return (
+                [str(target_thumb), str(target_green)]
+                if target_green.exists()
+                else [str(target_thumb)]
+            )
 
         # Chuẩn bị dữ liệu Idea + Step 2 + Step 6 để tạo Thumbnail
         ideas = self.load_saved_ideas()
-        idea = next((it for it in ideas if it.get("ma_id") == ma_id), None) or {"ma_id": ma_id}
+        idea = next((it for it in ideas if it.get("ma_id") == ma_id), None) or {
+            "ma_id": ma_id
+        }
         step2_file = proj_dir / "step2_title_thumbnail.txt"
-        step2_out = step2_file.read_text(encoding="utf-8", errors="ignore") if step2_file.exists() else ""
-        locked_title = (
-            idea.get("locked_title")
-            or extract_locked_title_from_step2(step2_out, fallback_title=idea.get("draft_title_ja", ma_id))
+        step2_out = (
+            step2_file.read_text(encoding="utf-8", errors="ignore")
+            if step2_file.exists()
+            else ""
+        )
+        locked_title = idea.get("locked_title") or extract_locked_title_from_step2(
+            step2_out, fallback_title=idea.get("draft_title_ja", ma_id)
         )
         _, _, sc_chars = self.has_valid_script_on_disk(ma_id)
         step6_file = proj_dir / "seo_publish_pack.txt"
         if step6_file.exists() and step6_file.stat().st_size > 200:
             step6_out = step6_file.read_text(encoding="utf-8", errors="ignore")
         else:
-            step6_out = self._build_fallback_seo_pack(ma_id, locked_title, sc_chars or 45000, idea, step2_out)
+            step6_out = self._build_fallback_seo_pack(
+                ma_id, locked_title, sc_chars or 45000, idea, step2_out
+            )
             step6_file.write_text(step6_out, encoding="utf-8")
 
         try:
-            ensure_all_saved_chatgpt_accounts_open(run_hidden=False, open_browsers_now=False)
+            ensure_all_saved_chatgpt_accounts_open(
+                run_hidden=False, open_browsers_now=False
+            )
         except Exception:
             pass
 
@@ -3914,10 +7832,14 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 return [str(target_thumb)]
 
             # Nếu mọi tài khoản đều đã thử hoặc đang trong 30p cooldown, mở lại tập exclude để chọn nick rảnh nhất
-            use_exclude = tried_accs if len(tried_accs) < len(CHATGPT_ACCOUNTS) else set()
+            use_exclude = (
+                tried_accs if len(tried_accs) < len(CHATGPT_ACCOUNTS) else set()
+            )
             sess = ChatGPTWebSession(
                 project_id=f"{ma_id}_THUMB",
-                acc_id=preferred_acc_id if (round_idx == 0 and preferred_acc_id not in use_exclude) else None,
+                acc_id=preferred_acc_id
+                if (round_idx == 0 and preferred_acc_id not in use_exclude)
+                else None,
                 exclude_accs=use_exclude,
             )
             tried_accs.add(sess.acc_id)
@@ -3945,7 +7867,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     proj_dir=proj_dir,
                     renders_dir=renders_dir,
                 )
-                if res_paths and target_thumb.exists() and target_thumb.stat().st_size > 20000:
+                if (
+                    res_paths
+                    and target_thumb.exists()
+                    and target_thumb.stat().st_size > 20000
+                ):
                     self._update_idea_record(ma_id, has_thumbnail=True)
                     log_info(
                         "SCRIPT",
@@ -4001,7 +7927,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 missing_ids.append(mid)
 
         if not missing_ids:
-            return {"checked": len(all_ids), "missing_before": 0, "fixed": [], "still_missing": []}
+            return {
+                "checked": len(all_ids),
+                "missing_before": 0,
+                "fixed": [],
+                "still_missing": [],
+            }
 
         log_info(
             "SCRIPT",
@@ -4103,16 +8034,24 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             if self.should_stop:
                 raise RuntimeError("Đã dừng theo yêu cầu người dùng.")
 
-            tail_ja = combined_clean[-180:].replace("\n", "") if combined_clean else prev_part_tail[-180:].replace("\n", "")
+            tail_ja = (
+                combined_clean[-180:].replace("\n", "")
+                if combined_clean
+                else prev_part_tail[-180:].replace("\n", "")
+            )
             self._emit(
                 progress=min(base_progress + turn_idx * 2.2, base_progress + 14.0),
                 message=f"[{ma_id}] [New Chat #2] STAGE {part_letter} đạt {curr_pure:,}/{min_chars:,} chữ thuần -> Đang viết nối tiếp lượt {turn_idx}...",
             )
 
             # Giữ nguyên trên cùng New Chat #2, chỉ mở chat cứu hộ khi hoàn toàn bị kẹt liên tiếp >= 2 lần
-            need_fresh_recovery = (curr_pure == 0 and stalled_retries >= 2) or (stalled_retries >= 2)
+            need_fresh_recovery = (curr_pure == 0 and stalled_retries >= 2) or (
+                stalled_retries >= 2
+            )
             if need_fresh_recovery:
-                session.start_fresh_chat(f"STEP_4_RECOVERY_PART_{part_letter}_T{turn_idx}")
+                session.start_fresh_chat(
+                    f"STEP_4_RECOVERY_PART_{part_letter}_T{turn_idx}"
+                )
                 self._emit(
                     message=f"[{ma_id}] 🔄 Mở đoạn chat cứu hộ cho STAGE {part_letter} (Lượt {turn_idx}, hiện có {curr_pure:,} chữ)..."
                 )
@@ -4175,7 +8114,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
 
         if curr_pure > max_chars:
-            combined_clean = trim_japanese_to_max_pure_chars(combined_clean, max_pure_chars=max_chars - 150)
+            combined_clean = trim_japanese_to_max_pure_chars(
+                combined_clean, max_pure_chars=max_chars - 150
+            )
 
         combined_clean = ensure_part_headings_for_stage(combined_clean, part_letter)
         return combined_clean
@@ -4189,7 +8130,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
     ) -> bool:
         """Đẩy 1 kịch bản đã hoàn chỉnh vào hàng đợi tạo Voice & Render Video MP4 ngay lập tức (Non-blocking)."""
         if self.video_pipeline is None:
-            log_error("VIDEO", f"[{ma_id}] Không tìm thấy đối tượng video_pipeline để xuất MP4!", project_id=ma_id)
+            log_error(
+                "VIDEO",
+                f"[{ma_id}] Không tìm thấy đối tượng video_pipeline để xuất MP4!",
+                project_id=ma_id,
+            )
             return False
 
         # Kiểm tra nếu dự án đã có sẵn file MP4 hoàn chỉnh (đã qua kiểm định ffprobe & thời lượng) thì giữ trạng thái COMPLETED_VIDEO, tránh render trùng
@@ -4207,11 +8152,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             return True
 
         vcfg = video_settings or {}
-        job_payload = [{
-            "name": ma_id,
-            "script_text": script_text,
-            "seo_text": seo_text,
-        }]
+        job_payload = [
+            {
+                "name": ma_id,
+                "script_text": script_text,
+                "seo_text": seo_text,
+            }
+        ]
         self._update_idea_record(
             ma_id,
             has_script=True,
@@ -4278,7 +8225,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 except Exception:
                     idea = None
         if not idea:
-            raise ValueError(f"Không tìm thấy ý tưởng mã {ma_id} trong danh sách đã lưu!")
+            raise ValueError(
+                f"Không tìm thấy ý tưởng mã {ma_id} trong danh sách đã lưu!"
+            )
 
         proj_dir = self.projects_dir / ma_id
         proj_dir.mkdir(parents=True, exist_ok=True)
@@ -4329,12 +8278,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 status="RUNNING",
                 current_step="🔁 Đang viết lại mới từ Step 2...",
             )
-            log_info("SCRIPT", f"[{ma_id}] 🔁 Người dùng kích hoạt VIẾT LẠI THỦ CÔNG -> Đã dọn sạch dữ liệu cũ để viết mới từ Step 2.", project_id=ma_id)
+            log_info(
+                "SCRIPT",
+                f"[{ma_id}] 🔁 Người dùng kích hoạt VIẾT LẠI THỦ CÔNG -> Đã dọn sạch dữ liệu cũ để viết mới từ Step 2.",
+                project_id=ma_id,
+            )
 
         # ======================================================================
         # CHỐT CHẶN BẢO VỆ: NẾU ĐÃ CÓ SẴN KỊCH BẢN -> KHÔNG BAO GIỜ VIẾT LẠI!
         # ======================================================================
-        has_existing_script, existing_script_text, existing_pure_chars = self.has_valid_script_on_disk(ma_id)
+        has_existing_script, existing_script_text, existing_pure_chars = (
+            self.has_valid_script_on_disk(ma_id)
+        )
         if has_existing_script and not force_rewrite_script:
             self._emit(
                 status="running",
@@ -4347,17 +8302,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 ),
             )
             step2_file = proj_dir / "step2_title_thumbnail.txt"
-            step2_out = step2_file.read_text(encoding="utf-8") if step2_file.exists() else ""
-            locked_title = (
-                idea.get("locked_title")
-                or extract_locked_title_from_step2(step2_out, fallback_title=idea.get("draft_title_ja", ma_id))
+            step2_out = (
+                step2_file.read_text(encoding="utf-8") if step2_file.exists() else ""
+            )
+            locked_title = idea.get("locked_title") or extract_locked_title_from_step2(
+                step2_out, fallback_title=idea.get("draft_title_ja", ma_id)
             )
 
             step6_file = proj_dir / "seo_publish_pack.txt"
             if step6_file.exists() and step6_file.stat().st_size > 200:
                 step6_out = step6_file.read_text(encoding="utf-8")
             else:
-                step6_out = self._build_fallback_seo_pack(ma_id, locked_title, existing_pure_chars, idea, step2_out)
+                step6_out = self._build_fallback_seo_pack(
+                    ma_id, locked_title, existing_pure_chars, idea, step2_out
+                )
                 step6_file.write_text(step6_out, encoding="utf-8")
 
             master_seo_file = proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt"
@@ -4380,9 +8338,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             else:
                 master_seo_content = master_seo_file.read_text(encoding="utf-8")
 
-            (renders_dir / f"{ma_id}_SEO.txt").write_text(master_seo_content, encoding="utf-8")
-            (renders_dir / f"{ma_id}_KICH_BAN.txt").write_text(existing_script_text, encoding="utf-8")
-            thumb_files = [str(p) for p in sorted(renders_dir.glob(f"{ma_id}_THUMBNAIL_*.png")) if p.stat().st_size > 20000]
+            (renders_dir / f"{ma_id}_SEO.txt").write_text(
+                master_seo_content, encoding="utf-8"
+            )
+            (renders_dir / f"{ma_id}_KICH_BAN.txt").write_text(
+                existing_script_text, encoding="utf-8"
+            )
+            thumb_files = [
+                str(p)
+                for p in sorted(renders_dir.glob(f"{ma_id}_THUMBNAIL_*.png"))
+                if p.stat().st_size > 20000
+            ]
 
             # BẮT BUỘC MỌI KỊCH BẢN PHẢI CÓ THUMBNAIL: Nếu dự án đã có kịch bản nhưng chưa có Thumbnail -> Tự động tạo bù (kèm đổi nick nếu limit/lỗi)!
             if len(thumb_files) == 0 and not self.should_stop:
@@ -4399,10 +8365,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         exclude_accs=exclude_accs,
                     )
                 except Exception as e_th_ex:
-                    log_warn("SCRIPT", f"[{ma_id}] Không thể tạo bổ sung Thumbnail: {e_th_ex}", project_id=ma_id)
+                    log_warn(
+                        "SCRIPT",
+                        f"[{ma_id}] Không thể tạo bổ sung Thumbnail: {e_th_ex}",
+                        project_id=ma_id,
+                    )
 
             video_triggered = False
-            if auto_produce_video and not defer_video_handoff and self.video_pipeline is not None:
+            if (
+                auto_produce_video
+                and not defer_video_handoff
+                and self.video_pipeline is not None
+            ):
                 self._emit(
                     current_ma_id=ma_id,
                     current_step="🎬 Đẩy kịch bản có sẵn sang tạo Voice & Render MP4",
@@ -4458,7 +8432,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         # TRƯỜNG HỢP CHƯA CÓ KỊCH BẢN -> MỞ CHROME CHATGPT WEB CHẠY STEP 2 -> STEP 7
         # ======================================================================
         provider_norm = "chatgpt_web"
-        session = ChatGPTWebSession(project_id=ma_id, acc_id=preferred_acc_id, exclude_accs=exclude_accs)
+        session = ChatGPTWebSession(
+            project_id=ma_id, acc_id=preferred_acc_id, exclude_accs=exclude_accs
+        )
         provider_label = "ChatGPT Web (Medium)"
 
         try:
@@ -4487,10 +8463,23 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             # ------------------------------------------------------------------
             step2_file = proj_dir / "step2_title_thumbnail.txt"
             step2_valid = False
-            if step2_file.exists() and step2_file.stat().st_size > 2500 and not force_rewrite_script:
+            if (
+                step2_file.exists()
+                and step2_file.stat().st_size > 2500
+                and not force_rewrite_script
+            ):
                 try:
                     s2_probe = step2_file.read_text(encoding="utf-8", errors="ignore")
-                    if any(k in s2_probe.upper() for k in ("LOCKED_TITLE", "TITLE MATRIX", "THUMBNAIL", "STEP 2", "STEP3_HANDOFF")):
+                    if any(
+                        k in s2_probe.upper()
+                        for k in (
+                            "LOCKED_TITLE",
+                            "TITLE MATRIX",
+                            "THUMBNAIL",
+                            "STEP 2",
+                            "STEP3_HANDOFF",
+                        )
+                    ):
                         step2_out = s2_probe
                         step2_valid = True
                     else:
@@ -4512,26 +8501,37 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 )
             else:
                 # open_session_tab() ở trên đã mở sẵn New Chat #1 cho Skill 01 & Skill 02
-                self._update_idea_record(ma_id, current_step="New Chat #1 (Skill 01): Khóa Tiêu đề & 6 dòng chữ Thumbnail")
+                self._update_idea_record(
+                    ma_id,
+                    current_step="New Chat #1 (Skill 01): Khóa Tiêu đề & 6 dòng chữ Thumbnail",
+                )
                 self._emit(
                     current_step="New Chat #1 — Skill 01: Tiêu đề & Thumbnail",
                     progress=10.0,
                     message=f"[{ma_id}] 💬 [New Chat #1 — Skill 01] Đang tạo 5 Tiêu đề es-MX + Khóa LOCKED_TITLE + 6 dòng chữ Thumbnail...",
                 )
-                step2_prompt = build_step2_prompt_from_idea(idea, self.get_step2_template())
-                (proj_dir / "step2_prompt_sent.txt").write_text(step2_prompt, encoding="utf-8")
+                step2_prompt = build_step2_prompt_from_idea(
+                    idea, self.get_step2_template()
+                )
+                (proj_dir / "step2_prompt_sent.txt").write_text(
+                    step2_prompt, encoding="utf-8"
+                )
 
                 step2_out = session.send_prompt_and_wait(
                     step2_prompt,
                     step_label="STEP_2",
                     timeout_sec=600,
-                    progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #1 — Skill 01] Đang phản hồi ({ch:,} ký tự)..."),
+                    progress_cb=lambda st, ch: self._emit(
+                        message=f"[{ma_id}] [New Chat #1 — Skill 01] Đang phản hồi ({ch:,} ký tự)..."
+                    ),
                     should_stop_cb=lambda: self.should_stop,
                 )
                 step2_file.write_text(step2_out, encoding="utf-8")
                 ran_skill01_in_chat1 = True
 
-            locked_title = extract_locked_title_from_step2(step2_out, fallback_title=idea.get("draft_title_ja", ""))
+            locked_title = extract_locked_title_from_step2(
+                step2_out, fallback_title=idea.get("draft_title_ja", "")
+            )
             self._update_idea_record(
                 ma_id,
                 locked_title=locked_title,
@@ -4545,19 +8545,42 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             # --- Vẫn trên New Chat #1: Chạy tiếp Skill 02 (Giàn ý 7 Phần) ---
             step3_file = proj_dir / "step3_architecture.txt"
             part_a_precheck = proj_dir / "part_a.txt"
-            has_existing_parts = not force_rewrite_script and part_a_precheck.exists() and part_a_precheck.stat().st_size > 15000
+            has_existing_parts = (
+                not force_rewrite_script
+                and part_a_precheck.exists()
+                and part_a_precheck.stat().st_size > 15000
+            )
             step3_valid = False
-            if step3_file.exists() and (step3_file.stat().st_size > 2500 or has_existing_parts) and not force_rewrite_script:
+            if (
+                step3_file.exists()
+                and (step3_file.stat().st_size > 2500 or has_existing_parts)
+                and not force_rewrite_script
+            ):
                 try:
                     s3_probe = step3_file.read_text(encoding="utf-8", errors="ignore")
-                    if has_existing_parts or any(k in s3_probe.upper() for k in ("STORY BIBLE", "SCENE", "PART_A", "PART A", "PART 1", "LOGIC LEDGER", "APPROVED_FOR_DRAFTING")):
+                    if has_existing_parts or any(
+                        k in s3_probe.upper()
+                        for k in (
+                            "STORY BIBLE",
+                            "SCENE",
+                            "PART_A",
+                            "PART A",
+                            "PART 1",
+                            "LOGIC LEDGER",
+                            "APPROVED_FOR_DRAFTING",
+                        )
+                    ):
                         step3_out = s3_probe
                         step3_valid = True
                     else:
                         step3_file.unlink(missing_ok=True)
                 except Exception:
                     pass
-            elif step3_file.exists() and step3_file.stat().st_size <= 2500 and not has_existing_parts:
+            elif (
+                step3_file.exists()
+                and step3_file.stat().st_size <= 2500
+                and not has_existing_parts
+            ):
                 try:
                     step3_file.unlink(missing_ok=True)
                 except Exception:
@@ -4571,7 +8594,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 )
             else:
                 # KHÔNG gọi start_fresh_chat: Chạy Skill 02 ngay trong cùng New Chat #1 với Skill 01!
-                self._update_idea_record(ma_id, current_step="New Chat #1 (Skill 02): Thiết kế Giàn ý 7 Phần & Canon Continuity")
+                self._update_idea_record(
+                    ma_id,
+                    current_step="New Chat #1 (Skill 02): Thiết kế Giàn ý 7 Phần & Canon Continuity",
+                )
                 self._emit(
                     current_step="New Chat #1 — Skill 02: Giàn ý 7 Phần",
                     progress=24.0,
@@ -4587,7 +8613,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step3_prompt,
                     step_label="STEP_3",
                     timeout_sec=600,
-                    progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #1 — Skill 02] Đang lập Giàn ý 7 Phần ({ch:,} ký tự)..."),
+                    progress_cb=lambda st, ch: self._emit(
+                        message=f"[{ma_id}] [New Chat #1 — Skill 02] Đang lập Giàn ý 7 Phần ({ch:,} ký tự)..."
+                    ),
                     should_stop_cb=lambda: self.should_stop,
                 )
                 step3_file.write_text(step3_out, encoding="utf-8")
@@ -4623,13 +8651,25 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             accept_c = 17000
 
             need_write_a = force_rewrite_script or not (
-                part_a_file.exists() and pure_char_count(part_a_file.read_text(encoding="utf-8", errors="ignore")) >= accept_a
+                part_a_file.exists()
+                and pure_char_count(
+                    part_a_file.read_text(encoding="utf-8", errors="ignore")
+                )
+                >= accept_a
             )
             need_write_b = force_rewrite_script or not (
-                part_b_file.exists() and pure_char_count(part_b_file.read_text(encoding="utf-8", errors="ignore")) >= accept_b
+                part_b_file.exists()
+                and pure_char_count(
+                    part_b_file.read_text(encoding="utf-8", errors="ignore")
+                )
+                >= accept_b
             )
             need_write_c = force_rewrite_script or not (
-                part_c_file.exists() and pure_char_count(part_c_file.read_text(encoding="utf-8", errors="ignore")) >= accept_c
+                part_c_file.exists()
+                and pure_char_count(
+                    part_c_file.read_text(encoding="utf-8", errors="ignore")
+                )
+                >= accept_c
             )
 
             # Nếu phải viết bất kỳ Stage nào còn thiếu, xóa file script_clean.txt và báo cáo Step 5/6 cũ của bản thiếu trước đó
@@ -4655,7 +8695,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
             # --- 4.1: STAGE A ([PART 1] & [PART 2]) ---
             if not need_write_a:
-                part_a_clean = ensure_part_headings_for_stage(part_a_file.read_text(encoding="utf-8", errors="ignore"), "A")
+                part_a_clean = ensure_part_headings_for_stage(
+                    part_a_file.read_text(encoding="utf-8", errors="ignore"), "A"
+                )
                 count_a = pure_char_count(part_a_clean)
                 self._emit(
                     progress=42.0,
@@ -4698,7 +8740,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
             # --- 4.2: STAGE B ([PART 3], [PART 4] & [PART 5]) ---
             if not need_write_b:
-                part_b_clean = ensure_part_headings_for_stage(part_b_file.read_text(encoding="utf-8", errors="ignore"), "B")
+                part_b_clean = ensure_part_headings_for_stage(
+                    part_b_file.read_text(encoding="utf-8", errors="ignore"), "B"
+                )
                 count_b = pure_char_count(part_b_clean)
                 self._emit(
                     progress=58.0,
@@ -4743,9 +8787,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
             # --- 4.3: STAGE C ([PART 6] & [PART 7]) ---
             if not need_write_c:
-                part_c_clean = ensure_part_headings_for_stage(part_c_file.read_text(encoding="utf-8", errors="ignore"), "C")
+                part_c_clean = ensure_part_headings_for_stage(
+                    part_c_file.read_text(encoding="utf-8", errors="ignore"), "C"
+                )
                 if pure_char_count(part_c_clean) > max_c:
-                    part_c_clean = trim_japanese_to_max_pure_chars(part_c_clean, max_pure_chars=max_c - 150)
+                    part_c_clean = trim_japanese_to_max_pure_chars(
+                        part_c_clean, max_pure_chars=max_c - 150
+                    )
                     part_c_clean = ensure_part_headings_for_stage(part_c_clean, "C")
                     part_c_file.write_text(part_c_clean, encoding="utf-8")
                 count_c = pure_char_count(part_c_clean)
@@ -4796,10 +8844,14 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     f"Không cho phép đánh dấu hoàn tất!"
                 )
 
-            pmx_full_script = "\n\n".join([part_a_headed, part_b_headed, part_c_headed]).strip()
+            pmx_full_script = "\n\n".join(
+                [part_a_headed, part_b_headed, part_c_headed]
+            ).strip()
             pmx_full_script_file.write_text(pmx_full_script, encoding="utf-8")
 
-            full_clean_script, rem_full = self._sanitize_and_note_script_text(ma_id, pmx_full_script, source_label="FULL_SCRIPT")
+            full_clean_script, rem_full = self._sanitize_and_note_script_text(
+                ma_id, pmx_full_script, source_label="FULL_SCRIPT"
+            )
             total_pure = pure_char_count(full_clean_script)
             if total_pure < 55000:
                 raise RuntimeError(
@@ -4844,7 +8896,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     session.start_fresh_chat("NEW_CHAT_3_SKILL_04_AUDIT")
 
                     # --- VÒNG 1: FORENSIC LOGIC AUDIT + REPAIR 1 ---
-                    self._update_idea_record(ma_id, current_step="New Chat #3 (Skill 04 Vòng 1): Kiểm định Logic, Pháp lý & Chính tả es-MX + Repair 1")
+                    self._update_idea_record(
+                        ma_id,
+                        current_step="New Chat #3 (Skill 04 Vòng 1): Kiểm định Logic, Pháp lý & Chính tả es-MX + Repair 1",
+                    )
                     self._emit(
                         current_step="New Chat #3 — Skill 04 Vòng 1: Logic & Chính tả es-MX",
                         progress=78.0,
@@ -4866,16 +8921,28 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         r1_prompt,
                         step_label="STEP_5_ROUND_1",
                         timeout_sec=720,
-                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #3 — Skill 04 Vòng 1] Đang kiểm tra & Repair 1 ({ch:,} ký tự)..."),
+                        progress_cb=lambda st, ch: self._emit(
+                            message=f"[{ma_id}] [New Chat #3 — Skill 04 Vòng 1] Đang kiểm tra & Repair 1 ({ch:,} ký tự)..."
+                        ),
                         should_stop_cb=lambda: self.should_stop,
                     )
                     r1_file.write_text(r1_out, encoding="utf-8")
 
                     rewritten_r1 = False
-                    for p_let, p_file, min_req in (("A", part_a_file, min_a), ("B", part_b_file, min_b), ("C", part_c_file, min_c)):
-                        m_rw = re.search(rf"<REWRITE_PART_{p_let}>([\s\S]*?)</REWRITE_PART_{p_let}>", r1_out, flags=re.IGNORECASE)
+                    for p_let, p_file, min_req in (
+                        ("A", part_a_file, min_a),
+                        ("B", part_b_file, min_b),
+                        ("C", part_c_file, min_c),
+                    ):
+                        m_rw = re.search(
+                            rf"<REWRITE_PART_{p_let}>([\s\S]*?)</REWRITE_PART_{p_let}>",
+                            r1_out,
+                            flags=re.IGNORECASE,
+                        )
                         if m_rw:
-                            rw_clean = ensure_part_headings_for_stage(extract_clean_japanese_narration(m_rw.group(1)), p_let)
+                            rw_clean = ensure_part_headings_for_stage(
+                                extract_clean_japanese_narration(m_rw.group(1)), p_let
+                            )
                             rw_cnt = pure_char_count(rw_clean)
                             if rw_cnt >= int(min_req * 0.78):
                                 p_file.write_text(rw_clean, encoding="utf-8")
@@ -4893,7 +8960,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     total_pure = count_a + count_b + count_c
 
                     # --- VÒNG 2 (Vẫn trên cùng New Chat #3): HOLISTIC QUALITY AUDIT + REPAIR 2 ---
-                    self._update_idea_record(ma_id, current_step="New Chat #3 (Skill 04 Vòng 2): Kiểm định Chất lượng Tổng thể & Nhịp đọc TTS + Repair 2")
+                    self._update_idea_record(
+                        ma_id,
+                        current_step="New Chat #3 (Skill 04 Vòng 2): Kiểm định Chất lượng Tổng thể & Nhịp đọc TTS + Repair 2",
+                    )
                     self._emit(
                         current_step="New Chat #3 — Skill 04 Vòng 2: Chất lượng & Nhịp đọc TTS",
                         progress=82.0,
@@ -4916,17 +8986,29 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         r2_prompt,
                         step_label="STEP_5_ROUND_2",
                         timeout_sec=720,
-                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #3 — Skill 04 Vòng 2] Đang đánh giá & Repair 2 ({ch:,} ký tự)..."),
+                        progress_cb=lambda st, ch: self._emit(
+                            message=f"[{ma_id}] [New Chat #3 — Skill 04 Vòng 2] Đang đánh giá & Repair 2 ({ch:,} ký tự)..."
+                        ),
                         should_stop_cb=lambda: self.should_stop,
                     )
                     r2_file.write_text(r2_out, encoding="utf-8")
                     final_qa_file.write_text(r2_out, encoding="utf-8")
 
                     rewritten_r2 = False
-                    for p_let, p_file, min_req in (("A", part_a_file, min_a), ("B", part_b_file, min_b), ("C", part_c_file, min_c)):
-                        m_rw2 = re.search(rf"<REWRITE_PART_{p_let}>([\s\S]*?)</REWRITE_PART_{p_let}>", r2_out, flags=re.IGNORECASE)
+                    for p_let, p_file, min_req in (
+                        ("A", part_a_file, min_a),
+                        ("B", part_b_file, min_b),
+                        ("C", part_c_file, min_c),
+                    ):
+                        m_rw2 = re.search(
+                            rf"<REWRITE_PART_{p_let}>([\s\S]*?)</REWRITE_PART_{p_let}>",
+                            r2_out,
+                            flags=re.IGNORECASE,
+                        )
                         if m_rw2:
-                            rw2_clean = ensure_part_headings_for_stage(extract_clean_japanese_narration(m_rw2.group(1)), p_let)
+                            rw2_clean = ensure_part_headings_for_stage(
+                                extract_clean_japanese_narration(m_rw2.group(1)), p_let
+                            )
                             rw2_cnt = pure_char_count(rw2_clean)
                             if rw2_cnt >= int(min_req * 0.78):
                                 p_file.write_text(rw2_clean, encoding="utf-8")
@@ -4948,11 +9030,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step5_file.write_text(step5_out, encoding="utf-8")
 
                 # Đồng bộ lại PMX_FULL_SCRIPT.txt (có [PART 1]..[PART 7]) và script_clean.txt (đã xóa [PART 1]..[PART 7] cho TTS/Video)
-                pmx_full_script = "\n\n".join([part_a_headed, part_b_headed, part_c_headed]).strip()
+                pmx_full_script = "\n\n".join(
+                    [part_a_headed, part_b_headed, part_c_headed]
+                ).strip()
                 pmx_full_script_file.write_text(pmx_full_script, encoding="utf-8")
-                full_clean_script, post_s5_rem = self._sanitize_and_note_script_text(ma_id, pmx_full_script, source_label="STEP5_FINAL_GATE")
+                full_clean_script, post_s5_rem = self._sanitize_and_note_script_text(
+                    ma_id, pmx_full_script, source_label="STEP5_FINAL_GATE"
+                )
                 total_pure = pure_char_count(full_clean_script)
-                (proj_dir / "script_clean.txt").write_text(full_clean_script, encoding="utf-8")
+                (proj_dir / "script_clean.txt").write_text(
+                    full_clean_script, encoding="utf-8"
+                )
                 self._update_idea_record(ma_id, pure_char_count=total_pure)
             except Exception as e_s5:
                 if self.should_stop:
@@ -4968,7 +9056,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             pmx_seo_file = proj_dir / "PMX_SEO_PACK.md"
             chat4_seo_thumb_opened = False
             try:
-                if step6_file.exists() and step6_file.stat().st_size > 300 and "BLOCKED" not in step6_file.read_text(encoding="utf-8")[:400]:
+                if (
+                    step6_file.exists()
+                    and step6_file.stat().st_size > 300
+                    and "BLOCKED" not in step6_file.read_text(encoding="utf-8")[:400]
+                ):
                     step6_out = step6_file.read_text(encoding="utf-8")
                     self._emit(
                         current_step="New Chat #4 — Skill 05: SEO es-MX & Thumbnail Prompts",
@@ -4978,13 +9070,24 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 else:
                     session.start_fresh_chat("NEW_CHAT_4_SKILL_05_SEO_AND_THUMB")
                     chat4_seo_thumb_opened = True
-                    self._update_idea_record(ma_id, current_step="New Chat #4 (Skill 05): Đang xuất gói SEO es-MX & Prompt 2 Ảnh Thumbnail 80/20")
+                    self._update_idea_record(
+                        ma_id,
+                        current_step="New Chat #4 (Skill 05): Đang xuất gói SEO es-MX & Prompt 2 Ảnh Thumbnail 80/20",
+                    )
                     self._emit(
                         current_step="New Chat #4 — Skill 05: SEO es-MX & Thumbnail Prompts",
                         progress=86.0,
                         message=f"[{ma_id}] 💬 [New Chat #4 — Skill 05] Đang xuất Title, Description, Tags es-MX & Prompt THUMBNAIL.png + THUMBNAIL-NENXANH.png...",
                     )
-                    script_excerpt = (full_clean_script[:2000] + "\n...\n" + full_clean_script[-1200:]) if len(full_clean_script) > 3500 else full_clean_script
+                    script_excerpt = (
+                        (
+                            full_clean_script[:2000]
+                            + "\n...\n"
+                            + full_clean_script[-1200:]
+                        )
+                        if len(full_clean_script) > 3500
+                        else full_clean_script
+                    )
                     step6_prompt = self._build_step6_seo_prompt(
                         ma_id,
                         locked_title,
@@ -4996,7 +9099,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         step6_prompt,
                         step_label="STEP_6",
                         timeout_sec=420,
-                        progress_cb=lambda st, ch: self._emit(message=f"[{ma_id}] [New Chat #4 — Skill 05] Đang tạo gói SEO es-MX & Prompt Thumbnail ({ch:,} ký tự)..."),
+                        progress_cb=lambda st, ch: self._emit(
+                            message=f"[{ma_id}] [New Chat #4 — Skill 05] Đang tạo gói SEO es-MX & Prompt Thumbnail ({ch:,} ký tự)..."
+                        ),
                         should_stop_cb=lambda: self.should_stop,
                     )
                     step6_file.write_text(step6_out, encoding="utf-8")
@@ -5007,7 +9112,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 self._emit(
                     message=f"[{ma_id}] ⚠️ Skill 05 (SEO) phản hồi chậm ({e_s6}) -> Tự động tổng hợp gói SEO es-MX chuẩn từ dữ liệu Step 1/2 để không dừng tiến trình!"
                 )
-                step6_out = self._build_fallback_seo_pack(ma_id, locked_title, total_pure, idea, step2_out)
+                step6_out = self._build_fallback_seo_pack(
+                    ma_id, locked_title, total_pure, idea, step2_out
+                )
                 step6_file.write_text(step6_out, encoding="utf-8")
                 pmx_seo_file.write_text(step6_out, encoding="utf-8")
 
@@ -5037,8 +9144,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             master_seo_file.write_text(master_seo_content, encoding="utf-8")
 
             # Lưu đúng 1 file Kịch bản sạch cho TTS/Sub và 1 file SEO vào cùng thư mục chứa Video (renders)
-            (renders_dir / f"{ma_id}_SEO.txt").write_text(master_seo_content, encoding="utf-8")
-            (renders_dir / f"{ma_id}_KICH_BAN.txt").write_text(full_clean_script, encoding="utf-8")
+            (renders_dir / f"{ma_id}_SEO.txt").write_text(
+                master_seo_content, encoding="utf-8"
+            )
+            (renders_dir / f"{ma_id}_KICH_BAN.txt").write_text(
+                full_clean_script, encoding="utf-8"
+            )
 
             # --- Vẫn trên cùng New Chat #4: Vẽ Thumbnail 80/20 + Ảnh nền xanh ---
             if not chat4_seo_thumb_opened:
@@ -5093,7 +9204,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             # BƯỚC 8 (AUTO-HANDOFF): ĐẨY SANG SẢN XUẤT VIDEO (HOẶC CHỜ PHASE 2 NẾU CHẠY ĐA LUỒNG)
             # ------------------------------------------------------------------
             video_triggered = False
-            if auto_produce_video and getattr(self, "live_auto_produce_video", True) and not defer_video_handoff and self.video_pipeline is not None:
+            if (
+                auto_produce_video
+                and getattr(self, "live_auto_produce_video", True)
+                and not defer_video_handoff
+                and self.video_pipeline is not None
+            ):
                 self._emit(
                     current_step="Auto-Handoff -> Render Video",
                     progress=97.0,
@@ -5117,7 +9233,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 self._emit(
                     status="running" if self.is_running else "completed",
                     current_ma_id=ma_id,
-                    current_step=f"✅ Hoàn tất {ma_id} — Đang chờ các luồng còn lại..." if self.is_running else "Hoàn tất Kịch bản & SEO",
+                    current_step=f"✅ Hoàn tất {ma_id} — Đang chờ các luồng còn lại..."
+                    if self.is_running
+                    else "Hoàn tất Kịch bản & SEO",
                     progress=98.0 if self.is_running else 100.0,
                     message=f"[{ma_id}] 🎉 Hoàn tất Kịch bản ({total_pure:,} chữ) + SEO Pack + {len(thumbnail_paths)}/1 Thumbnail tại {renders_dir}!",
                 )
@@ -5144,7 +9262,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 pass
             # Nếu kịch bản đã kịp viết xong đủ 3 Part trước khi lỗi, giữ trạng thái SCRIPT_DONE thay vì ERROR
             has_sc_now, _, sc_chars_now = self.has_valid_script_on_disk(ma_id)
-            if not (self.should_stop or "Đã dừng theo yêu cầu" in str(e)) and not has_sc_now and failed_acc:
+            if (
+                not (self.should_stop or "Đã dừng theo yêu cầu" in str(e))
+                and not has_sc_now
+                and failed_acc
+            ):
                 mark_account_rate_limited(
                     failed_acc,
                     reason=f"[{ma_id}] {str(e)[:120]}",
@@ -5177,9 +9299,19 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         current_step=f"⚠️ Thiếu {missing_str} ({done_cnt}/3 Part: {partial_chars:,} chữ) — Bấm Chạy để viết tiếp",
                     )
                 elif self.should_stop or "Đã dừng theo yêu cầu" in str(e):
-                    self._update_idea_record(ma_id, status="SAVED", has_script=False, current_step="⏸️ Đã tạm dừng — Bấm Chạy để tiếp tục")
+                    self._update_idea_record(
+                        ma_id,
+                        status="SAVED",
+                        has_script=False,
+                        current_step="⏸️ Đã tạm dừng — Bấm Chạy để tiếp tục",
+                    )
                 else:
-                    self._update_idea_record(ma_id, status="ERROR", has_script=False, current_step=f"❌ Lỗi: {str(e)[:80]}")
+                    self._update_idea_record(
+                        ma_id,
+                        status="ERROR",
+                        has_script=False,
+                        current_step=f"❌ Lỗi: {str(e)[:80]}",
+                    )
             if not (self.should_stop or "Đã dừng theo yêu cầu" in str(e)):
                 self._emit(
                     status="error",
@@ -5203,7 +9335,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         """
         self._sync_projects_disk_state()
         ideas = self.load_saved_ideas()
-        ideas_map = {str(it.get("ma_id", "")).strip(): it for it in ideas if it.get("ma_id")}
+        ideas_map = {
+            str(it.get("ma_id", "")).strip(): it for it in ideas if it.get("ma_id")
+        }
         target_ids = ma_ids or [it.get("ma_id") for it in ideas if it.get("ma_id")]
 
         jobs_to_push: List[Dict[str, str]] = []
@@ -5231,17 +9365,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
             idea = ideas_map.get(mid) or {"ma_id": mid}
             step2_file = proj_dir / "step2_title_thumbnail.txt"
-            step2_out = step2_file.read_text(encoding="utf-8") if step2_file.exists() else ""
-            locked_title = (
-                idea.get("locked_title")
-                or extract_locked_title_from_step2(step2_out, fallback_title=idea.get("draft_title_ja", mid))
+            step2_out = (
+                step2_file.read_text(encoding="utf-8") if step2_file.exists() else ""
+            )
+            locked_title = idea.get("locked_title") or extract_locked_title_from_step2(
+                step2_out, fallback_title=idea.get("draft_title_ja", mid)
             )
 
             master_seo_file = proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt"
             if master_seo_file.exists() and master_seo_file.stat().st_size > 100:
                 seo_text = master_seo_file.read_text(encoding="utf-8")
             else:
-                seo_text = self._build_fallback_seo_pack(mid, locked_title, sc_chars, idea, step2_out)
+                seo_text = self._build_fallback_seo_pack(
+                    mid, locked_title, sc_chars, idea, step2_out
+                )
                 master_seo_file.write_text(seo_text, encoding="utf-8")
 
             seo_ren = renders_dir / f"{mid}_SEO.txt"
@@ -5255,14 +9392,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 ideas_map[mid]["has_script"] = True
                 ideas_map[mid]["pure_char_count"] = sc_chars
                 ideas_map[mid]["status"] = "VIDEO_QUEUED"
-                ideas_map[mid]["current_step"] = f"⏳ Đang xếp hàng chờ tạo Voice & Render MP4 ({sc_chars:,} chữ)..."
+                ideas_map[mid]["current_step"] = (
+                    f"⏳ Đang xếp hàng chờ tạo Voice & Render MP4 ({sc_chars:,} chữ)..."
+                )
                 ideas_map[mid]["updated_at"] = now_ts_str
 
-            jobs_to_push.append({
-                "name": mid,
-                "script_text": sc_text,
-                "seo_text": seo_text,
-            })
+            jobs_to_push.append(
+                {
+                    "name": mid,
+                    "script_text": sc_text,
+                    "seo_text": seo_text,
+                }
+            )
 
         if jobs_to_push:
             with self.ideas_io_lock:
@@ -5283,8 +9424,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         vcfg = video_settings or {}
         started = False
         if self.video_pipeline is not None:
-            pm_val = vcfg.get("performance_mode") or (vcfg.get("voice_config") or {}).get("performance_mode")
-            if pm_val in ("full_100", "work_70") and hasattr(self.video_pipeline, "set_performance_mode"):
+            pm_val = vcfg.get("performance_mode") or (
+                vcfg.get("voice_config") or {}
+            ).get("performance_mode")
+            if pm_val in ("full_100", "work_70") and hasattr(
+                self.video_pipeline, "set_performance_mode"
+            ):
                 try:
                     self.video_pipeline.set_performance_mode(pm_val, persist=True)
                 except Exception:
@@ -5341,8 +9486,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
           + Hoạt động độc lập song song ở hậu trường: cứ có kịch bản viết xong là tự động tạo Voice GPU & ghép MP4 cuốn chiếu liên tục.
         """
         if isinstance(video_settings, dict) and self.video_pipeline is not None:
-            pm_val = video_settings.get("performance_mode") or (video_settings.get("voice_config") or {}).get("performance_mode")
-            if pm_val in ("full_100", "work_70") and hasattr(self.video_pipeline, "set_performance_mode"):
+            pm_val = video_settings.get("performance_mode") or (
+                video_settings.get("voice_config") or {}
+            ).get("performance_mode")
+            if pm_val in ("full_100", "work_70") and hasattr(
+                self.video_pipeline, "set_performance_mode"
+            ):
                 try:
                     self.video_pipeline.set_performance_mode(pm_val, persist=True)
                 except Exception:
@@ -5356,14 +9505,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         def _worker():
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            from .chatgpt_web_client import (
-                check_all_web_accounts_status,
-                ensure_all_saved_chatgpt_accounts_open,
-                sweep_completed_and_idle_tabs_across_all_accounts,
-                close_all_chatgpt_browsers,
-                CHATGPT_ACCOUNTS,
-                MAX_THREADS_PER_ACCOUNT,
-            )
 
             try:
                 self._sync_projects_disk_state()
@@ -5385,7 +9526,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     else:
                         need_script_ids.append(mid)
 
-                mode_label_log = "VỪA VIẾT KỊCH BẢN VỪA RENDER MP4 SONG SONG" if auto_produce_video else "CHỈ VIẾT KỊCH BẢN + SEO + THUMBNAIL (KHÔNG RENDER)"
+                mode_label_log = (
+                    "VỪA VIẾT KỊCH BẢN VỪA RENDER MP4 SONG SONG"
+                    if auto_produce_video
+                    else "CHỈ VIẾT KỊCH BẢN + SEO + THUMBNAIL (KHÔNG RENDER)"
+                )
                 log_info(
                     "SCRIPT",
                     f"Khởi chạy {len(clean_ids)} dự án [{mode_label_log}{', FORCE_REWRITE=True' if force_rewrite_script else ''}]: "
@@ -5409,7 +9554,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             ai_provider=ai_provider,
                         )
                     except Exception as e_fast:
-                        log_error("SCRIPT", f"[{mid}] Lỗi đóng gói kịch bản có sẵn: {e_fast}", project_id=mid)
+                        log_error(
+                            "SCRIPT",
+                            f"[{mid}] Lỗi đóng gói kịch bản có sẵn: {e_fast}",
+                            project_id=mid,
+                        )
 
                 # NẾU ĐÃ CÓ SẴN CÁC KỊCH BẢN TRÊN Ổ CỨNG -> ĐẨY NGAY VÀO HÀNG ĐỢI RENDER TỪ GIÂY ĐẦU TIÊN!
                 if auto_produce_video and already_scripted_ids and not self.should_stop:
@@ -5428,33 +9577,57 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 # ==============================================================
                 # LUỒNG AI VIẾT KỊCH BẢN ĐA LUỒNG (VIẾT XONG MÃ NÀO -> ĐẨY SANG RENDER NGAY MÃ ĐÓ)
                 # ==============================================================
-                provider_norm = "chatgpt_web"
                 provider_tag = "CHATGPT WEB (MEDIUM)"
                 if need_script_ids and not self.should_stop:
-                    saved_logged_accs = ensure_all_saved_chatgpt_accounts_open(run_hidden=False, open_browsers_now=False)
-                    st_all = check_all_web_accounts_status(force_refresh=True).get("accounts", {})
+                    saved_logged_accs = ensure_all_saved_chatgpt_accounts_open(
+                        run_hidden=False, open_browsers_now=False
+                    )
+                    st_all = check_all_web_accounts_status(force_refresh=True).get(
+                        "accounts", {}
+                    )
                     logged_accs = [
-                        aid for aid in CHATGPT_ACCOUNTS
-                        if st_all.get(aid, {}).get("logged_in") or st_all.get(aid, {}).get("saved_logged_in") or aid in saved_logged_accs
+                        aid
+                        for aid in CHATGPT_ACCOUNTS
+                        if st_all.get(aid, {}).get("logged_in")
+                        or st_all.get(aid, {}).get("saved_logged_in")
+                        or aid in saved_logged_accs
                     ]
-                    if preferred_acc_id and preferred_acc_id in st_all and (
-                        preferred_acc_id in logged_accs or st_all.get(preferred_acc_id, {}).get("browser_open")
+                    if (
+                        preferred_acc_id
+                        and preferred_acc_id in st_all
+                        and (
+                            preferred_acc_id in logged_accs
+                            or st_all.get(preferred_acc_id, {}).get("browser_open")
+                        )
                     ):
                         active_accs = [preferred_acc_id]
                         max_workers = min(len(need_script_ids), MAX_THREADS_PER_ACCOUNT)
                     else:
                         active_accs = logged_accs if logged_accs else ["acc_1"]
-                        max_workers = min(len(need_script_ids), max(1, len(active_accs)) * MAX_THREADS_PER_ACCOUNT)
+                        max_workers = min(
+                            len(need_script_ids),
+                            max(1, len(active_accs)) * MAX_THREADS_PER_ACCOUNT,
+                        )
 
                     max_workers = max(1, max_workers)
 
                     # Nếu đang chọn Chức năng 2: Chạy 70% công suất (work_70) -> Giới hạn cứng tối đa 3 luồng tổng cộng!
-                    perf_mode_now = (os.environ.get("STUDIO_PERF_MODE") or "").strip().lower()
+                    perf_mode_now = (
+                        (os.environ.get("STUDIO_PERF_MODE") or "").strip().lower()
+                    )
                     if not perf_mode_now:
                         try:
-                            cfg_p = self.root_dir / "config.json"
+                            cfg_p = self.root_dir / "config" / "config.json"
                             if cfg_p.exists():
-                                perf_mode_now = str(json.loads(cfg_p.read_text(encoding="utf-8")).get("performance_mode", "full_100")).strip().lower()
+                                perf_mode_now = (
+                                    str(
+                                        json.loads(
+                                            cfg_p.read_text(encoding="utf-8")
+                                        ).get("performance_mode", "full_100")
+                                    )
+                                    .strip()
+                                    .lower()
+                                )
                         except Exception:
                             perf_mode_now = "full_100"
                     if perf_mode_now == "work_70":
@@ -5481,15 +9654,25 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
                     active_slot_lock = threading.Lock()
                     active_slot_state = {"count": 0}
-                    cfg_perf_file = self.root_dir / "config.json"
+                    cfg_perf_file = self.root_dir / "config" / "config.json"
 
                     def _get_live_perf_mode() -> str:
-                        env_pm = (os.environ.get("STUDIO_PERF_MODE") or "").strip().lower()
+                        env_pm = (
+                            (os.environ.get("STUDIO_PERF_MODE") or "").strip().lower()
+                        )
                         if env_pm in ("work_70", "full_100"):
                             return env_pm
                         try:
                             if cfg_perf_file.exists():
-                                m = str(json.loads(cfg_perf_file.read_text(encoding="utf-8")).get("performance_mode", "full_100")).strip().lower()
+                                m = (
+                                    str(
+                                        json.loads(
+                                            cfg_perf_file.read_text(encoding="utf-8")
+                                        ).get("performance_mode", "full_100")
+                                    )
+                                    .strip()
+                                    .lower()
+                                )
                                 if m in ("work_70", "full_100"):
                                     return m
                         except Exception:
@@ -5509,23 +9692,29 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
                     def _release_perf_slot():
                         with active_slot_lock:
-                            active_slot_state["count"] = max(0, active_slot_state["count"] - 1)
+                            active_slot_state["count"] = max(
+                                0, active_slot_state["count"] - 1
+                            )
 
-                    def _run_one_with_auto_retry(mid_item: str, acc_item: Optional[str]):
+                    def _run_one_with_auto_retry(
+                        mid_item: str, acc_item: Optional[str]
+                    ):
                         if not _acquire_perf_slot():
                             return
                         try:
                             # Tổng số lần chạy = 1 lần chạy chính + tối đa `max_retries` (tối thiểu 4 lượt để xoay vòng đủ các nick + chờ 30p nếu cần)
                             total_attempts = 1 + max(4, int(max_retries))
-                            last_err: Optional[Exception] = None
                             failed_accs_for_mid: set = set()
                             restart_from_scratch_on_other_acc = False
 
                             for attempt_idx in range(total_attempts):
                                 if self.should_stop:
                                     return
-                                is_first_try = (attempt_idx == 0)
-                                use_force_rw = bool((force_rewrite_script and is_first_try) or restart_from_scratch_on_other_acc)
+                                is_first_try = attempt_idx == 0
+                                use_force_rw = bool(
+                                    (force_rewrite_script and is_first_try)
+                                    or restart_from_scratch_on_other_acc
+                                )
                                 try_acc = acc_item if is_first_try else None
                                 try:
                                     if attempt_idx > 0:
@@ -5546,42 +9735,59 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                             current_step=f"🔄 Đổi sang nick khác làm lại ({attempt_idx}/{total_attempts - 1})",
                                             message=retry_msg,
                                         )
-                                        log_warn("SCRIPT", retry_msg, project_id=mid_item)
+                                        log_warn(
+                                            "SCRIPT", retry_msg, project_id=mid_item
+                                        )
 
                                     res_single = self.run_single_idea_pipeline_sync(
                                         mid_item,
                                         try_acc,
-                                        bool(auto_produce_video),       # Viết xong kịch bản nào đẩy sang Render ngay kịch bản đó!
+                                        bool(
+                                            auto_produce_video
+                                        ),  # Viết xong kịch bản nào đẩy sang Render ngay kịch bản đó!
                                         video_settings,
                                         target_part_min,
-                                        not bool(auto_produce_video),   # defer_video_handoff=False khi auto_produce_video=True
-                                        use_force_rw,                   # Làm lại từ đầu (Step 2) khi đổi sang nick khác do nick cũ bị Limit
+                                        not bool(
+                                            auto_produce_video
+                                        ),  # defer_video_handoff=False khi auto_produce_video=True
+                                        use_force_rw,  # Làm lại từ đầu (Step 2) khi đổi sang nick khác do nick cũ bị Limit
                                         ai_provider,
                                         exclude_accs=set(failed_accs_for_mid),
                                     )
-                                    has_sc_ok, _, _ = self.has_valid_script_on_disk(mid_item)
+                                    has_sc_ok, _, _ = self.has_valid_script_on_disk(
+                                        mid_item
+                                    )
                                     if has_sc_ok:
                                         # Kiểm tra lại Thumbnail ngay sau khi xong kịch bản: nếu thiếu thì tạo lại trên nick khác
-                                        has_th_ok, _, _ = self.has_thumbnail_and_seo_on_disk(mid_item)
+                                        has_th_ok, _, _ = (
+                                            self.has_thumbnail_and_seo_on_disk(mid_item)
+                                        )
                                         if not has_th_ok and not self.should_stop:
                                             self.ensure_project_thumbnail_with_failover_sync(
                                                 ma_id=mid_item,
                                                 preferred_acc_id=None,
                                                 exclude_accs=set(failed_accs_for_mid),
                                             )
-                                        if auto_produce_video and not (isinstance(res_single, dict) and res_single.get("video_triggered")):
+                                        if auto_produce_video and not (
+                                            isinstance(res_single, dict)
+                                            and res_single.get("video_triggered")
+                                        ):
                                             self.start_render_video_for_ideas_async(
                                                 ma_ids=[mid_item],
                                                 video_settings=video_settings,
                                                 only_unrendered=(len(clean_ids) > 1),
                                             )
                                         return
-                                    last_err = RuntimeError("Chưa ghép đủ 3 Part kịch bản chuẩn trên ổ cứng.")
                                 except Exception as exc_try:
-                                    last_err = exc_try
-                                    if self.should_stop or "Đã dừng theo yêu cầu" in str(exc_try):
+                                    if (
+                                        self.should_stop
+                                        or "Đã dừng theo yêu cầu" in str(exc_try)
+                                    ):
                                         return
-                                    failed_acc = getattr(exc_try, "failed_acc_id", None) or try_acc
+                                    failed_acc = (
+                                        getattr(exc_try, "failed_acc_id", None)
+                                        or try_acc
+                                    )
                                     if failed_acc:
                                         failed_accs_for_mid.add(failed_acc)
                                         mark_account_rate_limited(
@@ -5591,9 +9797,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         )
 
                                     # Nếu kịch bản 3 Part đã kịp viết xong trên ổ cứng -> Kiểm tra tạo bù Thumbnail trên nick khác rồi đẩy vào Render!
-                                    has_sc_now, _, _ = self.has_valid_script_on_disk(mid_item)
+                                    has_sc_now, _, _ = self.has_valid_script_on_disk(
+                                        mid_item
+                                    )
                                     if has_sc_now:
-                                        has_th_now, _, _ = self.has_thumbnail_and_seo_on_disk(mid_item)
+                                        has_th_now, _, _ = (
+                                            self.has_thumbnail_and_seo_on_disk(mid_item)
+                                        )
                                         if not has_th_now and not self.should_stop:
                                             self.ensure_project_thumbnail_with_failover_sync(
                                                 ma_id=mid_item,
@@ -5614,14 +9824,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                     if attempt_idx < total_attempts - 1:
                                         # Kiểm tra xem còn nick nào đang rảnh (không bị khóa 30p) không
                                         free_accs_now = [
-                                            aid for aid in active_accs
-                                            if not is_account_in_cooldown(aid)[0] and aid not in failed_accs_for_mid
+                                            aid
+                                            for aid in active_accs
+                                            if not is_account_in_cooldown(aid)[0]
+                                            and aid not in failed_accs_for_mid
                                         ]
                                         if not free_accs_now:
                                             # Mở rộng sang toàn bộ tài khoản đã đăng nhập chưa bị cooldown 30p
                                             free_accs_now = [
-                                                aid for aid in (logged_accs or CHATGPT_ACCOUNTS)
-                                                if not is_account_in_cooldown(aid)[0] and aid not in failed_accs_for_mid
+                                                aid
+                                                for aid in (
+                                                    logged_accs or CHATGPT_ACCOUNTS
+                                                )
+                                                if not is_account_in_cooldown(aid)[0]
+                                                and aid not in failed_accs_for_mid
                                             ]
                                         if free_accs_now:
                                             wait_s = 3.0
@@ -5639,15 +9855,24 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                             time.sleep(wait_s)
                                         else:
                                             # Tất cả các nick đều đang trong thời gian nghỉ 30 phút -> Chờ đúng tới khi nick sớm nhất hết 30 phút rồi tự động thử lại!
-                                            rem_cooldown = get_earliest_cooldown_remaining_sec()
-                                            wait_s = max(10, rem_cooldown if rem_cooldown > 0 else ACCOUNT_LIMIT_COOLDOWN_SEC)
+                                            rem_cooldown = (
+                                                get_earliest_cooldown_remaining_sec()
+                                            )
+                                            wait_s = max(
+                                                10,
+                                                rem_cooldown
+                                                if rem_cooldown > 0
+                                                else ACCOUNT_LIMIT_COOLDOWN_SEC,
+                                            )
                                             log_warn(
                                                 "SCRIPT",
                                                 f"[{mid_item}] ⏳ Tất cả các tài khoản đều đang bị Limit tạm dừng 30 phút -> Hệ thống chờ {wait_s // 60}p{wait_s % 60:02d}s rồi tự động chạy lại '{mid_item}' từ đầu!",
                                                 project_id=mid_item,
                                             )
                                             waited = 0
-                                            while waited < wait_s and not self.should_stop:
+                                            while (
+                                                waited < wait_s and not self.should_stop
+                                            ):
                                                 rem_now = max(0, int(wait_s - waited))
                                                 if waited % 15 == 0:
                                                     self._update_idea_record(
@@ -5688,7 +9913,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             if self.should_stop:
                                 break
                             assigned_acc = preferred_acc_id
-                            fut = executor.submit(_run_one_with_auto_retry, mid, assigned_acc)
+                            fut = executor.submit(
+                                _run_one_with_auto_retry, mid, assigned_acc
+                            )
                             futs[fut] = mid
                             if len(need_script_ids) > 1:
                                 time.sleep(0.55)
@@ -5699,7 +9926,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             done_cnt += 1
                             try:
                                 fut.result()
-                                suffix_ren = " -> Đã đẩy ngay sang Hàng Đợi Render MP4!" if auto_produce_video else ""
+                                suffix_ren = (
+                                    " -> Đã đẩy ngay sang Hàng Đợi Render MP4!"
+                                    if auto_produce_video
+                                    else ""
+                                )
                                 self._emit(
                                     message=f"✅ Đã hoàn thành kịch bản [{done_cnt}/{len(need_script_ids)}]: {mid_done}{suffix_ren}"
                                 )
@@ -5712,7 +9943,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
                     # Dọn dẹp tab Chrome sau khi kết thúc toàn bộ luồng AI để giải phóng RAM cho Voice & Render Video
                     try:
-                        sweep_completed_and_idle_tabs_across_all_accounts(close_idle_browsers=False)
+                        sweep_completed_and_idle_tabs_across_all_accounts(
+                            close_idle_browsers=False
+                        )
                     except Exception:
                         pass
 
@@ -5721,13 +9954,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 # ==============================================================
                 if not self.should_stop:
                     try:
-                        self.ensure_all_projects_have_thumbnails_sync(target_ids=clean_ids)
+                        self.ensure_all_projects_have_thumbnails_sync(
+                            target_ids=clean_ids
+                        )
                         close_all_chatgpt_browsers(
                             only_if_idle=True,
                             reason="Hoàn tất phiên viết kịch bản & vẽ Thumbnail — Tự động tắt Chrome tiết kiệm RAM",
                         )
                     except Exception as e_ens_th:
-                        log_warn("SCRIPT", f"Cảnh báo khi quét tạo bù Thumbnail cuối phiên: {e_ens_th}")
+                        log_warn(
+                            "SCRIPT",
+                            f"Cảnh báo khi quét tạo bù Thumbnail cuối phiên: {e_ens_th}",
+                        )
 
                 # ==============================================================
                 # QUÉT VÉT LẦN CUỐI ĐẢM BẢO MỌI KỊCH BẢN ĐÃ XONG ĐỀU ĐƯỢC RENDER MP4
@@ -5739,7 +9977,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         video_settings=video_settings,
                         only_unrendered=only_unrendered,
                     )
-                    if not res_render.get("started") and only_unrendered and len(clean_ids) == 1:
+                    if (
+                        not res_render.get("started")
+                        and only_unrendered
+                        and len(clean_ids) == 1
+                    ):
                         self.start_render_video_for_ideas_async(
                             ma_ids=clean_ids,
                             video_settings=video_settings,
@@ -5765,7 +10007,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         ),
                     )
             except Exception as e:
-                log_error("SCRIPT", f"Lỗi nghiêm trọng trong start_run_ideas_async: {e}", include_trace=True)
+                log_error(
+                    "SCRIPT",
+                    f"Lỗi nghiêm trọng trong start_run_ideas_async: {e}",
+                    include_trace=True,
+                )
             finally:
                 with self.lock:
                     self.is_running = False
@@ -5785,10 +10031,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         with self.lock:
             self.should_stop = True
         threading.Thread(
-            target=lambda: close_all_chatgpt_browsers(only_if_idle=False, reason="Người dùng dừng dây chuyền"),
+            target=lambda: close_all_chatgpt_browsers(
+                only_if_idle=False, reason="Người dùng dừng dây chuyền"
+            ),
             daemon=True,
         ).start()
-        self._emit(status="stopped", message="🛑 Đã gửi tín hiệu dừng dây chuyền viết kịch bản và đóng trình duyệt Chrome.")
+        self._emit(
+            status="stopped",
+            message="🛑 Đã gửi tín hiệu dừng dây chuyền viết kịch bản và đóng trình duyệt Chrome.",
+        )
 
     def get_project_outputs(self, ma_id: str) -> Dict[str, Any]:
         """Đọc toàn bộ kết quả đã lưu của 1 mã dự án (Prompt Step 2, Kết quả Step 2, SEO Pack, Kịch bản, Thumbnail, Video MP4)."""
@@ -5799,7 +10050,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         final_proj_dir = (Path(f_dir) / ma_id) if f_dir else proj_dir
 
         def _read_safe(fname: str) -> str:
-            for base_d in (proj_dir, final_proj_dir, proj_dir / "renders", final_proj_dir / "renders"):
+            for base_d in (
+                proj_dir,
+                final_proj_dir,
+                proj_dir / "renders",
+                final_proj_dir / "renders",
+            ):
                 p = base_d / fname
                 if p.exists():
                     try:
@@ -5808,7 +10064,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         pass
             return ""
 
-        step2_prompt = _read_safe("step2_prompt_sent.txt") or _read_safe("step2_prompt_ready.txt")
+        step2_prompt = _read_safe("step2_prompt_sent.txt") or _read_safe(
+            "step2_prompt_ready.txt"
+        )
         if not step2_prompt and idea:
             step2_prompt = build_step2_prompt_from_idea(idea, self.get_step2_template())
 
@@ -5827,11 +10085,19 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         main_thumb_path: Optional[Path] = None
         green_thumb_path: Optional[Path] = None
 
-        for scan_d in (proj_dir, renders_dir, final_proj_dir, final_proj_dir / "renders"):
+        for scan_d in (
+            proj_dir,
+            renders_dir,
+            final_proj_dir,
+            final_proj_dir / "renders",
+        ):
             if not scan_d.exists():
                 continue
             if main_thumb_path is None:
-                for cand_m in (scan_d / "THUMBNAIL.png", scan_d / f"{ma_id}_THUMBNAIL_1.png"):
+                for cand_m in (
+                    scan_d / "THUMBNAIL.png",
+                    scan_d / f"{ma_id}_THUMBNAIL_1.png",
+                ):
                     if cand_m.exists() and cand_m.stat().st_size > 2_000:
                         main_thumb_path = cand_m
                         break
@@ -5849,9 +10115,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             if p_cand is not None and p_cand not in thumb_files:
                 thumb_files.append(p_cand)
 
-        def _encode_thumb_card(img_p: Optional[Path], kind: str, title: str, fallback_name: str) -> Dict[str, Any]:
+        def _encode_thumb_card(
+            img_p: Optional[Path], kind: str, title: str, fallback_name: str
+        ) -> Dict[str, Any]:
             import base64
             import io
+
             if img_p is None or not img_p.exists():
                 return {
                     "kind": kind,
@@ -5866,10 +10135,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 raw_b = img_p.read_bytes()
                 b64_str = base64.b64encode(raw_b).decode("ascii")
                 size_kb = len(raw_b) / 1024.0
-                size_str = f"{size_kb / 1024.0:.2f} MB" if size_kb >= 1024 else f"{size_kb:.0f} KB"
+                size_str = (
+                    f"{size_kb / 1024.0:.2f} MB"
+                    if size_kb >= 1024
+                    else f"{size_kb:.0f} KB"
+                )
                 dim_str = "1920×1080"
                 try:
                     from PIL import Image
+
                     with Image.open(io.BytesIO(raw_b)) as im:
                         dim_str = f"{im.width}×{im.height}"
                 except Exception:
@@ -5917,7 +10191,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             or _read_safe("script.txt")
         )
         if not script_clean_txt and any([part_a_txt, part_b_txt, part_c_txt]):
-            script_clean_txt = "\n\n".join(x.strip() for x in (part_a_txt, part_b_txt, part_c_txt) if x and x.strip())
+            script_clean_txt = "\n\n".join(
+                x.strip()
+                for x in (part_a_txt, part_b_txt, part_c_txt)
+                if x and x.strip()
+            )
 
         step2_out = _read_safe("step2_title_thumbnail.txt")
         step3_out = _read_safe("step3_architecture.txt")
@@ -5947,9 +10225,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         else:
             audit_blocks = []
             if qa_r1.strip():
-                audit_blocks.append("=== VÒNG 1: KIỂM ĐỊNH LOGIC, TUỔI TÁC, PHÁP LÝ MEXICO & CHÍNH TẢ ES-MX ===\n" + qa_r1.strip())
+                audit_blocks.append(
+                    "=== VÒNG 1: KIỂM ĐỊNH LOGIC, TUỔI TÁC, PHÁP LÝ MEXICO & CHÍNH TẢ ES-MX ===\n"
+                    + qa_r1.strip()
+                )
             if qa_r2.strip():
-                audit_blocks.append("=== VÒNG 2: KIỂM ĐỊNH CHẤT LƯỢNG VĂN HỌC & NHỊP ĐỌC TTS ===\n" + qa_r2.strip())
+                audit_blocks.append(
+                    "=== VÒNG 2: KIỂM ĐỊNH CHẤT LƯỢNG VĂN HỌC & NHỊP ĐỌC TTS ===\n"
+                    + qa_r2.strip()
+                )
             if qa_final.strip() and qa_final.strip() != qa_r2.strip():
                 audit_blocks.append("=== BÁO CÁO QA TỔNG HỢP ===\n" + qa_final.strip())
             audit_combined = "\n\n".join(audit_blocks)
@@ -5964,7 +10248,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         locked_title_str = (
             idea.get("locked_title")
-            or (extract_locked_title_from_step2(step2_out, fallback_title="") if step2_out else "")
+            or (
+                extract_locked_title_from_step2(step2_out, fallback_title="")
+                if step2_out
+                else ""
+            )
             or idea.get("draft_title_ja")
             or f"Dự án Mexico #{ma_id}"
         )
@@ -6010,11 +10298,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             self.should_stop = False
 
         def _thumb_worker():
-            session = ChatGPTWebSession(project_id=f"{ma_id}_THUMB", acc_id=preferred_acc_id)
+            session = ChatGPTWebSession(
+                project_id=f"{ma_id}_THUMB", acc_id=preferred_acc_id
+            )
             completed_ok = False
             try:
                 ideas = self.load_saved_ideas()
-                idea = next((it for it in ideas if it.get("ma_id") == ma_id), {}) or {"ma_id": ma_id}
+                idea = next((it for it in ideas if it.get("ma_id") == ma_id), {}) or {
+                    "ma_id": ma_id
+                }
                 proj_dir = self.projects_dir / ma_id
                 proj_dir.mkdir(parents=True, exist_ok=True)
                 renders_dir = proj_dir / "renders"
@@ -6033,9 +10325,21 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             except Exception:
                                 pass
 
-                step2_out = (proj_dir / "step2_title_thumbnail.txt").read_text(encoding="utf-8") if (proj_dir / "step2_title_thumbnail.txt").exists() else ""
-                step6_out = (proj_dir / "seo_publish_pack.txt").read_text(encoding="utf-8") if (proj_dir / "seo_publish_pack.txt").exists() else ""
-                locked_title = idea.get("locked_title") or extract_locked_title_from_step2(step2_out, fallback_title=idea.get("draft_title_ja", ma_id))
+                step2_out = (
+                    (proj_dir / "step2_title_thumbnail.txt").read_text(encoding="utf-8")
+                    if (proj_dir / "step2_title_thumbnail.txt").exists()
+                    else ""
+                )
+                step6_out = (
+                    (proj_dir / "seo_publish_pack.txt").read_text(encoding="utf-8")
+                    if (proj_dir / "seo_publish_pack.txt").exists()
+                    else ""
+                )
+                locked_title = idea.get(
+                    "locked_title"
+                ) or extract_locked_title_from_step2(
+                    step2_out, fallback_title=idea.get("draft_title_ja", ma_id)
+                )
 
                 self._emit(
                     status="running",
@@ -6045,7 +10349,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     message=f"[{ma_id}] 🎨 Đang mở trình duyệt {session.cfg['label']} để tạo & đánh giá 1 Thumbnail (6 dòng chữ)...",
                 )
                 if not session.open_session_tab():
-                    raise RuntimeError(f"Không mở được khung chat trên {session.cfg['label']}.")
+                    raise RuntimeError(
+                        f"Không mở được khung chat trên {session.cfg['label']}."
+                    )
 
                 paths = self.generate_and_verify_three_thumbnails_sync(
                     session=session,
@@ -6081,3 +10387,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         threading.Thread(target=_thumb_worker, daemon=True).start()
         return True
+
+
+sys.modules["backend.chatgpt_web_client"] = sys.modules[__name__]

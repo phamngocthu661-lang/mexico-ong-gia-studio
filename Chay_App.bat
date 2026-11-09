@@ -8,8 +8,8 @@ title Mexico Ong Gia Studio - Workstation
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '%~dp0' -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
 
 set "PYTHON_EXE="
-if exist "%~dp0python_path.txt" (
-    set /p SAVED_PY=<"%~dp0python_path.txt"
+if exist "%~dp0config\python_path.txt" (
+    set /p SAVED_PY=<"%~dp0config\python_path.txt"
     if exist "!SAVED_PY!" set "PYTHON_EXE=!SAVED_PY!"
 )
 if not defined PYTHON_EXE (
