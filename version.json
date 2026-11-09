@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.23",
-  "build_number": 139,
-  "released_at": "2026-11-09 20:10:53",
+  "version": "V1.0.24",
+  "build_number": 140,
+  "released_at": "2026-11-09 20:43:14",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.23: Sua triet de loi import OmniVoice tren may khach, dong bo goi VoiceStudio/omnivoice va ra soat toan bo he thong"
+  "changelog": "V1.0.24: Sua triet de loi Could not import module PreTrainedModel do xung dot torchvision/transformers tren may khach"
 }

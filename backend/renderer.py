@@ -713,21 +713,46 @@ def ensure_green_icons_and_sfx_assets(
 
 def _get_person_segmentation_model():
     if _DEEPLAB_CACHE["model"] is None:
+        import importlib
+        import importlib.metadata
+        import importlib.util as _ilu
+        import subprocess
+        import sys
+
         import torch
+
+        _orig_fs = getattr(_ilu, "_orig_find_spec_for_omnivoice", None)
+        if _orig_fs is not None:
+            _ilu.find_spec = _orig_fs
 
         try:
             from torchvision.models.segmentation import (
                 DeepLabV3_ResNet50_Weights,
                 deeplabv3_resnet50,
             )
-        except ImportError:
-            import importlib
-            import subprocess
-            import sys
+        except Exception:
+            for _tv_k in [
+                k
+                for k in list(sys.modules.keys())
+                if k == "torchvision" or k.startswith("torchvision.")
+            ]:
+                sys.modules.pop(_tv_k, None)
+
+            real_torch_ver = str(getattr(torch, "_orig_real_version", "") or "")
+            if not real_torch_ver:
+                _orig_ver_fn = getattr(
+                    importlib.metadata,
+                    "_orig_version_for_omnivoice",
+                    importlib.metadata.version,
+                )
+                try:
+                    real_torch_ver = str(_orig_ver_fn("torch"))
+                except Exception:
+                    real_torch_ver = str(torch.__version__)
 
             tv_ver = (
                 "torchvision==0.20.1"
-                if str(torch.__version__).startswith("2.5.")
+                if real_torch_ver.startswith("2.5.")
                 else "torchvision"
             )
             cmd = [
@@ -736,12 +761,15 @@ def _get_person_segmentation_model():
                 "pip",
                 "install",
                 "--prefer-binary",
+                "--force-reinstall",
                 "--no-deps",
                 tv_ver,
             ]
-            if "+cu" in str(torch.__version__):
-                cu_tag = str(torch.__version__).split("+")[-1].strip()
+            if "+cu" in real_torch_ver:
+                cu_tag = real_torch_ver.split("+")[-1].strip()
                 cmd += ["--index-url", f"https://download.pytorch.org/whl/{cu_tag}"]
+            elif real_torch_ver.startswith("2.5.") and torch.cuda.is_available():
+                cmd += ["--index-url", "https://download.pytorch.org/whl/cu121"]
             subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180
             )

@@ -1755,6 +1755,7 @@ def _apply_omnivoice_torch_compat_patch():
     """
     try:
         import importlib.metadata
+        import importlib.util as _ilu
         import types
 
         _orig_ver = getattr(
@@ -1764,7 +1765,44 @@ def _apply_omnivoice_torch_compat_patch():
         )
         setattr(importlib.metadata, "_orig_version_for_omnivoice", _orig_ver)
 
+        import torch as _t
+        import torch.distributed.fsdp as _fsdp
+
+        if not hasattr(_t, "_orig_real_version"):
+            try:
+                setattr(_t, "_orig_real_version", str(_orig_ver("torch")))
+            except Exception:
+                setattr(_t, "_orig_real_version", str(_t.__version__))
+
+        # Kiểm tra thực tế xem torchvision có nạp được C++ ops hay bị lệch version với torch (RuntimeError: operator torchvision::nms does not exist)
+        _tv_healthy = False
+        _orig_find_spec = getattr(_ilu, "_orig_find_spec_for_omnivoice", _ilu.find_spec)
+        setattr(_ilu, "_orig_find_spec_for_omnivoice", _orig_find_spec)
+        try:
+            _ilu.find_spec = _orig_find_spec
+            import torchvision as _tv_test  # noqa: F401
+            from torchvision.transforms import InterpolationMode as _tv_im  # noqa: F401
+
+            _tv_healthy = True
+        except Exception:
+            _tv_healthy = False
+            for _tv_k in [
+                k
+                for k in list(sys.modules.keys())
+                if k == "torchvision" or k.startswith("torchvision.")
+            ]:
+                sys.modules.pop(_tv_k, None)
+
+            def _safe_find_spec(name, package=None):
+                if name == "torchvision" or str(name).startswith("torchvision."):
+                    return None
+                return _orig_find_spec(name, package)
+
+            _ilu.find_spec = _safe_find_spec
+
         def _patched_version(pkg: str) -> str:
+            if pkg == "torchvision" and not _tv_healthy:
+                raise importlib.metadata.PackageNotFoundError("torchvision")
             if pkg in ("torch", "torchaudio", "torchvision"):
                 try:
                     v = _orig_ver(pkg)
@@ -1776,114 +1814,156 @@ def _apply_omnivoice_torch_compat_patch():
                 except Exception:
                     pass
                 return "2.6.0"
+            if pkg == "accelerate":
+                try:
+                    v = _orig_ver(pkg)
+                    if v and tuple(int(x) for x in v.split("+")[0].split(".")[:2]) >= (
+                        1,
+                        1,
+                    ):
+                        return v
+                except Exception:
+                    pass
+                return "1.2.0"
             return _orig_ver(pkg)
 
         importlib.metadata.version = _patched_version
 
-        import torch
-        import torch.distributed.fsdp
-
         try:
             if tuple(
-                int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2]
+                int(x) for x in str(_t.__version__).split("+")[0].split(".")[:2]
             ) < (2, 6):
-                torch.__version__ = "2.6.0"
+                _t.__version__ = "2.6.0"
         except Exception:
-            torch.__version__ = "2.6.0"
-
+            _t.__version__ = "2.6.0"
         try:
-            import torchaudio
+            import torchaudio as _ta
 
             if tuple(
-                int(x) for x in str(torchaudio.__version__).split("+")[0].split(".")[:2]
+                int(x) for x in str(_ta.__version__).split("+")[0].split(".")[:2]
             ) < (2, 6):
-                torchaudio.__version__ = "2.6.0"
+                _ta.__version__ = "2.6.0"
         except Exception:
             pass
-
         for _attr in ("CPUOffloadPolicy", "MixedPrecisionPolicy", "FSDPModule"):
-            if not hasattr(torch.distributed.fsdp, _attr):
-                setattr(torch.distributed.fsdp, _attr, object)
-        if not hasattr(torch.distributed.fsdp, "fully_shard"):
-            setattr(torch.distributed.fsdp, "fully_shard", lambda *a, **kw: None)
+            if not hasattr(_fsdp, _attr):
+                setattr(_fsdp, _attr, object)
+        if not hasattr(_fsdp, "fully_shard"):
+            setattr(_fsdp, "fully_shard", lambda *a, **kw: None)
         try:
-            import torch._dynamo._trace_wrapped_higher_order_op as _twhop
+            import torch.distributed._composable.fsdp as _cfsdp
 
-            if not hasattr(_twhop, "TransformGetItemToIndex"):
-
-                class _DummyTransformGetItemToIndex:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return False
-
-                setattr(
-                    _twhop, "TransformGetItemToIndex", _DummyTransformGetItemToIndex
-                )
+            if not hasattr(_cfsdp, "fully_shard"):
+                setattr(_cfsdp, "fully_shard", lambda *a, **kw: None)
         except Exception:
             pass
-        if not hasattr(torch, "accelerator"):
+        try:
+            import torch.distributed.tensor.placement_types as _dt_pt
+
+            if not hasattr(_dt_pt, "_StridedShard"):
+                setattr(_dt_pt, "_StridedShard", getattr(_dt_pt, "Shard", object))
+        except Exception:
+            pass
+        if not hasattr(_t, "accelerator"):
             setattr(
-                torch,
+                _t,
                 "accelerator",
                 types.SimpleNamespace(
                     current_accelerator=lambda *a, **kw: (
-                        torch.device("cuda")
-                        if torch.cuda.is_available()
-                        else torch.device("cpu")
+                        _t.device("cuda")
+                        if _t.cuda.is_available()
+                        else _t.device("cpu")
                     ),
-                    is_available=lambda: torch.cuda.is_available(),
+                    is_available=lambda: _t.cuda.is_available(),
                     device_count=lambda: (
-                        torch.cuda.device_count() if torch.cuda.is_available() else 0
+                        _t.cuda.device_count() if _t.cuda.is_available() else 0
                     ),
                 ),
             )
-
         if "transformers.utils.import_utils" in sys.modules:
             _iu = sys.modules["transformers.utils.import_utils"]
             setattr(_iu, "_torch_available", True)
             setattr(_iu, "_torchaudio_available", True)
             setattr(_iu, "_torch_version", "2.6.0")
             setattr(_iu, "_torchaudio_version", "2.6.0")
-            for _fn_name in (
-                "is_torch_available",
-                "is_torchaudio_available",
-                "is_torchvision_available",
-            ):
-                _fn = getattr(_iu, _fn_name, None)
-                if _fn is not None and hasattr(_fn, "cache_clear"):
+            for _fn_obj in list(vars(_iu).values()):
+                if callable(_fn_obj) and hasattr(_fn_obj, "cache_clear"):
                     try:
-                        _fn.cache_clear()
+                        _fn_obj.cache_clear()
                     except Exception:
                         pass
+            if not _tv_healthy:
+                setattr(_iu, "_torchvision_available", False)
+                setattr(_iu, "is_torchvision_available", lambda: False)
+                setattr(_iu, "is_torchvision_v2_available", lambda: False)
+                if "transformers.utils" in sys.modules:
+                    setattr(
+                        sys.modules["transformers.utils"],
+                        "is_torchvision_available",
+                        lambda: False,
+                    )
+                    setattr(
+                        sys.modules["transformers.utils"],
+                        "is_torchvision_v2_available",
+                        lambda: False,
+                    )
             _bm = getattr(_iu, "BACKENDS_MAPPING", None)
             if isinstance(_bm, dict):
                 try:
                     if "torch" in _bm and isinstance(_bm["torch"], tuple):
                         _bm["torch"] = (lambda: True, _bm["torch"][1])
+                    if (
+                        not _tv_healthy
+                        and "torchvision" in _bm
+                        and isinstance(_bm["torchvision"], tuple)
+                    ):
+                        _bm["torchvision"] = (lambda: False, _bm["torchvision"][1])
                 except Exception:
                     pass
         if "transformers" in sys.modules:
             _tf_mod = sys.modules["transformers"]
-            _ptm = getattr(_tf_mod, "PreTrainedModel", None)
-            _am = getattr(_tf_mod, "AutoModel", None)
-            if (
-                _ptm is None
-                or _am is None
-                or "DummyObject" in str(getattr(_ptm, "__mro__", ()))
-                or "DummyObject" in str(getattr(_am, "__mro__", ()))
-            ):
+            _need_tf_reload = False
+            try:
+                _ptm = getattr(_tf_mod, "PreTrainedModel", None)
+                _am = getattr(_tf_mod, "AutoModel", None)
+                if (
+                    _ptm is None
+                    or _am is None
+                    or "DummyObject" in str(type(_ptm))
+                    or "DummyObject" in str(type(_am))
+                    or "dummy" in str(getattr(_ptm, "__module__", "")).lower()
+                    or "dummy" in str(getattr(_am, "__module__", "")).lower()
+                    or "DummyObject" in str(getattr(_ptm, "__mro__", ()))
+                    or "DummyObject" in str(getattr(_am, "__mro__", ()))
+                ):
+                    _need_tf_reload = True
+            except Exception:
+                _need_tf_reload = True
+
+            if _need_tf_reload:
                 for _k in [
                     k
                     for k in list(sys.modules.keys())
                     if k == "transformers" or k.startswith("transformers.")
                 ]:
                     sys.modules.pop(_k, None)
-    except Exception as e:
-        print(
-            f"[VoiceStudioService] Lưu ý khi áp dụng bản vá tương thích PyTorch/OmniVoice: {e}"
-        )
+        try:
+            import torch._dynamo._trace_wrapped_higher_order_op as _twhop
+
+            if not hasattr(_twhop, "TransformGetItemToIndex"):
+
+                class _TransformGetItemToIndex:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return False
+
+                setattr(_twhop, "TransformGetItemToIndex", _TransformGetItemToIndex)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _ensure_omnivoice_package_files(root_dir: Optional[Path] = None) -> Path:
@@ -2288,7 +2368,8 @@ class VoiceStudioService:
                 for _mod_k in [
                     k
                     for k in list(sys.modules.keys())
-                    if k == "omnivoice" or k.startswith("omnivoice.")
+                    if k in ("omnivoice", "transformers", "torchvision")
+                    or k.startswith(("omnivoice.", "transformers.", "torchvision."))
                 ]:
                     sys.modules.pop(_mod_k, None)
                 importlib.invalidate_caches()
