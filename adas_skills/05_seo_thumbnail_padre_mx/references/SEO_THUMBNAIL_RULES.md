@@ -7,6 +7,7 @@ These two user-supplied visual examples are stored alongside this skill:
 ## Final artifact A: THUMBNAIL.png
 - Full 16:9, same exact width/height as green-screen image, RGB PNG (1920x1080 preferred, 1280x720 minimum).
 - White/light text-left zone ~78–82%, photographic male subject right ~18–22% with strong credible emotion; correct pose/expression and wardrobe from actual script, NOT copied from sample.
+- **MANDATORY ANTI-CLONE RANDOMIZATION ACROSS VIDEOS**: Never reuse the generic "gray mustache + brown plaid shirt" look from `example_thumbnail.jpg`. Every video must feature a **completely different elderly Mexican father** (randomized facial structure, skin tone, clean-shaven vs. full beard vs. goatee vs. bald crown vs. hat/boina, glasses vs. no glasses) and **distinct clothing** (cardigan sweater, quilted vest, suit & tie, suede/leather/denim/corduroy jacket, V-neck sweater, jorongo, or guayabera — never green `#00FF00`).
 - Inspired by sample visual hierarchy: several readable lines of uppercase natural es-MX text with black, cyan and orange emphasis, red footer bar + yellow kicker. Use one coherent dramatic event from QA-READY script; choose short readable copy, avoid excessive lines. Check accents and line breaks manually.
 - Background on portrait side can reflect story setting, but final thumbnail must use SAME portrait cutout and pixel position as matching green image.
 

@@ -3424,12 +3424,12 @@ D. KHÓA TIÊU ĐỀ CHÍNH THỨC (`CURRENT_FINAL_TITLE` / `LOCKED_TITLE`)
 E. THIẾT KẾ CẶP ẢNH THUMBNAIL 80/20 (`THUMBNAIL.png` + `THUMBNAIL-NENXANH.png`)
 - Bố cục 80/20 chuẩn kênh Mexico Ông Già:
   + **Vùng Trái (~78–80% chiều ngang)**: Nền trắng/sáng sạch sẽ, chứa **4–5 dòng chữ IN HOA tiếng Tây Ban Nha** siêu đậm (kết hợp màu Đen `#111111`, Xanh Cyan `#00AEEF`, Cam `#F7941D`) + **Thanh Banner Đỏ (`#E31E24`) ở đáy** chứa 1–2 dòng chữ Vàng/Cam chốt hạ cảm xúc.
-  + **Vùng Phải (~20–22% chiều ngang)**: Ảnh chân dung bán thân (ngực lên đầu) của người cha già Mexico (62–78 tuổi, tóc bạc, ria mép bạc, ánh mắt điềm tĩnh uy nghiêm hoặc rơi lệ).
+  + **Vùng Phải (~20–22% chiều ngang — BẮT BUỘC ĐA DẠNG HÓA NHÂN VẬT & TRANG PHỤC NGẪU NHIÊN CHO TỪNG VIDEO)**: Ảnh chân dung bán thân (ngực lên đầu) của một người cha già Mexico hoàn toàn khác biệt ở mỗi câu chuyện (xoay vòng ngẫu nhiên khuôn mặt gầy góc cạnh / tròn phúc hậu / vuông chữ điền / mảnh khảnh; mặt cạo nhẵn không râu / râu quai nón bạc trắng / râu cằm candado / hói đỉnh đầu / đội mũ phớt Texana hoặc mũ nồi boina; đeo kính gọng vàng / kính gọng sừng / không đeo kính; mặc áo len cardigan cài cúc / áo gile phao xanh navy / vest xám lịch lãm / áo khoác da lộn camel / áo khoác bò xanh đậm / áo len cổ tim đỏ rượu vang / áo jorongo thổ cẩm / guayabera trắng — tuyệt đối không lặp lại mãi 1 ông già có ria mép mặc áo kẻ caro!).
   + **Ảnh thứ 2 (`THUMBNAIL-NENXANH.png`)**: Giữ nguyên 100% chân dung ông già ở cùng tọa độ bên phải trên nền xanh lá thuần `#00FF00` (`RGB(0, 255, 0)`) để hệ thống tự động tách nền và ghép vào góc dưới bên trái Video!
 - Xuất rõ:
   + `THUMBNAIL_MAIN_LINES_ES`: 4–5 dòng chữ IN HOA ngắn gọn (2–4 từ/dòng) cho nền trắng bên trái.
   + `THUMBNAIL_BANNER_LINES_ES`: 1–2 dòng chữ IN HOA ngắn gọn cho thanh banner đỏ bên dưới.
-  + `PROTAGONIST_VISUAL_BRIEF`: Mô tả chi tiết ngoại hình, tuổi, trang phục, biểu cảm của người cha Mexico để vẽ đồng bộ 2 ảnh.
+  + `PROTAGONIST_VISUAL_BRIEF`: Mô tả chi tiết ngoại hình độc bản, kiểu tóc/râu, kính mắt, trang phục khác biệt của người cha Mexico trong tập này để vẽ đồng bộ 2 ảnh.
 
 F. `STEP3_HANDOFF` (BÀN GIAO SANG STEP 2 OUTLINE 7 PART)
 - Tóm tắt đầy đủ hồ sơ nhân vật, tên tuổi, số tiền MXN, tài sản, giấy tờ công chứng (`Notaría Pública`, `Escritura`, `Usufructo`) để chuyển sang lập Dàn Ý 7 Phần (`[PART 1]`..`[PART 7]`). Không viết kịch bản ở bước này."""
@@ -6715,6 +6715,7 @@ class ADASScriptEngine:
         l_block = "\n".join(
             f"L{idx + 1}: {six_lines[idx]}" for idx in range(len(six_lines))
         )
+        persona = self._get_unique_random_father_visual_profile(ma_id=ma_id, idea=idea)
         return (
             f"ID: {ma_id}\n"
             f"COMPLETED_STEP: STEP 6 — PADRE MX V3.0 SEO & MATCHED THUMBNAIL PAIR\n"
@@ -6736,13 +6737,188 @@ class ADASScriptEngine:
             f"<THUMBNAIL_PROMPT_1>\n"
             f"Generate a brand-new standalone 16:9 horizontal YouTube thumbnail (size 1536x1024) for a Mexican Spanish family drama story using a strict 80/20 split layout.\n"
             f"- Left 78-80% zone: solid clean bright white background (#FFFFFF) with ultra-bold uppercase stacked Spanish sans-serif typography in Black, Cyan/Teal, and Orange, plus a full-width solid Red banner across the bottom-left with bold Yellow/Orange uppercase Spanish kicker text.\n"
-            f"- Right 20-22% zone: realistic photographic half-body portrait of an older Mexican father (aged 65-75, gray hair, weathered dignified face, emotional tearful or resolute expression, wearing a modest guayabera or ironed shirt) in a realistic Mexican setting ({setting}).\n"
+            f"- Right 20-22% zone (UNIQUE RANDOMIZED PROTAGONIST & OUTFIT FOR THIS STORY): {persona['full_en_prompt']} in a softly blurred Mexican setting ({setting}).\n"
             f"</THUMBNAIL_PROMPT_1>\n\n"
             f"<THUMBNAIL_GREEN_PROMPT_1>\n"
-            f"Matched 16:9 1920x1080 chroma-key green screen deliverable (THUMBNAIL-NENXANH.png): pure solid #00FF00 (RGB 0, 255, 0) background across the entire left 80% and behind the character, keeping ONLY the exact same older Mexican father portrait on the right 20% at identical pixel coordinates.\n"
+            f"Matched 16:9 1920x1080 chroma-key green screen deliverable (THUMBNAIL-NENXANH.png): pure solid #00FF00 (RGB 0, 255, 0) background across the entire left 80% and behind the character, keeping ONLY the exact same older Mexican father portrait ({persona['short_en_tag']}) on the right 20% at identical pixel coordinates.\n"
             f"</THUMBNAIL_GREEN_PROMPT_1>\n\n"
             f"PURE_CHARACTER_COUNT: {total_pure:,} ký tự (~{round(total_pure / 780)} phút giọng đọc es-MX)\n"
         )
+
+    def _get_unique_random_father_visual_profile(
+        self,
+        ma_id: str = "",
+        idea: Optional[Dict[str, Any]] = None,
+        force_new_random: bool = False,
+        variant_offset: int = 0,
+    ) -> Dict[str, str]:
+        """
+        Sinh ngẫu nhiên (kèm bộ nhớ chống trùng lặp giữa các video trong kênh) ngoại hình khuôn mặt,
+        kiểu tóc/râu, kính mắt, biểu cảm và trang phục của người cha già Mexico trên Thumbnail.
+        Đảm bảo mỗi video trên kênh là một nhân vật & bộ trang phục hoàn toàn khác nhau!
+        """
+        import secrets
+
+        face_pool = [
+            "a 74-year-old Oaxacan mestizo man with a lean angular face, high cheekbones, deep sun-bronzed skin, and narrow piercing dark eyes",
+            "a 66-year-old northern Mexican man from Nuevo León with a broad round face, fair-olive complexion with natural age spots, full cheeks, and warm deep-set eyes",
+            "a 78-year-old slender grandfather from Puebla with a gaunt, hollow-cheeked oval face, long aquiline nose, soft weathered skin, and heavy tearful under-eye bags",
+            "a 63-year-old stocky retired master craftsman from Veracruz with a square jawline, warm cinnamon-brown complexion, thick expressive eyebrows, and deep forehead creases",
+            "a 71-year-old dignified retired schoolteacher from Michoacán with a narrow oval face, light olive skin, calm intellectual demeanor, and gentle crow's feet",
+            "a 76-year-old rugged rancher from Jalisco with a deeply tanned leathery complexion, prominent Roman nose, strong cleft chin, and stoic gaze",
+            "a 69-year-old retired accountant from Mexico City with a plump, gentle round face, pale olive skin, soft jawline, and sorrowful expressive eyes",
+            "a 80-year-old frail yet noble elder from Guanajuato with deeply wrinkled bronze skin, sunken cheeks, prominent cheekbones, and glistening dark eyes",
+            "a 65-year-old broad-shouldered retired mechanic from Querétaro with a rugged rectangular face, medium brown skin, strong jaw, and resolute expression",
+            "a 73-year-old retired baker from Mérida with a warm fuller oval face, golden-tan skin, deep nasolabial folds, and deeply hurt eyes",
+            "a 77-year-old retired railway worker from Chihuahua with an elongated weathered face, sun-darkened copper skin, sharp cheekbones, and unyielding gaze",
+            "a 67-year-old modest neighborhood tailor from Guadalajara with a fine-boned face, light mestizo skin, expressive arched eyebrows, and quiet dignity",
+        ]
+
+        hair_beard_pool = [
+            "a completely clean-shaven face (strictly NO mustache and NO beard, smooth upper lip and chin) with receding short white side hair",
+            "a full, thick snowy-white beard and connected mustache (barba blanca completa) with short cropped silver hair",
+            "a bald crown on top of the head (calvo en la coronilla) with neat white side hair and a completely clean-shaven chin and upper lip",
+            "a neat salt-and-pepper chin goatee (barba de candado) with wavy dark-charcoal hair streaked with silver combed straight back",
+            "wearing a classic beige woven straw Mexican sombrero hat, with a completely clean-shaven weathered face (no mustache)",
+            "wearing a dark brown wool flat cap / classic beret (boina clásica de lana), with a short neatly trimmed white full beard",
+            "thick curly silver-white hair parted on the side and a completely clean-shaven face (strictly no mustache, no beard)",
+            "short close-cropped 3-day salt-and-pepper stubble beard across the jaw and a buzz-cut silver-gray hairstyle",
+            "wearing a traditional northern Mexican cream felt Texana hat, with a short white beard and weathered cheeks",
+            "swept-back snowy white hair and a completely clean-shaven face with deep expression lines",
+            "a thin, closely trimmed pencil mustache with dark charcoal-gray hair parted down the middle",
+            "a bald head with a full, dignified white chin beard and bushy white eyebrows",
+        ]
+
+        eyewear_pool = [
+            "wearing thin gold-rimmed reading glasses",
+            "wearing dark tortoiseshell rectangular eyeglasses",
+            "wearing classic round wire-frame spectacles",
+            "wearing half-rim metal bifocal glasses",
+            "no glasses, bare eyes with a visible tear glistening on the lower eyelid",
+            "no glasses, bare eyes with a piercing, dignified stare",
+        ]
+
+        wardrobe_pool = [
+            "wearing a dark navy-blue quilted zip-up vest over a crisp sky-blue long-sleeve collared shirt (strictly no plaid shirt)",
+            "wearing a thick charcoal-gray buttoned wool cardigan sweater over a clean white crew-neck undershirt (strictly no plaid shirt)",
+            "wearing a formal dark charcoal suit jacket with a burgundy necktie and crisp white dress shirt",
+            "wearing a warm burgundy / wine-red V-neck knitted sweater over a cream collared shirt",
+            "wearing a camel-tan suede zip jacket over a dark navy-blue polo shirt",
+            "wearing a deep indigo-blue denim work jacket with brass buttons over a light gray henley shirt",
+            "wearing a dark chocolate-brown leather bomber jacket over an ivory collared shirt",
+            "wearing a traditional Mexican earth-tone beige-and-terracotta woven wool jorongo/poncho over a white shirt",
+            "wearing a crisp snow-white Yucatán linen guayabera shirt withfour pockets and subtle vertical embroidery",
+            "wearing a soft oatmeal-beige cable-knit turtleneck sweater",
+            "wearing a steel-gray tailored blazer over a dark navy open-collar dress shirt (no tie)",
+            "wearing a rust-terracotta heavy canvas jacket unbuttoned over a charcoal-gray crew-neck shirt",
+            "wearing a dark navy knitted sweater-vest over a light blue Oxford button-down dress shirt",
+            "wearing an elegant black mandarin-collar (cuello mao) linen shirt with silver buttons",
+            "wearing a warm cinnamon-brown corduroy blazer over a pale cream button-down shirt",
+            "wearing a retired master artisan's slate-blue utility work jacket with buttoned chest pockets",
+        ]
+
+        pose_pool = [
+            "three-quarter portrait angle facing slightly toward the left text block, chin raised with calm legal dignity, warm golden-hour side lighting",
+            "direct front-facing chest-up portrait, misty eyes holding back tears of betrayal, soft natural daylight",
+            "half-body portrait holding a sealed cream notarized folder against his chest, solemn resolute expression, dramatic window light",
+            "slight side-shoulder angle looking back toward the camera with a piercing unyielding gaze, warm Mexican courtyard lighting",
+            "close-up chest-up portrait with one weathered hand resting over his heart in quiet hurt and dignity, cinematic soft lighting",
+        ]
+
+        hist_file = self.root_dir / "config" / "thumbnail_persona_history.json"
+        hist_data: Dict[str, Any] = {"by_project": {}, "recent_signatures": []}
+        if hist_file.exists():
+            try:
+                hist_data = json.loads(hist_file.read_text(encoding="utf-8"))
+                if not isinstance(hist_data, dict):
+                    hist_data = {"by_project": {}, "recent_signatures": []}
+            except Exception:
+                hist_data = {"by_project": {}, "recent_signatures": []}
+
+        by_proj = hist_data.setdefault("by_project", {})
+        recent_sigs: List[str] = list(hist_data.setdefault("recent_signatures", []))
+
+        clean_id = (ma_id or "").strip()
+        if (
+            clean_id
+            and not force_new_random
+            and variant_offset == 0
+            and clean_id in by_proj
+            and isinstance(by_proj[clean_id], dict)
+            and by_proj[clean_id].get("full_en_prompt")
+        ):
+            return by_proj[clean_id]
+
+        rng = secrets.SystemRandom()
+        recent_face_idxs = set()
+        recent_hair_idxs = set()
+        recent_ward_idxs = set()
+        for sig in recent_sigs[-8:]:
+            parts = str(sig).split("-")
+            if len(parts) >= 4:
+                try:
+                    recent_face_idxs.add(int(parts[0]))
+                    recent_hair_idxs.add(int(parts[1]))
+                    recent_ward_idxs.add(int(parts[3]))
+                except Exception:
+                    pass
+
+        avail_faces = [
+            i for i in range(len(face_pool)) if i not in recent_face_idxs
+        ] or list(range(len(face_pool)))
+        avail_hairs = [
+            i for i in range(len(hair_beard_pool)) if i not in recent_hair_idxs
+        ] or list(range(len(hair_beard_pool)))
+        avail_wards = [
+            i for i in range(len(wardrobe_pool)) if i not in recent_ward_idxs
+        ] or list(range(len(wardrobe_pool)))
+
+        f_idx = (rng.choice(avail_faces) + variant_offset * 3) % len(face_pool)
+        h_idx = (rng.choice(avail_hairs) + variant_offset * 5) % len(hair_beard_pool)
+        e_idx = (rng.randrange(len(eyewear_pool)) + variant_offset * 2) % len(
+            eyewear_pool
+        )
+        w_idx = (rng.choice(avail_wards) + variant_offset * 7) % len(wardrobe_pool)
+        p_idx = (rng.randrange(len(pose_pool)) + variant_offset) % len(pose_pool)
+
+        sig = f"{f_idx}-{h_idx}-{e_idx}-{w_idx}-{p_idx}"
+        face_s = face_pool[f_idx]
+        hair_s = hair_beard_pool[h_idx]
+        eye_s = eyewear_pool[e_idx]
+        ward_s = wardrobe_pool[w_idx]
+        pose_s = pose_pool[p_idx]
+
+        full_en = (
+            f"Photorealistic portrait of {face_s}; featuring {hair_s}; {eye_s}; {ward_s}; "
+            f"composed as a {pose_s} (strictly NO green #00FF00 clothing, NO generic duplicate face)."
+        )
+        short_tag = f"{face_s.split(' with ')[0]}, {hair_s.split(' (')[0]}, {ward_s.split(' (')[0]}"
+
+        profile = {
+            "signature": sig,
+            "face": face_s,
+            "hair_beard": hair_s,
+            "eyewear": eye_s,
+            "wardrobe": ward_s,
+            "pose": pose_s,
+            "full_en_prompt": full_en,
+            "short_en_tag": short_tag,
+        }
+
+        if clean_id and variant_offset == 0:
+            by_proj[clean_id] = profile
+            recent_sigs.append(sig)
+            hist_data["recent_signatures"] = recent_sigs[-30:]
+            try:
+                hist_file.parent.mkdir(parents=True, exist_ok=True)
+                hist_file.write_text(
+                    json.dumps(hist_data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
+        return profile
 
     # ==========================================================================
     # ĐỌC NGUYÊN VĂN SKILL.MD TỪ THƯ MỤC ADAS_SKILLS & TẠO PROMPT STEP 3..6 (PADRE MX V3.0)
@@ -7077,6 +7253,7 @@ CHẠY NGAY STEP 5 (VÒNG 2 — HOLISTIC FULL-SCRIPT QUALITY, PACING, ANTI-REPET
             if script_excerpt
             else ""
         )
+        persona = self._get_unique_random_father_visual_profile(ma_id=ma_id)
         return f"""CHẠY NGAY STEP 6 (TRÊN ĐOẠN CHAT SEO MỚI HOÀN TOÀN) — SEO YOUTUBE `es-MX` & BỘ ĐÔI THUMBNAIL 80/20 (`THUMBNAIL.png` + `THUMBNAIL-NENXANH.png`) (`padre-mx-seo-packaging` V3.0.0) CHO MÃ {ma_id}
 - FULL_SCRIPT_CHAR_COUNT_VERIFIED: {total_count:,} chars (7 PARTS `[PART 1]`..`[PART 7]` — PASS 70.000–80.000)
 - RELEASE_DECISION: READY (ĐÃ QUA 2 VÒNG KIỂM ĐỊNH ĐỘC LẬP LOGIC & QUALITY)
@@ -7100,9 +7277,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 7. `MATCHED_THUMBNAIL_PROMPTS` (BẮT BUỘC XUẤT CẢ 2 THẺ `<THUMBNAIL_PROMPT_1>` VÀ `<THUMBNAIL_GREEN_PROMPT_1>`):
    - `<THUMBNAIL_PROMPT_1>`: Prompt tiếng Anh chi tiết để công cụ tạo ảnh (size `1536x1024`, bố cục 16:9 `1920x1080`) vẽ bức ảnh `THUMBNAIL.png` theo đúng tỷ lệ **80/20**:
      + Bên trái 78–80% khung hình: Nền trắng sáng sạch (`#FFFFFF`), trình bày các dòng chữ Tây Ban Nha IN HOA đậm nét (L1..L5) với màu Đen, Xanh Cyan và Cam; phía dưới bên trái là băng rôn nền Đỏ tươi với dòng chữ L6 màu Vàng/Cam rực rỡ.
-     + Bên phải 20–22% khung hình: Chân dung bán thân chụp ảnh thật sắc nét (photorealistic) của người cha già Mexico (65–78 tuổi, tóc bạc, gương mặt từng trải đầy phẩm giá, ánh mắt nghẹn ngào hoặc kiên nghị, mặc áo sơ mi hoặc guayabera giản dị).
+     + Bên phải 20–22% khung hình (BẮT BUỘC DÙNG ĐÚNG NGOẠI HÌNH & TRANG PHỤC NGẪU NHIÊN ĐỘC BẢN DƯỚI ĐÂY ĐỂ KHÔNG TRÙNG LẶP VỚI VIDEO KHÁC): {persona["full_en_prompt"]}
    - `</THUMBNAIL_PROMPT_1>`
-   - `<THUMBNAIL_GREEN_PROMPT_1>`: Prompt mô tả bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (16:9 `1920x1080`): giữ nguyên 100% nhân vật người cha Mexico ở đúng vị trí bên phải, toàn bộ phần nền và 80% bên trái phủ màu xanh lá thuần khiết `#00FF00` (`RGB 0, 255, 0`), không có bất kỳ chữ hay băng rôn nào.
+   - `<THUMBNAIL_GREEN_PROMPT_1>`: Prompt mô tả bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (16:9 `1920x1080`): giữ nguyên 100% nhân vật người cha Mexico ({persona["short_en_tag"]}) ở đúng vị trí bên phải, toàn bộ phần nền và 80% bên trái phủ màu xanh lá thuần khiết `#00FF00` (`RGB 0, 255, 0`), không có bất kỳ chữ hay băng rôn nào.
    - `</THUMBNAIL_GREEN_PROMPT_1>`"""
 
     def _extract_six_lines_from_single_source(self, src: str) -> List[str]:
@@ -7330,6 +7507,14 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             ]
         )
 
+        ma_id_str = str((idea or {}).get("ma_id") or "")
+        p_profiles = [
+            self._get_unique_random_father_visual_profile(
+                ma_id=ma_id_str, idea=idea, variant_offset=v_i
+            )
+            for v_i in range(3)
+        ]
+
         prompts: List[str] = []
         for idx in (1, 2, 3):
             m = re.search(
@@ -7338,13 +7523,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 flags=re.IGNORECASE,
             )
             if m and len(m.group(1).strip()) > 60:
-                prompts.append(self._sanitize_raw_thumbnail_prompt(m.group(1).strip()))
-
-        variant_angles = [
-            "Right 22% zone features a realistic photographic half-body portrait of an elderly Mexican father (aged 68-75, silver-gray hair, neatly trimmed mustache, weathered dignified skin, glistening tearful eyes full of quiet resolve, wearing a clean beige guayabera shirt) holding a folded notarized property deed ({proof}), while the left 78% is a solid clean white background (#FFFFFF) with bold stacked Spanish headline text and a bottom red kicker banner.",
-            "Right 22% zone shows a photorealistic portrait of a dignified older Mexican man (aged 65-74, gray hair, emotional resolute expression, wearing a modest plaid work shirt) standing in front of a softly blurred Mexican home courtyard ({setting}), while the left 78% is a crisp solid white panel (#FFFFFF) with giant uppercase Spanish typography and a solid red bottom banner.",
-            "Right 22% zone depicts a close-up photorealistic chest-up portrait of an older Mexican father (aged 70, deeply expressive eyes, dignified face, wearing a dark jacket over a white shirt) looking toward the camera with quiet authority, while the left 78% is a clean solid white background (#FFFFFF) carrying stacked uppercase Spanish text and a red bottom banner.",
-        ]
+                raw_clean = self._sanitize_raw_thumbnail_prompt(m.group(1).strip())
+                # Loại bỏ mô tả áo kẻ caro / ria mép rập khuôn nếu ChatGPT tự viết chung chung
+                raw_clean = re.sub(
+                    r"\b(?:plaid\s+(?:work\s+)?shirt|checkered\s+shirt|flannel\s+shirt|neatly\s+trimmed\s+mustache)\b",
+                    p_profiles[idx - 1]["wardrobe"].replace("wearing ", ""),
+                    raw_clean,
+                    flags=re.IGNORECASE,
+                )
+                prompts.append(raw_clean)
 
         safe_proof = (
             self._sanitize_raw_thumbnail_prompt(
@@ -7360,12 +7547,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         )
         safe_title_ctx = self._sanitize_raw_thumbnail_prompt(locked_title or "")
 
+        variant_angles = [
+            f"Right 22% zone features {p_profiles[0]['full_en_prompt']} in a softly blurred Mexican setting ({safe_setting}) with a notarized legal folder ({safe_proof}), while the left 78% is a solid clean white background (#FFFFFF) with bold stacked Spanish headline text and a bottom red kicker banner.",
+            f"Right 22% zone shows {p_profiles[1]['full_en_prompt']} standing in front of a softly blurred Mexican home background ({safe_setting}), while the left 78% is a crisp solid white panel (#FFFFFF) with giant uppercase Spanish typography and a solid red bottom banner.",
+            f"Right 22% zone depicts {p_profiles[2]['full_en_prompt']} looking toward the camera with quiet authority in ({safe_setting}), while the left 78% is a clean solid white background (#FFFFFF) carrying stacked uppercase Spanish text and a red bottom banner.",
+        ]
+
         while len(prompts) < 3:
             v_idx = len(prompts)
-            angle_desc = variant_angles[v_idx].format(
-                proof=safe_proof,
-                setting=safe_setting,
-            )
+            angle_desc = variant_angles[v_idx]
             prompts.append(
                 f"High-CTR Mexican Spanish family drama YouTube thumbnail with a strict 80/20 split layout (horizontal landscape 1536x1024).\n"
                 f"Story Context: {safe_title_ctx}\n"
@@ -7374,13 +7564,19 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         final_prompts: List[str] = []
         for idx, p in enumerate(prompts[:3], start=1):
+            prof = p_profiles[min(idx - 1, len(p_profiles) - 1)]
             enforced = (
                 "Call the image generation tool immediately to create a brand-new standalone horizontal landscape image from scratch (size 1536x1024) composed for a 16:9 YouTube thumbnail frame using the strict PADRE MX 80/20 split layout:\n\n"
                 f"{p}\n\n"
-                "STRICT 80/20 LAYOUT & SPANISH TYPOGRAPHY SPECIFICATION:\n"
+                "STRICT 80/20 LAYOUT, SPANISH TYPOGRAPHY & UNIQUE RANDOMIZED CHARACTER SPECIFICATION:\n"
                 "- Left 78% of the canvas: Clean solid white background (#FFFFFF) with massive, ultra-bold uppercase sans-serif Spanish lines stacked clearly from top to bottom, plus a solid vivid Red rectangular banner across the bottom of the left zone:\n"
                 f"{six_lines_str}\n"
-                "- Right 22% of the canvas: Realistic photographic portrait of ONE older Mexican father (aged 65-75) with clear facial features, natural skin texture, and strong emotional expression, cleanly separated from the left white text zone.\n"
+                "- Right 22% of the canvas (MANDATORY UNIQUE CHARACTER & WARDROBE FOR THIS STORY — DO NOT DRAW A GENERIC MUSTACHE + PLAID SHIRT MAN):\n"
+                f"  + Distinct Face & Age: {prof['face']}\n"
+                f"  + Distinct Hair & Facial Hair: {prof['hair_beard']}\n"
+                f"  + Eyewear / Eyes: {prof['eyewear']}\n"
+                f"  + Distinct Wardrobe / Outfit: {prof['wardrobe']}\n"
+                f"  + Pose & Lighting: {prof['pose']}\n"
                 "Strict rule: Generate the image directly right now without asking any questions. Render only the Spanish text phrases themselves (never print 'Line 1..5' or 'Bottom Banner Kicker' labels)."
             )
             final_prompts.append(enforced)
@@ -10410,6 +10606,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     return
 
                 if force_regenerate:
+                    # Đổi ngẫu nhiên sang một nhân vật ông già & bộ trang phục hoàn toàn mới khi bấm Vẽ Lại Thumbnail
+                    self._get_unique_random_father_visual_profile(
+                        ma_id=ma_id, idea=idea, force_new_random=True
+                    )
                     for old_t in list(renders_dir.glob(f"{ma_id}_THUMBNAIL*.png")) + [
                         renders_dir / "THUMBNAIL.png",
                         renders_dir / "THUMBNAIL-NENXANH.png",

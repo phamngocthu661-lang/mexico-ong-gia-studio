@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.20",
-  "build_number": 136,
-  "released_at": "2026-11-09 18:50:25",
+  "version": "V1.0.21",
+  "build_number": 137,
+  "released_at": "2026-11-09 19:03:28",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.20: Sua triet de loi khong tao anh nen xanh THUMBNAIL-NENXANH.png tren may khach (khong can cv2, tu dong tach nen ngay khi mo du an)"
+  "changelog": "V1.0.21: Nang cap Skill tao anh nhan vat Thumbnail ngau nhien doc ban (da dang khuon mat ong gia, râu/toc/mu/kinh va 16 bo trang phuc khac nhau giua cac video)"
 }
