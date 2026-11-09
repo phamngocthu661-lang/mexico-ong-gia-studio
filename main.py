@@ -203,29 +203,36 @@ def start_server(port: int, root_dir: Path):
             pass
 
 
-def is_existing_studio_running(port=8900) -> bool:
+def is_local_server_responding(port=8900) -> bool:
+    """Kiểm tra nhanh Server nội bộ đã sẵn sàng nhận kết nối HTTP chưa (không bao giờ kill tiến trình)."""
     try:
         import urllib.request
         proxy_handler = urllib.request.ProxyHandler({})
         opener = urllib.request.build_opener(proxy_handler)
         with opener.open(f"http://127.0.0.1:{port}/api/status", timeout=1.5) as resp:
-            if resp.status != 200:
-                return False
+            return resp.status == 200
     except Exception:
         return False
 
-    # Server đang chạy trên cổng 8900 -> kiểm tra xem đã có API Cập nhật OTA (/api/update/status) chưa
+
+def is_existing_studio_running(port=8900) -> bool:
+    if not is_local_server_responding(port):
+        return False
+
+    # Server đang chạy sẵn từ phiên trước trên cổng 8900 -> kiểm tra nhanh xem có phản hồi bình thường không
     try:
         import urllib.request
         proxy_handler = urllib.request.ProxyHandler({})
         opener = urllib.request.build_opener(proxy_handler)
-        with opener.open(f"http://127.0.0.1:{port}/api/update/status", timeout=1.5) as resp_upd:
-            return resp_upd.status == 200
+        with opener.open(f"http://127.0.0.1:{port}/api/chatgpt/status", timeout=3.0) as resp_chk:
+            return resp_chk.status == 200
     except Exception:
-        # Nếu cổng 8900 đang chạy bản Server cũ chưa có API /api/update/status -> tắt tiến trình cũ trên cổng 8900 để bật bản mới!
+        # Chỉ tắt tiến trình cũ nếu ĐÓ KHÔNG PHẢI là chính tiến trình Python hiện tại (os.getpid())
+        my_pid = os.getpid()
         try:
             ps_kill = (
                 f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | "
+                f"Where-Object {{ $_.OwningProcess -ne {my_pid} }} | "
                 f"ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
             )
             subprocess.run(["powershell", "-NoProfile", "-Command", ps_kill], capture_output=True, timeout=3, creationflags=0x08000000)
@@ -518,7 +525,7 @@ def main():
         for _ in range(150):
             if SERVER_BOOT_ERROR:
                 break
-            if is_existing_studio_running(port) and is_frontend_html_ready(port):
+            if is_local_server_responding(port) and is_frontend_html_ready(port):
                 server_ready = True
                 break
             time.sleep(0.2)

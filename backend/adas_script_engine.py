@@ -24,6 +24,8 @@ from .chatgpt_web_client import (
     ACCOUNT_LIMIT_COOLDOWN_SEC,
     check_all_web_accounts_status,
     ensure_all_saved_chatgpt_accounts_open,
+    close_all_chatgpt_browsers,
+    CHATGPT_ACCOUNTS,
     MAX_THREADS_PER_ACCOUNT,
 )
 from .voice_service import split_japanese_script, strip_leaked_titles_and_metadata
@@ -3535,97 +3537,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
     def _create_matched_green_screen_from_thumbnail_bytes(self, thumb_1080p_bytes: bytes) -> bytes:
         """
-        Tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (1920x1080) theo đúng bố cục 80/20 chuẩn Skill 04:
-        - Nhân vật nằm gọn ở đúng 18%-22% bên phải màn hình (`x` từ 78% đến 100%, tức `x = 1498..1920`).
-        - Toàn bộ 78%-82% bên trái (`x = 0..1498`) và nền sau lưng nhân vật đổ màu xanh lá thuần khiết `#00FF00` (`RGB(0, 255, 0)`),
-          không chữ, không lem viền xanh.
+        Tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (1920x1080) từ `THUMBNAIL.png`:
+        - Tuyệt đối KHÔNG CÓ CHỮ (loại bỏ 100% khối chữ bên trái, băng rôn đỏ và giấy tờ văn bản).
+        - Tách sạch phông nền sau đầu/vai nhân vật bằng AI DeepLabV3_ResNet50.
+        - Phóng to chân dung nhân vật rõ nét, uy nghi ở bên phải khung hình trên nền xanh lá `#00FF00` (`RGB(0, 255, 0)`).
         """
-        from PIL import Image
-        import io
-        import numpy as np
-
-        base_im = Image.open(io.BytesIO(thumb_1080p_bytes)).convert("RGBA")
-        if base_im.size != (1920, 1080):
-            base_im = base_im.resize((1920, 1080), Image.Resampling.LANCZOS)
-        w, h = base_im.size
-
-        # Cắt vùng bên phải chứa nhân vật từ THUMBNAIL.png để tách nền
-        x_cut = int(round(w * 0.54))
-        right_crop = base_im.crop((x_cut, 0, w, h))
-
-        fg_rgba: Optional[Image.Image] = None
-        try:
-            from rembg import remove as rembg_remove
-            crop_buf = io.BytesIO()
-            right_crop.save(crop_buf, format="PNG")
-            cut_bytes = rembg_remove(crop_buf.getvalue())
-            fg_rgba = Image.open(io.BytesIO(cut_bytes)).convert("RGBA")
-            alpha_arr = np.asarray(fg_rgba, dtype=np.uint8)[:, :, 3]
-            if float(np.mean(alpha_arr > 128)) < 0.08:
-                fg_rgba = None
-        except Exception:
-            fg_rgba = None
-
-        if fg_rgba is None:
-            rc_arr = np.asarray(right_crop, dtype=np.uint8).copy()
-            r_c = rc_arr[:, :, 0].astype(np.int16)
-            g_c = rc_arr[:, :, 1].astype(np.int16)
-            b_c = rc_arr[:, :, 2].astype(np.int16)
-            is_white_bg = (r_c > 238) & (g_c > 238) & (b_c > 238) & (np.abs(r_c - g_c) < 10) & (np.abs(g_c - b_c) < 10)
-            col_weights = np.linspace(1.0, 0.0, right_crop.size[0])[None, :]
-            alpha_channel = np.where(is_white_bg & (col_weights > 0.35), 0, 255).astype(np.uint8)
-            rc_arr[:, :, 3] = alpha_channel
-            fg_rgba = Image.fromarray(rc_arr, mode="RGBA")
-
-        fg_arr = np.asarray(fg_rgba, dtype=np.uint8).copy()
-        alpha = fg_arr[:, :, 3]
-        ys, xs = np.where(alpha >= 140)
-        if len(xs) >= 50 and len(ys) >= 50:
-            x1, x2 = int(xs.min()), int(xs.max())
-            y1, y2 = int(ys.min()), int(ys.max())
-            char_crop = Image.fromarray(fg_arr, mode="RGBA").crop((x1, y1, x2 + 1, y2 + 1))
-        else:
-            char_crop = Image.fromarray(fg_arr, mode="RGBA")
-
-        # Đặt nhân vật vào đúng 18%-22% bên phải màn hình (x = 1498..1920, rộng ~20.5% chiều ngang)
-        cw, ch = char_crop.size
-        target_char_w = int(round(w * 0.205))
-        target_char_h = int(round(h * 0.92))
-        scale = min(target_char_w / max(1, cw), target_char_h / max(1, ch))
-        new_w = max(346, min(422, int(round(cw * scale))))  # 18% (346px) .. 22% (422px)
-        new_h = max(300, min(h, int(round(ch * scale))))
-        char_resized = char_crop.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-        cr_arr = np.asarray(char_resized, dtype=np.uint8).copy()
-        r_ch = cr_arr[:, :, 0].astype(np.int16)
-        g_ch = cr_arr[:, :, 1].astype(np.int16)
-        b_ch = cr_arr[:, :, 2].astype(np.int16)
-        max_rb = np.maximum(r_ch, b_ch)
-        # Khử viền xanh / trắng quanh nhân vật
-        cr_arr[:, :, 1] = np.where(g_ch > max_rb, max_rb + ((g_ch - max_rb) // 5), g_ch).astype(np.uint8)
-        hard_mask = cr_arr[:, :, 3] >= 160
-
-        canvas_arr = np.zeros((h, w, 3), dtype=np.uint8)
-        canvas_arr[:, :, 1] = 255  # 100% nền xanh lá thuần khiết #00FF00 (RGB 0, 255, 0)
-
-        paste_x = w - new_w  # Luôn nằm trong 18%-22% bên phải (x >= 1498)
-        paste_y = h - new_h
-        roi = canvas_arr[paste_y : paste_y + new_h, paste_x : paste_x + new_w]
-        for c_i in range(3):
-            roi[:, :, c_i] = np.where(hard_mask, cr_arr[:, :, c_i], roi[:, :, c_i])
-        canvas_arr[paste_y : paste_y + new_h, paste_x : paste_x + new_w] = roi
-
-        out_rgb = Image.fromarray(canvas_arr, mode="RGB")
-        out_buf = io.BytesIO()
-        out_rgb.save(out_buf, format="PNG", optimize=True)
-        return out_buf.getvalue()
+        from backend.visual_cue_director import extract_clean_large_green_character_bytes
+        return extract_clean_large_green_character_bytes(thumb_1080p_bytes, part_index=1)
 
     def _validate_thumbnail_pair_bytes(self, thumb_bytes: bytes, green_bytes: bytes) -> Dict[str, Any]:
         """
-        Kiểm định cặp ảnh `THUMBNAIL.png` và `THUMBNAIL-NENXANH.png` theo chuẩn Skill 04 (Bố cục 80/20):
+        Kiểm định cặp ảnh `THUMBNAIL.png` và `THUMBNAIL-NENXANH.png`:
         - Cùng độ phân giải 16:9 (`1920x1080`).
-        - Toàn bộ 78% bên trái của `THUMBNAIL-NENXANH.png` phải là màu xanh `#00FF00` tinh khiết (`left_exact_key_ratio >= 0.96`).
-        - Vùng 18%-22% bên phải chứa nhân vật người cha Mexico rõ nét (`right_character_ratio >= 0.12`).
+        - Toàn bộ vùng bên trái (`x < 57%`) của `THUMBNAIL-NENXANH.png` phải là màu xanh `#00FF00` tinh khiết (`left_exact_key_ratio >= 0.98`, không dính chữ).
+        - Vùng bên phải chứa nhân vật người cha Mexico kích thước lớn, rõ nét (`right_character_ratio >= 0.35`).
         """
         try:
             from PIL import Image
@@ -3638,19 +3563,19 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 return {"passed": False, "reason": "size_mismatch"}
             w, h = im_g.size
             arr_g = np.asarray(im_g, dtype=np.uint8)
-            left_x = int(round(w * 0.78))
+            left_x = int(round(w * 0.57))
             left_zone = arr_g[:, :left_x, :]
             exact_green = (left_zone[:, :, 0] == 0) & (left_zone[:, :, 1] == 255) & (left_zone[:, :, 2] == 0)
             left_exact_ratio = float(np.mean(exact_green))
 
-            right_x = int(round(w * 0.78))
+            right_x = int(round(w * 0.64))
             right_zone = arr_g[:, right_x:, :]
             non_green = ~(
                 (right_zone[:, :, 1].astype(np.int16) - np.maximum(right_zone[:, :, 0], right_zone[:, :, 2]).astype(np.int16) > 80)
                 & (right_zone[:, :, 1] > 170)
             )
             right_char_ratio = float(np.mean(non_green))
-            passed = (left_exact_ratio >= 0.96) and (right_char_ratio >= 0.12)
+            passed = (left_exact_ratio >= 0.98) and (right_char_ratio >= 0.35)
             return {
                 "passed": passed,
                 "size": f"{w}x{h}",
@@ -3974,7 +3899,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             step6_file.write_text(step6_out, encoding="utf-8")
 
         try:
-            ensure_all_saved_chatgpt_accounts_open(run_hidden=False)
+            ensure_all_saved_chatgpt_accounts_open(run_hidden=False, open_browsers_now=False)
         except Exception:
             pass
 
@@ -5435,6 +5360,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 check_all_web_accounts_status,
                 ensure_all_saved_chatgpt_accounts_open,
                 sweep_completed_and_idle_tabs_across_all_accounts,
+                close_all_chatgpt_browsers,
+                CHATGPT_ACCOUNTS,
                 MAX_THREADS_PER_ACCOUNT,
             )
 
@@ -5504,11 +5431,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 provider_norm = "chatgpt_web"
                 provider_tag = "CHATGPT WEB (MEDIUM)"
                 if need_script_ids and not self.should_stop:
-                    if not preferred_acc_id:
-                        ensure_all_saved_chatgpt_accounts_open(run_hidden=False)
+                    saved_logged_accs = ensure_all_saved_chatgpt_accounts_open(run_hidden=False, open_browsers_now=False)
                     st_all = check_all_web_accounts_status(force_refresh=True).get("accounts", {})
-                    logged_accs = [aid for aid, a in st_all.items() if a.get("logged_in")]
-                    if preferred_acc_id and preferred_acc_id in st_all:
+                    logged_accs = [
+                        aid for aid in CHATGPT_ACCOUNTS
+                        if st_all.get(aid, {}).get("logged_in") or st_all.get(aid, {}).get("saved_logged_in") or aid in saved_logged_accs
+                    ]
+                    if preferred_acc_id and preferred_acc_id in st_all and (
+                        preferred_acc_id in logged_accs or st_all.get(preferred_acc_id, {}).get("browser_open")
+                    ):
                         active_accs = [preferred_acc_id]
                         max_workers = min(len(need_script_ids), MAX_THREADS_PER_ACCOUNT)
                     else:
@@ -5687,9 +5618,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                             if not is_account_in_cooldown(aid)[0] and aid not in failed_accs_for_mid
                                         ]
                                         if not free_accs_now:
-                                            # Mở rộng sang toàn bộ tài khoản chưa bị cooldown 30p
+                                            # Mở rộng sang toàn bộ tài khoản đã đăng nhập chưa bị cooldown 30p
                                             free_accs_now = [
-                                                aid for aid in ("acc_1", "acc_2", "acc_3")
+                                                aid for aid in (logged_accs or CHATGPT_ACCOUNTS)
                                                 if not is_account_in_cooldown(aid)[0] and aid not in failed_accs_for_mid
                                             ]
                                         if free_accs_now:
@@ -5781,7 +5712,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
                     # Dọn dẹp tab Chrome sau khi kết thúc toàn bộ luồng AI để giải phóng RAM cho Voice & Render Video
                     try:
-                        sweep_completed_and_idle_tabs_across_all_accounts()
+                        sweep_completed_and_idle_tabs_across_all_accounts(close_idle_browsers=False)
                     except Exception:
                         pass
 
@@ -5791,7 +5722,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 if not self.should_stop:
                     try:
                         self.ensure_all_projects_have_thumbnails_sync(target_ids=clean_ids)
-                        sweep_completed_and_idle_tabs_across_all_accounts()
+                        close_all_chatgpt_browsers(
+                            only_if_idle=True,
+                            reason="Hoàn tất phiên viết kịch bản & vẽ Thumbnail — Tự động tắt Chrome tiết kiệm RAM",
+                        )
                     except Exception as e_ens_th:
                         log_warn("SCRIPT", f"Cảnh báo khi quét tạo bù Thumbnail cuối phiên: {e_ens_th}")
 
@@ -5816,18 +5750,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         current_step="✅ Đã viết xong toàn bộ Kịch bản — Hàng đợi Render MP4 đang hoàn tất",
                         progress=100.0,
                         message=(
-                            f"🎉 Đã hoàn tất viết Kịch bản và đẩy toàn bộ vào Hàng Đợi Voice & Render MP4!"
+                            f"🎉 Đã hoàn tất viết Kịch bản, tự động tắt Chrome ChatGPT và đẩy toàn bộ vào Hàng Đợi Voice & Render MP4!"
                         ),
                     )
                 elif not auto_produce_video and not self.should_stop:
                     self._sync_projects_disk_state()
                     self._emit(
                         status="completed",
-                        current_step="✅ Hoàn tất Kịch Bản + SEO + Thumbnail (Không Render Video)",
+                        current_step="✅ Hoàn tất Kịch Bản + SEO + Thumbnail (Đã tắt Chrome)",
                         progress=100.0,
                         message=(
                             f"🎉 [CHẾ ĐỘ CHỈ VIẾT KỊCH BẢN + SEO + THUMBNAIL] Đã hoàn tất {len(clean_ids)} dự án "
-                            f"tại thư mục projects/ (Không tạo Voice & Không Render MP4 — Sẵn sàng Render hoặc Copy sang máy khác)!"
+                            f"và tự động tắt Chrome ChatGPT tiết kiệm RAM!"
                         ),
                     )
             except Exception as e:
@@ -5835,6 +5769,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             finally:
                 with self.lock:
                     self.is_running = False
+                try:
+                    close_all_chatgpt_browsers(
+                        only_if_idle=True,
+                        reason="Kết thúc tiến trình ChatGPT",
+                    )
+                except Exception:
+                    pass
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
@@ -5843,7 +5784,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
     def stop(self):
         with self.lock:
             self.should_stop = True
-        self._emit(status="stopped", message="🛑 Đã gửi tín hiệu dừng dây chuyền viết kịch bản.")
+        threading.Thread(
+            target=lambda: close_all_chatgpt_browsers(only_if_idle=False, reason="Người dùng dừng dây chuyền"),
+            daemon=True,
+        ).start()
+        self._emit(status="stopped", message="🛑 Đã gửi tín hiệu dừng dây chuyền viết kịch bản và đóng trình duyệt Chrome.")
 
     def get_project_outputs(self, ma_id: str) -> Dict[str, Any]:
         """Đọc toàn bộ kết quả đã lưu của 1 mã dự án (Prompt Step 2, Kết quả Step 2, SEO Pack, Kịch bản, Thumbnail, Video MP4)."""
@@ -5879,33 +5824,176 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             target_open_dir = proj_dir
 
         thumb_files: List[Path] = []
-        for scan_d in (renders_dir, final_proj_dir / "renders", proj_dir, final_proj_dir):
+        main_thumb_path: Optional[Path] = None
+        green_thumb_path: Optional[Path] = None
+
+        for scan_d in (proj_dir, renders_dir, final_proj_dir, final_proj_dir / "renders"):
             if not scan_d.exists():
                 continue
-            for cand_p in (
-                scan_d / f"{ma_id}_THUMBNAIL_1.png",
-                scan_d / "THUMBNAIL.png",
-                scan_d / "THUMBNAIL-NENXANH.png",
-                scan_d / f"{ma_id}_THUMBNAIL_NENXANH.png",
-            ):
-                if cand_p.exists() and cand_p not in thumb_files:
-                    thumb_files.append(cand_p)
-            if thumb_files:
-                break
+            if main_thumb_path is None:
+                for cand_m in (scan_d / "THUMBNAIL.png", scan_d / f"{ma_id}_THUMBNAIL_1.png"):
+                    if cand_m.exists() and cand_m.stat().st_size > 2_000:
+                        main_thumb_path = cand_m
+                        break
+            if green_thumb_path is None:
+                for cand_g in (
+                    scan_d / "THUMBNAIL-NENXANH.png",
+                    scan_d / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                    scan_d / "script_green_images" / "green_part_01.png",
+                ):
+                    if cand_g.exists() and cand_g.stat().st_size > 2_000:
+                        green_thumb_path = cand_g
+                        break
+
+        for p_cand in (main_thumb_path, green_thumb_path):
+            if p_cand is not None and p_cand not in thumb_files:
+                thumb_files.append(p_cand)
+
+        def _encode_thumb_card(img_p: Optional[Path], kind: str, title: str, fallback_name: str) -> Dict[str, Any]:
+            import base64
+            import io
+            if img_p is None or not img_p.exists():
+                return {
+                    "kind": kind,
+                    "title": title,
+                    "filename": fallback_name,
+                    "path": "",
+                    "data_url": "",
+                    "meta": "Chưa có ảnh",
+                    "exists": False,
+                }
+            try:
+                raw_b = img_p.read_bytes()
+                b64_str = base64.b64encode(raw_b).decode("ascii")
+                size_kb = len(raw_b) / 1024.0
+                size_str = f"{size_kb / 1024.0:.2f} MB" if size_kb >= 1024 else f"{size_kb:.0f} KB"
+                dim_str = "1920×1080"
+                try:
+                    from PIL import Image
+                    with Image.open(io.BytesIO(raw_b)) as im:
+                        dim_str = f"{im.width}×{im.height}"
+                except Exception:
+                    pass
+                return {
+                    "kind": kind,
+                    "title": title,
+                    "filename": img_p.name,
+                    "path": str(img_p),
+                    "data_url": f"data:image/png;base64,{b64_str}",
+                    "meta": f"{dim_str} • {size_str}",
+                    "exists": True,
+                }
+            except Exception:
+                return {
+                    "kind": kind,
+                    "title": title,
+                    "filename": img_p.name,
+                    "path": str(img_p),
+                    "data_url": "",
+                    "meta": "Lỗi đọc ảnh",
+                    "exists": False,
+                }
+
+        main_card = _encode_thumb_card(
+            main_thumb_path,
+            "main",
+            "1. Ảnh Thumbnail Chính (80/20 Có Chữ)",
+            "THUMBNAIL.png",
+        )
+        green_card = _encode_thumb_card(
+            green_thumb_path,
+            "green",
+            "2. Ảnh Nhân Vật Nền Xanh (#00FF00 Không Chữ)",
+            "THUMBNAIL-NENXANH.png",
+        )
+
+        part_a_txt = _read_safe("part_a.txt")
+        part_b_txt = _read_safe("part_b.txt")
+        part_c_txt = _read_safe("part_c.txt")
+        script_clean_txt = (
+            _read_safe("PMX_FULL_SCRIPT.txt")
+            or _read_safe("script_clean.txt")
+            or _read_safe(f"{ma_id}_KICH_BAN.txt")
+            or _read_safe("script.txt")
+        )
+        if not script_clean_txt and any([part_a_txt, part_b_txt, part_c_txt]):
+            script_clean_txt = "\n\n".join(x.strip() for x in (part_a_txt, part_b_txt, part_c_txt) if x and x.strip())
+
+        step2_out = _read_safe("step2_title_thumbnail.txt")
+        step3_out = _read_safe("step3_architecture.txt")
+        outline_combined_parts = []
+        if step2_out.strip():
+            outline_combined_parts.append(
+                "================================================================================\n"
+                "🔥 SKILL 01 — 5 TIÊU ĐỀ ES-MX, CHẤM ĐIỂM CTR & LOCKED_TITLE (NEW CHAT #1)\n"
+                "================================================================================\n"
+                + step2_out.strip()
+            )
+        if step3_out.strip():
+            outline_combined_parts.append(
+                "================================================================================\n"
+                "📐 SKILL 02 — GIÀN Ý CHI TIẾT 7 PHẦN ([PART 1] -> [PART 7]) & CANON CONTINUITY\n"
+                "================================================================================\n"
+                + step3_out.strip()
+            )
+        outline_combined = "\n\n".join(outline_combined_parts)
+
+        step5_out = _read_safe("step5_audit_report.txt")
+        qa_r1 = _read_safe("PMX_QA_ROUND1_LOGIC.md")
+        qa_r2 = _read_safe("PMX_QA_ROUND2_QUALITY.md")
+        qa_final = _read_safe("PMX_QA_FINAL.md")
+        if step5_out.strip():
+            audit_combined = step5_out.strip()
+        else:
+            audit_blocks = []
+            if qa_r1.strip():
+                audit_blocks.append("=== VÒNG 1: KIỂM ĐỊNH LOGIC, TUỔI TÁC, PHÁP LÝ MEXICO & CHÍNH TẢ ES-MX ===\n" + qa_r1.strip())
+            if qa_r2.strip():
+                audit_blocks.append("=== VÒNG 2: KIỂM ĐỊNH CHẤT LƯỢNG VĂN HỌC & NHỊP ĐỌC TTS ===\n" + qa_r2.strip())
+            if qa_final.strip() and qa_final.strip() != qa_r2.strip():
+                audit_blocks.append("=== BÁO CÁO QA TỔNG HỢP ===\n" + qa_final.strip())
+            audit_combined = "\n\n".join(audit_blocks)
+
+        seo_pack_txt = (
+            _read_safe("00_TIEU_DE_VA_SEO_YOUTUBE.txt")
+            or _read_safe("PMX_SEO_PACK.md")
+            or _read_safe("seo_publish_pack.txt")
+            or _read_safe(f"{ma_id}_SEO.txt")
+            or step2_out
+        )
+
+        locked_title_str = (
+            idea.get("locked_title")
+            or (extract_locked_title_from_step2(step2_out, fallback_title="") if step2_out else "")
+            or idea.get("draft_title_ja")
+            or f"Dự án Mexico #{ma_id}"
+        )
+        pure_chars = len(re.sub(r"\s+", "", script_clean_txt or ""))
+        word_cnt = len((script_clean_txt or "").split())
 
         return {
             "ma_id": ma_id,
             "idea": idea,
+            "locked_title": locked_title_str,
+            "pure_char_count": pure_chars,
+            "word_count": word_cnt,
             "project_dir": str(target_open_dir),
             "raw_project_dir": str(proj_dir),
             "video_mp4_path": str(mp4_path) if mp4_path else "",
             "step2_prompt": step2_prompt,
-            "step2_output": _read_safe("step2_title_thumbnail.txt"),
-            "step3_output": _read_safe("step3_architecture.txt"),
-            "script_clean": _read_safe("PMX_FULL_SCRIPT.txt") or _read_safe("script_clean.txt") or _read_safe(f"{ma_id}_KICH_BAN.txt"),
-            "step5_output": _read_safe("step5_audit_report.txt"),
-            "seo_pack": _read_safe("00_TIEU_DE_VA_SEO_YOUTUBE.txt") or _read_safe("PMX_SEO_PACK.md") or _read_safe("seo_publish_pack.txt") or _read_safe(f"{ma_id}_SEO.txt"),
+            "step2_output": step2_out,
+            "step3_output": step3_out,
+            "outline": outline_combined,
+            "part_a": part_a_txt,
+            "part_b": part_b_txt,
+            "part_c": part_c_txt,
+            "script_clean": script_clean_txt,
+            "full_script": script_clean_txt,
+            "step5_output": audit_combined,
+            "audit_report": audit_combined,
+            "seo_pack": seo_pack_txt,
             "thumbnails": [str(p) for p in thumb_files],
+            "thumbnail_cards": [main_card, green_card],
         }
 
     def start_generate_thumbnails_only_async(

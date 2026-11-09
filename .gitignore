@@ -14,7 +14,10 @@ ADMIN_KEYGEN/
 BROWSER_PROFILE/
 BROWSER_PROFILE_2/
 BROWSER_PROFILE_3/
+BROWSER_PROFILE_4/
+BROWSER_PROFILE_5/
 GEMINI_PROFILE_1/
+config/
 _ota_update_tmp/
 app/
 agent_reach/
@@ -28,6 +31,10 @@ license.json
 app/license.json
 settings.json
 app/settings.json
+stook_config.json
+app/stook_config.json
+stock_inventory.json
+app/stock_inventory.json
 used_stocks_history.json
 app/used_stocks_history.json
 used_stock_links.json
@@ -40,6 +47,9 @@ config.json
 app/config.json
 storage_paths.json
 app/storage_paths.json
+TIEN_DO_CODE.md
+app/TIEN_DO_CODE.md
+BAO_CAO_CHECK_VA_DON_TOAN_BO.txt
 
 # Bytecode & môi trường ảo
 __pycache__/

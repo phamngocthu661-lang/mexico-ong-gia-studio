@@ -123,6 +123,10 @@ GREEN_ICON_CATALOG: Dict[str, Dict[str, Any]] = {
     },
 }
 
+ICON_DEFINITIONS: List[Dict[str, Any]] = [
+    {"id": _k, **_v} for _k, _v in GREEN_ICON_CATALOG.items()
+]
+
 
 def _generate_sfx_wav_file(sfx_path: Path, category: str) -> None:
     """
@@ -257,6 +261,11 @@ def _draw_icon_symbol(draw, category: str, cx: int, cy: int, radius: int) -> Non
         draw.ellipse([cx - 4, cy + 36, cx + 4, cy + 44], fill=(245, 196, 65))
 
 
+import threading
+
+_GREEN_ICONS_LOCK = threading.Lock()
+
+
 def _generate_green_icon_mp4(mp4_path: Path, category: str) -> None:
     """
     Tạo video Icon Green (`assets/green_icons/icon_green_*.mp4`) dài đúng 4.0 giây
@@ -269,7 +278,7 @@ def _generate_green_icon_mp4(mp4_path: Path, category: str) -> None:
     dur_sec = 4.0
     total_frames = int(fps * dur_sec)
     size = 240
-    tmp_dir = mp4_path.parent / f"_tmp_{category}"
+    tmp_dir = mp4_path.parent / f"_tmp_{category}_{os.getpid()}_{threading.get_ident()}"
     shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -319,49 +328,272 @@ def ensure_green_icons_and_sfx_assets(root_dir: Optional[Path] = None) -> Dict[s
             root_dir = root_dir.parent
     root_dir = Path(root_dir)
 
-    icons_dir = root_dir / "assets" / "green_icons"
-    sfx_dir = root_dir / "assets" / "sfx"
-    icons_dir.mkdir(parents=True, exist_ok=True)
-    sfx_dir.mkdir(parents=True, exist_ok=True)
+    with _GREEN_ICONS_LOCK:
+        icons_dir = root_dir / "assets" / "green_icons"
+        sfx_dir = root_dir / "assets" / "sfx"
+        icons_dir.mkdir(parents=True, exist_ok=True)
+        sfx_dir.mkdir(parents=True, exist_ok=True)
 
-    resolved: Dict[str, Dict[str, str]] = {}
-    for cat, meta in GREEN_ICON_CATALOG.items():
-        v_path = icons_dir / meta["video_name"]
-        a_path = sfx_dir / meta["sfx_name"]
-        if not v_path.exists() or v_path.stat().st_size < 2_000:
-            try:
-                _generate_green_icon_mp4(v_path, cat)
-            except Exception as e:
-                print(f"[VisualCueDirector] Lưu ý khi tạo {v_path.name}: {e}")
-        if not a_path.exists() or a_path.stat().st_size < 2_000:
-            try:
-                _generate_sfx_wav_file(a_path, cat)
-            except Exception as e:
-                print(f"[VisualCueDirector] Lưu ý khi tạo {a_path.name}: {e}")
+        resolved: Dict[str, Dict[str, str]] = {}
+        for cat, meta in GREEN_ICON_CATALOG.items():
+            v_path = icons_dir / meta["video_name"]
+            a_path = sfx_dir / meta["sfx_name"]
+            if not v_path.exists() or v_path.stat().st_size < 2_000:
+                try:
+                    _generate_green_icon_mp4(v_path, cat)
+                except Exception as e:
+                    print(f"[VisualCueDirector] Lưu ý khi tạo {v_path.name}: {e}")
+            if not a_path.exists() or a_path.stat().st_size < 2_000:
+                try:
+                    _generate_sfx_wav_file(a_path, cat)
+                except Exception as e:
+                    print(f"[VisualCueDirector] Lưu ý khi tạo {a_path.name}: {e}")
 
-        # Đồng bộ sang app/assets nếu có thư mục app/
-        app_root = root_dir / "app"
-        if app_root.exists() and app_root.is_dir():
-            try:
-                app_ic = app_root / "assets" / "green_icons" / meta["video_name"]
-                app_sf = app_root / "assets" / "sfx" / meta["sfx_name"]
-                app_ic.parent.mkdir(parents=True, exist_ok=True)
-                app_sf.parent.mkdir(parents=True, exist_ok=True)
-                if v_path.exists() and (not app_ic.exists() or app_ic.stat().st_size != v_path.stat().st_size):
-                    shutil.copy2(v_path, app_ic)
-                if a_path.exists() and (not app_sf.exists() or app_sf.stat().st_size != a_path.stat().st_size):
-                    shutil.copy2(a_path, app_sf)
-            except Exception:
-                pass
+            # Đồng bộ sang app/assets nếu có thư mục app/
+            app_root = root_dir / "app"
+            if app_root.exists() and app_root.is_dir():
+                try:
+                    app_ic = app_root / "assets" / "green_icons" / meta["video_name"]
+                    app_sf = app_root / "assets" / "sfx" / meta["sfx_name"]
+                    app_ic.parent.mkdir(parents=True, exist_ok=True)
+                    app_sf.parent.mkdir(parents=True, exist_ok=True)
+                    if v_path.exists() and (not app_ic.exists() or app_ic.stat().st_size != v_path.stat().st_size):
+                        shutil.copy2(v_path, app_ic)
+                    if a_path.exists() and (not app_sf.exists() or app_sf.stat().st_size != a_path.stat().st_size):
+                        shutil.copy2(a_path, app_sf)
+                except Exception:
+                    pass
 
-        resolved[cat] = {
-            "category": cat,
-            "label": meta["label"],
-            "video_path": str(v_path),
-            "sfx_path": str(a_path),
-            "keywords": meta["keywords"],
-        }
-    return resolved
+            resolved[cat] = {
+                "category": cat,
+                "label": meta["label"],
+                "video_path": str(v_path),
+                "sfx_path": str(a_path),
+                "keywords": meta["keywords"],
+            }
+        return resolved
+
+
+_DEEPLAB_CACHE: Dict[str, Any] = {"model": None, "preprocess": None, "device": "cpu"}
+
+
+def _get_person_segmentation_model():
+    if _DEEPLAB_CACHE["model"] is None:
+        import torch
+        from torchvision.models.segmentation import deeplabv3_resnet50, DeepLabV3_ResNet50_Weights
+
+        weights = DeepLabV3_ResNet50_Weights.DEFAULT
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = deeplabv3_resnet50(weights=weights).eval().to(device)
+        _DEEPLAB_CACHE["model"] = model
+        _DEEPLAB_CACHE["preprocess"] = weights.transforms()
+        _DEEPLAB_CACHE["device"] = device
+    return _DEEPLAB_CACHE["model"], _DEEPLAB_CACHE["preprocess"], _DEEPLAB_CACHE["device"]
+
+
+def extract_clean_large_green_character_bytes(
+    thumb_bytes: bytes,
+    part_index: int = 1,
+) -> bytes:
+    """
+    Tách chân dung người cha Mexico từ ảnh THUMBNAIL.png sang ảnh nền xanh #00FF00 (1920x1080):
+    1. Loại bỏ 100% chữ tiêu đề, băng rôn đỏ bên trái và giấy tờ có chữ ở phía dưới.
+    2. Dùng AI DeepLabV3_ResNet50 (Person Segmentation) tách sạch phông nền sau đầu/vai.
+    3. Phóng to nhân vật rõ nét, uy nghi ở góc phải màn hình (rộng ~580..740px, cao ~820..1055px) trên nền #00FF00.
+    """
+    import io
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageEnhance
+
+    im = Image.open(io.BytesIO(thumb_bytes)).convert("RGB")
+    if im.size != (1920, 1080):
+        im = im.resize((1920, 1080), Image.Resampling.LANCZOS)
+    w, h = im.size
+    arr = np.asarray(im, dtype=np.uint8)
+
+    # Kiểm tra xem ảnh đầu vào đã là ảnh nền xanh #00FF00 sạch chữ chưa
+    left_test = arr[:, : int(w * 0.58), :]
+    is_already_clean_green = float(
+        np.mean((left_test[:, :, 0] == 0) & (left_test[:, :, 1] == 255) & (left_test[:, :, 2] == 0))
+    ) >= 0.97
+
+    if is_already_clean_green:
+        # Nếu đã là ảnh nền xanh #00FF00 nhưng cần kiểm tra xem có bị dính chữ ở vùng x=1000..1410 không
+        mid_zone = arr[:, int(w * 0.52) : int(w * 0.72), :]
+        non_green_mid = ~(
+            (mid_zone[:, :, 0] == 0) & (mid_zone[:, :, 1] == 255) & (mid_zone[:, :, 2] == 0)
+        )
+        # Nếu không bị dính chữ và chỉ cần chỉnh màu theo Part
+        if float(np.mean(non_green_mid)) < 0.35 and int(part_index) == 1:
+            return thumb_bytes
+
+    # 1. Phát hiện chính xác mép phải của băng rôn đỏ & khối chữ bên trái
+    bottom_strip = arr[int(h * 0.75) :, : int(w * 0.84), :]
+    is_red = (
+        (bottom_strip[:, :, 0].astype(int) > 155)
+        & (bottom_strip[:, :, 1].astype(int) < 75)
+        & (bottom_strip[:, :, 2].astype(int) < 75)
+        & ((bottom_strip[:, :, 0].astype(int) - bottom_strip[:, :, 1].astype(int)) > 90)
+    )
+    red_cols = np.where(np.mean(is_red, axis=0) > 0.12)[0]
+    x_text_end = int(red_cols.max()) + 6 if len(red_cols) > 0 else int(w * 0.72)
+
+    x_crop_start = max(int(w * 0.68), x_text_end)
+    while x_crop_start < int(w * 0.80):
+        col = arr[:, x_crop_start, :]
+        if np.mean((col[:, 0] > 230) & (col[:, 1] > 230) & (col[:, 2] > 230)) > 0.72:
+            x_crop_start += 1
+        else:
+            break
+
+    crop_arr = arr[:, x_crop_start:, :].copy()
+    ch_raw, cw_raw, _ = crop_arr.shape
+
+    # 2. Chạy AI DeepLabV3_ResNet50 (class 15 = person) trên nửa phải ảnh để lấy ngữ cảnh đầy đủ
+    probs_crop = None
+    try:
+        import torch
+        model, preprocess, device = _get_person_segmentation_model()
+        x_wide = int(w * 0.50)
+        wide_im = im.crop((x_wide, 0, w, h))
+        inp = preprocess(wide_im).unsqueeze(0).to(device)
+        with torch.no_grad():
+            out = model(inp)["out"][0]
+        probs_wide = torch.softmax(out, dim=0)[15].detach().cpu().numpy()
+        probs_wide_full = cv2.resize(probs_wide, wide_im.size, interpolation=cv2.INTER_CUBIC)
+        probs_crop = probs_wide_full[:, (x_crop_start - x_wide) :]
+    except Exception as e:
+        print(f"[VisualCueDirector] Lưu ý khi chạy DeepLabV3 tách nền nhân vật: {e}")
+        probs_crop = None
+
+    if probs_crop is not None:
+        mask = (probs_crop >= 0.42).astype(np.uint8) * 255
+    else:
+        mask = np.full((ch_raw, cw_raw), 255, dtype=np.uint8)
+
+    # Xóa nền trắng/sáng kết nối với viền trên hoặc viền trái
+    is_white = (
+        (crop_arr[:, :, 0] > 232)
+        & (crop_arr[:, :, 1] > 232)
+        & (crop_arr[:, :, 2] > 232)
+        & (np.abs(crop_arr[:, :, 0].astype(int) - crop_arr[:, :, 1].astype(int)) < 14)
+    ).astype(np.uint8)
+    num_w, lbl_w, stats_w, _ = cv2.connectedComponentsWithStats(is_white, connectivity=8)
+    for lbl_i in range(1, num_w):
+        top_y = stats_w[lbl_i, cv2.CC_STAT_TOP]
+        left_x = stats_w[lbl_i, cv2.CC_STAT_LEFT]
+        if top_y <= 5 or (left_x <= 5 and top_y < ch_raw * 0.65):
+            mask[lbl_w == lbl_i] = 0
+
+    # Xác định hàng vai (y_shoulder)
+    row_fg_counts = np.sum(mask > 127, axis=1)
+    shoulder_rows = np.where((np.arange(ch_raw) >= int(ch_raw * 0.35)) & (row_fg_counts >= int(cw_raw * 0.80)))[0]
+    y_shoulder = int(shoulder_rows[0]) if len(shoulder_rows) > 0 else int(ch_raw * 0.50)
+
+    # Nếu nửa dưới có cầm giấy tờ văn bản (xác suất person giảm thấp), cắt ngay trên mép giấy để không dính chữ
+    y_cut_bottom = int(round(ch_raw * 0.86))
+    if probs_crop is not None:
+        lower_probs = probs_crop[y_shoulder + 30 :, :]
+        low_prob_rows = np.where(np.mean(lower_probs > 0.35, axis=1) < 0.45)[0]
+        if len(low_prob_rows) > 40:
+            y_cut_bottom = min(ch_raw, y_shoulder + 30 + int(low_prob_rows[0]) - 45)
+            y_cut_bottom = max(int(ch_raw * 0.46), y_cut_bottom)
+
+    # Lấp đầy phần thân áo từ đường vai xuống y_cut_bottom
+    for x in range(cw_raw):
+        fg_ys_shoulder = np.where(mask[max(0, y_shoulder - 30) : y_cut_bottom, x] > 127)[0]
+        if len(fg_ys_shoulder) > 0:
+            y_st = max(0, y_shoulder - 30) + int(fg_ys_shoulder[0])
+            mask[y_st:y_cut_bottom, x] = 255
+
+    # Xóa lại nền trắng sát biên trái nếu có sau khi lấp đầy
+    for lbl_i in range(1, num_w):
+        top_y = stats_w[lbl_i, cv2.CC_STAT_TOP]
+        left_x = stats_w[lbl_i, cv2.CC_STAT_LEFT]
+        if top_y <= 5 or (left_x <= 5 and top_y < ch_raw * 0.68):
+            mask[lbl_w == lbl_i] = 0
+
+    crop_arr = crop_arr[:y_cut_bottom, :, :]
+    mask = mask[:y_cut_bottom, :]
+
+    # Giữ khối nhân vật chính lớn nhất
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 127).astype(np.uint8), connectivity=8)
+    clean_mask = np.zeros_like(mask)
+    if num_labels > 1:
+        largest_lbl = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        clean_mask[labels == largest_lbl] = 255
+    else:
+        clean_mask = mask
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    clean_mask = cv2.morphologyEx(clean_mask, cv2.MORPH_CLOSE, kernel)
+    clean_mask = cv2.morphologyEx(clean_mask, cv2.MORPH_OPEN, kernel)
+    clean_mask = cv2.GaussianBlur(clean_mask, (5, 5), 0)
+
+    ys, xs = np.where(clean_mask >= 140)
+    if len(xs) >= 40 and len(ys) >= 40:
+        x1, x2 = int(xs.min()), int(xs.max())
+        y1, y2 = int(ys.min()), int(ys.max())
+        char_rgb = crop_arr[y1 : y2 + 1, x1 : x2 + 1]
+        char_a = clean_mask[y1 : y2 + 1, x1 : x2 + 1]
+    else:
+        char_rgb = crop_arr
+        char_a = clean_mask
+
+    # Áp dụng biến thiên ánh sáng cảm xúc nhẹ theo Part 1..7
+    part_grades = {
+        1: (1.00, 1.00, 1.00),
+        2: (0.96, 1.06, 0.92),
+        3: (0.94, 1.10, 0.88),
+        4: (1.02, 1.08, 0.96),
+        5: (1.04, 1.05, 1.04),
+        6: (1.03, 1.12, 1.02),
+        7: (1.05, 1.02, 1.08),
+    }
+    br_f, ct_f, sat_f = part_grades.get(int(part_index), (1.0, 1.0, 1.0))
+    if (br_f, ct_f, sat_f) != (1.0, 1.0, 1.0):
+        pil_rgb = Image.fromarray(char_rgb, mode="RGB")
+        pil_rgb = ImageEnhance.Brightness(pil_rgb).enhance(br_f)
+        pil_rgb = ImageEnhance.Contrast(pil_rgb).enhance(ct_f)
+        pil_rgb = ImageEnhance.Color(pil_rgb).enhance(sat_f)
+        char_rgb = np.asarray(pil_rgb, dtype=np.uint8)
+
+    # Khử viền xanh nếu có
+    r_ch = char_rgb[:, :, 0].astype(np.int16)
+    g_ch = char_rgb[:, :, 1].astype(np.int16)
+    b_ch = char_rgb[:, :, 2].astype(np.int16)
+    max_rb = np.maximum(r_ch, b_ch)
+    char_rgb = char_rgb.copy()
+    char_rgb[:, :, 1] = np.where(g_ch > max_rb, max_rb + ((g_ch - max_rb) // 5), g_ch).astype(np.uint8)
+
+    ch_c, cw_c = char_a.shape
+    target_h = int(round(h * 0.96))
+    target_w = int(round(w * 0.36))
+    scale = max(target_w / max(1, cw_c), min(target_h / max(1, ch_c), (w * 0.42) / max(1, cw_c)))
+    new_w = max(580, min(800, int(round(cw_c * scale))))
+    new_h = max(720, min(int(round(h * 0.97)), int(round(ch_c * (new_w / max(1, cw_c))))))
+    if new_h > int(round(h * 0.97)):
+        new_h = int(round(h * 0.97))
+        new_w = max(560, min(800, int(round(cw_c * (new_h / max(1, ch_c))))))
+
+    char_rgb_res = cv2.resize(char_rgb, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+    char_a_res = cv2.resize(char_a, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    hard_mask = char_a_res >= 145
+
+    canvas_arr = np.zeros((h, w, 3), dtype=np.uint8)
+    canvas_arr[:, :, 1] = 255  # 100% nền xanh lá thuần khiết #00FF00 (RGB 0, 255, 0)
+
+    paste_x = w - new_w
+    paste_y = h - new_h
+    roi = canvas_arr[paste_y : paste_y + new_h, paste_x : paste_x + new_w]
+    for c_i in range(3):
+        roi[:, :, c_i] = np.where(hard_mask, char_rgb_res[:, :, c_i], roi[:, :, c_i])
+    canvas_arr[paste_y : paste_y + new_h, paste_x : paste_x + new_w] = roi
+
+    out_buf = io.BytesIO()
+    Image.fromarray(canvas_arr, mode="RGB").save(out_buf, format="PNG", optimize=True)
+    return out_buf.getvalue()
 
 
 def normalize_character_to_strict_80_20_green_plate(
@@ -370,139 +602,66 @@ def normalize_character_to_strict_80_20_green_plate(
     part_index: int = 1,
 ) -> Optional[Path]:
     """
-    Chuẩn hóa ảnh Nhân vật Green Screen theo đúng bố cục 80/20 chuẩn Skill 04 (1920x1080):
-    - Nhân vật nằm ở đúng 18%-22% bên phải màn hình (`x` từ 78% đến 100%, tức `x = 1498..1920`).
-    - Toàn bộ 78%-82% bên trái (`x = 0..1498`) và nền xung quanh nhân vật đổ màu xanh lá thuần khiết `#00FF00` (RGB 0,255,0),
-      không chữ, không lem viền xanh.
-    - Hỗ trợ biến thiên sắc thái ánh sáng nhẹ theo từng Part (Part 1..7) khi tạo bộ `script_green_images/green_part_01..07.png`.
+    Chuẩn hóa ảnh Nhân vật Green Screen (1920x1080):
+    - Loại bỏ 100% chữ tiêu đề, băng rôn đỏ và giấy tờ văn bản.
+    - Tách sạch phông nền sau đầu/vai nhân vật sang màu xanh lá thuần khiết #00FF00 (RGB 0,255,0).
+    - Phóng to chân dung nhân vật rõ nét ở bên phải khung hình.
     """
     if not source_image_path or not Path(source_image_path).exists():
         return None
     try:
-        from PIL import Image, ImageEnhance
-        import numpy as np
-
-        im = Image.open(source_image_path).convert("RGBA").resize((1920, 1080), Image.Resampling.LANCZOS)
-        w, h = im.size
-        arr = np.asarray(im, dtype=np.float32)
-
-        # Chỉ lấy vùng bên phải (nơi chứa chân dung nhân vật) để tránh 100% chữ tiêu đề ở bên trái
-        x_scan_start = int(round(w * 0.52))
-        sub = arr[:, x_scan_start:, :]
-        r, g, b, a = sub[:, :, 0], sub[:, :, 1], sub[:, :, 2], sub[:, :, 3]
-
-        max_rb = np.maximum(r, b)
-        green_excess = g - max_rb
-        dist_to_green = np.sqrt((r - 0.0) ** 2 + (g - 255.0) ** 2 + (b - 0.0) ** 2)
-
-        # Kiểm tra xem ảnh nguồn đã là ảnh nền xanh #00FF00 hay là ảnh THUMBNAIL.png nền thường
-        is_green_source = float(np.mean(dist_to_green < 75.0)) > 0.12
-        if is_green_source:
-            fg_mask = (dist_to_green >= 72.0) & (green_excess <= 42.0) & (a > 128.0)
-        else:
-            # Dùng rembg hoặc tách khỏi nền trắng/sáng của THUMBNAIL.png
-            fg_mask = None
-            try:
-                from rembg import remove as rembg_remove
-                crop_pil = Image.fromarray(sub.astype(np.uint8), mode="RGBA")
-                buf = io.BytesIO()
-                crop_pil.save(buf, format="PNG")
-                cut_bytes = rembg_remove(buf.getvalue())
-                cut_im = Image.open(io.BytesIO(cut_bytes)).convert("RGBA")
-                cut_a = np.asarray(cut_im, dtype=np.uint8)[:, :, 3]
-                if float(np.mean(cut_a > 140)) >= 0.06:
-                    fg_mask = cut_a > 140
-            except Exception:
-                fg_mask = None
-
-            if fg_mask is None:
-                is_white = (r > 236) & (g > 236) & (b > 236) & (np.abs(r - g) < 12) & (np.abs(g - b) < 12)
-                col_w = np.linspace(1.0, 0.0, sub.shape[1])[None, :]
-                fg_mask = ~(is_white & (col_w > 0.25))
-
-        # Khử hoàn toàn lem viền xanh (despill) trên nhân vật trước khi đặt lên nền #00FF00
-        spill = (g > max_rb) & fg_mask
-        g_clean = np.where(spill, max_rb + (g - max_rb) * 0.15, g)
-
-        ys, xs = np.where(fg_mask)
-        if len(xs) < 50 or len(ys) < 50:
-            return None
-
-        x1, x2 = int(xs.min()), int(xs.max())
-        y1, y2 = int(ys.min()), int(ys.max())
-
-        char_rgb = np.stack(
-            [
-                np.clip(r, 0, 255).astype(np.uint8),
-                np.clip(g_clean, 0, 255).astype(np.uint8),
-                np.clip(b, 0, 255).astype(np.uint8),
-                np.where(fg_mask, 255, 0).astype(np.uint8),
-            ],
-            axis=2,
-        )
-        char_crop = Image.fromarray(char_rgb, mode="RGBA").crop((x1, y1, x2 + 1, y2 + 1))
-
-        # Biến thiên sắc thái cảm xúc/ánh sáng tinh tế cho từng Part 1..7 (nếu tạo từ cùng 1 ảnh gốc)
-        part_grades = {
-            1: (1.00, 1.00, 1.00),  # Part 1: Gốc chân thực
-            2: (0.96, 1.06, 0.92),  # Part 2: Trầm buồn khi bị hắt hủi
-            3: (0.94, 1.10, 0.88),  # Part 3: Đau đớn nội tâm
-            4: (1.02, 1.08, 0.96),  # Part 4: Bình tĩnh thu thập chứng cứ
-            5: (1.04, 1.05, 1.04),  # Part 5: Chuẩn bị pháp lý đanh thép
-            6: (1.03, 1.12, 1.02),  # Part 6: Đối chất tại tòa / công bố sự thật
-            7: (1.05, 1.02, 1.08),  # Part 7: Bình yên & công lý viên mãn
-        }
-        br_f, ct_f, sat_f = part_grades.get(int(part_index), (1.0, 1.0, 1.0))
-        if (br_f, ct_f, sat_f) != (1.0, 1.0, 1.0):
-            rgb_only = char_crop.convert("RGB")
-            alpha_only = char_crop.getchannel("A")
-            rgb_only = ImageEnhance.Brightness(rgb_only).enhance(br_f)
-            rgb_only = ImageEnhance.Contrast(rgb_only).enhance(ct_f)
-            rgb_only = ImageEnhance.Color(rgb_only).enhance(sat_f)
-            char_crop = rgb_only.convert("RGBA")
-            char_crop.putalpha(alpha_only)
-
-        # Đặt nhân vật nằm gọn trong đúng 18%-22% bên phải màn hình (x từ 1498..1920, rộng ~384..416px)
-        target_char_w = int(round(w * 0.205))  # 20.5% chiều ngang (nằm đúng giữa khoảng 18%-22%)
-        target_char_h = int(round(h * 0.92))
-        cw, ch = char_crop.size
-        scale = min(target_char_w / max(1, cw), target_char_h / max(1, ch))
-        new_w = max(345, min(422, int(round(cw * scale))))  # 345px (18%) .. 422px (22%)
-        new_h = max(300, min(h, int(round(ch * scale))))
-        char_resized = char_crop.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-        # Làm cứng biên alpha (threshold 160) để TUYỆT ĐỐI KHÔNG có pixel bán trong suốt gây lem viền xanh
-        cr_arr = np.asarray(char_resized, dtype=np.uint8).copy()
-        hard_mask = cr_arr[:, :, 3] >= 160
-
-        canvas_arr = np.zeros((h, w, 3), dtype=np.uint8)
-        canvas_arr[:, :, 1] = 255  # Toàn bộ khung 1920x1080 mặc định là #00FF00 (RGB 0, 255, 0)
-
-        paste_x = w - new_w  # Luôn >= 1920 - 422 = 1498 (tức >= 78% bên phải)
-        paste_y = h - new_h  # Sát đáy khung hình
-
-        roi = canvas_arr[paste_y : paste_y + new_h, paste_x : paste_x + new_w]
-        for c_i in range(3):
-            roi[:, :, c_i] = np.where(hard_mask, cr_arr[:, :, c_i], roi[:, :, c_i])
-        canvas_arr[paste_y : paste_y + new_h, paste_x : paste_x + new_w] = roi
-
+        raw_bytes = Path(source_image_path).read_bytes()
+        green_bytes = extract_clean_large_green_character_bytes(raw_bytes, part_index=part_index)
         output_plate_path = Path(output_plate_path)
         output_plate_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(canvas_arr, mode="RGB").save(output_plate_path, format="PNG", optimize=True)
+        output_plate_path.write_bytes(green_bytes)
         return output_plate_path
     except Exception as e:
-        print(f"[VisualCueDirector] Lưu ý khi chuẩn hóa ảnh Green 80/20: {e}")
+        print(f"[VisualCueDirector] Lưu ý khi chuẩn hóa ảnh Green: {e}")
         return None
+
+
+def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
+    """Kiểm tra xem file THUMBNAIL-NENXANH.png / green_part_01.png có bị dính chữ bên trái hoặc nhân vật quá nhỏ không."""
+    if not plate_path or not plate_path.exists() or plate_path.stat().st_size < 5_000:
+        return False
+    try:
+        from PIL import Image
+        import numpy as np
+
+        im = Image.open(plate_path).convert("RGB")
+        if im.size != (1920, 1080):
+            return False
+        arr = np.asarray(im, dtype=np.uint8)
+        w, _ = im.size
+        # 1. Toàn bộ vùng x = 0..1100 bắt buộc phải là màu xanh #00FF00 thuần khiết (không dính chữ cắt dở)
+        left_zone = arr[:, : int(w * 0.57), :]
+        left_green_ratio = float(
+            np.mean((left_zone[:, :, 0] == 0) & (left_zone[:, :, 1] == 255) & (left_zone[:, :, 2] == 0))
+        )
+        if left_green_ratio < 0.99:
+            return False
+        # 2. Vùng nhân vật bên phải (x = 1220..1920) phải đủ lớn (>= 42% diện tích vùng phải)
+        right_zone = arr[:, int(w * 0.64) :, :]
+        non_green = ~(
+            (right_zone[:, :, 0] == 0) & (right_zone[:, :, 1] == 255) & (right_zone[:, :, 2] == 0)
+        )
+        if float(np.mean(non_green)) < 0.42:
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def ensure_project_script_green_images(
     proj_dir: Path,
     renders_dir: Optional[Path] = None,
     proj_name: str = "",
+    force_regenerate: bool = False,
 ) -> List[Path]:
     """
     Đảm bảo dự án có đủ:
-    - `THUMBNAIL-NENXANH.png` (chuẩn bố cục 80/20: 78%-82% trái #00FF00, 18%-22% phải là nhân vật)
+    - `THUMBNAIL-NENXANH.png` (không có chữ, nhân vật kích thước lớn sắc nét trên nền #00FF00)
     - Bộ 7 ảnh `script_green_images/green_part_01.png` .. `green_part_07.png` theo 7 Phần của kịch bản.
     """
     proj_dir = Path(proj_dir)
@@ -514,36 +673,39 @@ def ensure_project_script_green_images(
     green_dir = proj_dir / "script_green_images"
     green_dir.mkdir(parents=True, exist_ok=True)
 
-    # Tìm ảnh nguồn (ưu tiên THUMBNAIL-NENXANH.png, sau đó đến THUMBNAIL.png)
+    # LUÔN ưu tiên ảnh gốc THUMBNAIL.png để tách nhân vật sạch 100% chữ & phóng to chuẩn
     src_candidates = [
-        renders_dir / "THUMBNAIL-NENXANH.png",
-        renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
-        proj_dir / "THUMBNAIL-NENXANH.png",
-        proj_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
+        proj_dir / "THUMBNAIL.png",
         renders_dir / "THUMBNAIL.png",
         renders_dir / f"{proj_name}_THUMBNAIL_1.png",
-        proj_dir / "THUMBNAIL.png",
         proj_dir / f"{proj_name}_THUMBNAIL_1.png",
+        renders_dir / "THUMBNAIL-NENXANH.png",
+        proj_dir / "THUMBNAIL-NENXANH.png",
+        renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
+        proj_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
     ]
     base_src = next((p for p in src_candidates if p.exists() and p.stat().st_size > 5_000), None)
+
+    need_rebuild = force_regenerate or not _is_green_plate_clean_and_large(proj_dir / "THUMBNAIL-NENXANH.png")
 
     part_paths: List[Path] = []
     for p_idx in range(1, 8):
         part_file = green_dir / f"green_part_{p_idx:02d}.png"
-        if not part_file.exists() or part_file.stat().st_size < 5_000:
+        if need_rebuild or not _is_green_plate_clean_and_large(part_file):
             if base_src is not None:
                 normalize_character_to_strict_80_20_green_plate(base_src, part_file, part_index=p_idx)
         if part_file.exists() and part_file.stat().st_size >= 5_000:
             part_paths.append(part_file)
 
-    # Đồng bộ ngược lại THUMBNAIL-NENXANH.png nếu chưa chuẩn 80/20 hoặc chưa tồn tại
+    # Đồng bộ ngược lại THUMBNAIL-NENXANH.png ở cả proj_dir và renders_dir
     if part_paths:
         for gs_target in (
+            proj_dir / "THUMBNAIL-NENXANH.png",
             renders_dir / "THUMBNAIL-NENXANH.png",
             renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
-            proj_dir / "THUMBNAIL-NENXANH.png",
+            proj_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
         ):
-            if not gs_target.exists() or gs_target.stat().st_size < 5_000:
+            if need_rebuild or not _is_green_plate_clean_and_large(gs_target):
                 try:
                     gs_target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(part_paths[0], gs_target)

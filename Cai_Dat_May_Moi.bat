@@ -9,6 +9,9 @@ echo       MEXICO ONG GIA STUDIO - TRINH CAI DAT TU DONG CHO MAY MOI [A -^> Z]
 echo ================================================================================
 echo.
 
+:: Tu dong go bo nhan chan file tai tu Internet (Smart App Control / Mark-of-the-Web)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '%~dp0' -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
+
 if not exist "%~dp0main.py" (
     echo [LOI] Khong tim thay file he thong main.py!
     echo -^> Ban dang chay truc tiep ben trong file nen .ZIP chua giai nen.
@@ -117,7 +120,5 @@ if errorlevel 1 (
 )
 
 echo.
-if exist "%~dp0Mexico_Ong_Gia.exe" (
-    start "" "%~dp0Mexico_Ong_Gia.exe"
-)
+"%PYTHON_EXE%" "%~dp0main.py"
 pause

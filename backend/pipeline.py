@@ -190,9 +190,9 @@ class ProductionPipeline:
 
     def __init__(self, root_dir: Optional[Path] = None):
         if root_dir:
-            self.root_dir = Path(root_dir)
+            self.root_dir = Path(os.path.abspath(str(root_dir)))
         else:
-            p = Path(__file__).resolve().parent.parent
+            p = Path(os.path.abspath(__file__)).parent.parent
             if (p / "STOOK").exists():
                 self.root_dir = p
             elif (p.parent / "STOOK").exists():
@@ -427,21 +427,47 @@ class ProductionPipeline:
         return self.get_performance_mode_info()
 
     def _auto_start_gpu_server_on_boot(self):
-        """Khởi động sẵn VoiceStudio GPU ngay sau khi cửa sổ giao diện đã mở xong."""
+        """Khởi động sẵn Server VoiceStudio (Cổng 3900) sau khi giao diện chính đã mở ổn định."""
         try:
-            time.sleep(2.5)
-            log_info("VOICE", "🚀 [AUTO-BOOT GPU] Sẵn sàng chế độ VoiceStudio Clone Giọng (Kho_Voice)...")
+            time.sleep(4.0)
+            log_info("VOICE", "🚀 [AUTO-BOOT GPU] Đang tự động mở Server VoiceStudio (http://127.0.0.1:3900)...")
+            server_ok = False
+            try:
+                server_ok = self.voice_service.ensure_voicestudio_server_running(port=3900)
+            except Exception as se:
+                log_warn("VOICE", f"Lưu ý khi mở cổng 3900 VoiceStudio Server: {se}")
+
+            # Đợi cửa sổ giao diện chính hiển thị hoàn tất rồi mới nạp ngầm Model OmniVoice (nếu đã tải sẵn trên ổ cứng)
+            time.sleep(5.0)
+            main_weights = self.voice_service.model_path / "model.safetensors"
+            if main_weights.exists() and main_weights.stat().st_size > 1_000_000_000:
+                try:
+                    self.voice_service._ensure_engine()
+                except Exception as ee:
+                    log_warn("VOICE", f"Lưu ý khi nạp sớm Model OmniVoice GPU: {ee}")
+            omni_loaded = getattr(self.voice_service, "model", None) is not None
+            log_info(
+                "VOICE",
+                f"✅ [VOICESTUDIO GPU] Đã mở Server VoiceStudio (Port 3900: {'ONLINE' if server_ok else 'IN-PROCESS'}) "
+                f"& trạng thái Model Clone Giọng GPU: {'READY' if omni_loaded else 'STANDBY'}!",
+            )
         except Exception as e:
             log_warn("VOICE", f"Lưu ý khi khởi động sớm VoiceStudio: {e}")
 
     def activate_gpu_voice_server(self, server_mode: Optional[str] = None) -> Dict[str, Any]:
         """Kích hoạt VoiceStudio CUDA GPU Server để clone giọng từ Kho_Voice."""
         saved_cfg = save_voice_config({"active_gpu_server": "omnivoice_gpu", "engine_mode": "voicestudio"})
+        try:
+            self.voice_service.ensure_voicestudio_server_running(port=3900)
+            self.voice_service._ensure_engine()
+        except Exception:
+            pass
         omni_loaded = getattr(self.voice_service, "model", None) is not None
         return {
             "active_gpu_server": "omnivoice_gpu",
             "engine_mode": "voicestudio",
             "omnivoice_loaded": omni_loaded,
+            "voicestudio_server_online": self.voice_service.is_voicestudio_server_alive(3900),
             "selected_preset_id": saved_cfg.get("selected_preset_id", "04_mx_ong_gia_padre_implacable"),
             "voices": self.voice_service.list_kho_voices(),
         }
@@ -781,8 +807,25 @@ class ProductionPipeline:
         spawn_gate_lock = threading.Lock()
 
         try:
+            # Đồng bộ chế độ nguồn Stock nếu người dùng chọn từ giao diện
+            if stock_selection in ("auto_download", "local_available"):
+                self.stock_manager.set_stock_source_mode(stock_selection)
             # Quét kho Stock có sẵn trên máy
-            self.stock_manager.scan_and_update_inventory()
+            st_info = self.stock_manager.scan_and_update_inventory()
+            active_stock_mode = self.stock_manager.get_stock_source_mode()
+            if (
+                active_stock_mode == "auto_download"
+                and auto_ensure_stock_hours
+                and float(st_info.get("available_raw_hours", 0.0)) < 0.5
+            ):
+                log_info(
+                    f"🌐 [Chế độ 1: Stock Tải Về] Kho STOOK hiện có {st_info.get('available_raw_hours', 0.0)}h. Đang tự động tải bù Stock từ Pexels/Pixabay/YouTube...",
+                    category="STOCK",
+                )
+                self.stock_manager.ensure_minimum_stock_hours(
+                    target_hours=min(max(1.5, float(target_stock_hours or 30.0)), 2.0),
+                    slice_minutes=30,
+                )
 
             def _update_overall_progress(latest_msg: str, stage_name: str):
                 with self.lock:
@@ -1139,25 +1182,36 @@ class ProductionPipeline:
                                 chosen_stock = None
 
                         if not chosen_stock:
-                            if stock_selection == "auto_unique":
-                                chosen_stock = self.stock_manager.get_best_available_stock(exclude_ids=allocated_stock_ids)
-                            else:
-                                stocks = self.stock_manager.get_all_stocks()["items"]
-                                for s in stocks:
-                                    if s["id"] == stock_selection or s["abs_path"] == stock_selection or s["rel_path"] == stock_selection:
-                                        if not s.get("abs_path") or not os.path.exists(s["abs_path"]):
-                                            continue
-                                        chosen_stock = dict(s)
-                                        chosen_stock["use_number"] = 1
-                                        chosen_stock["flip_horizontal"] = False
-                                        chosen_stock["zoom_factor"] = 1.0
-                                        chosen_stock["transform_label"] = "Kho STOOK có sẵn"
-                                        chosen_stock["slot_key"] = f"{s['id']}::use1"
-                                        break
+                            chosen_stock = self.stock_manager.get_best_available_stock(
+                                exclude_ids=allocated_stock_ids,
+                                selection=stock_selection,
+                            )
+                            # Nếu đang ở Chế độ 1 (Dùng Stock Tải Về) mà hết cuộn chưa dùng -> Tự động tải bù ngay từ Pexels/Pixabay/YouTube
+                            if not chosen_stock and self.stock_manager.get_stock_source_mode() == "auto_download":
+                                log_info(
+                                    f"🌐 Kho Stock tải về đã dùng hết cuộn mới. Đang tự động tải cuộn Stock mới cho '{proj_name}' (Theo dõi chống trùng trên Note Online)...",
+                                    category="STOCK",
+                                    project_id=proj_name,
+                                )
+                                self.stock_manager.ensure_minimum_stock_hours(
+                                    target_hours=1.5,
+                                    slice_minutes=30,
+                                )
+                                chosen_stock = self.stock_manager.get_best_available_stock(
+                                    exclude_ids=allocated_stock_ids,
+                                    selection=stock_selection,
+                                )
 
                         if not chosen_stock:
+                            mode_now = self.stock_manager.get_stock_source_mode()
+                            if mode_now == "local_available":
+                                raise RuntimeError(
+                                    f"Đang chọn '2. Dùng Stock Sẵn Có' nhưng thư mục STOOK ({self.stock_manager.stook_dir}) chưa có video nào. "
+                                    f"Vui lòng chép video vào STOOK hoặc chuyển sang '1. Dùng Stock Tải Về Tự Động'!"
+                                )
                             raise RuntimeError(
-                                f"Kho STOOK ({self.stock_manager.stook_dir}) hiện không có video nào. Vui lòng chép video vào thư mục STOOK!"
+                                f"Kho STOOK ({self.stock_manager.stook_dir}) hiện không có video khả dụng và không thể tải tự động. "
+                                f"Vui lòng bấm 'Tải Sẵn Đủ 30 Tiếng Stock' hoặc chuyển sang '2. Dùng Stock Sẵn Có'!"
                             )
 
                         slot_key = chosen_stock.get("slot_key", f"{chosen_stock['id']}::use1")
@@ -1417,9 +1471,11 @@ class ProductionPipeline:
                         except Exception:
                             pass
 
-                    # 4. ĐÁNH DẤU LƯỢT DÙNG STOCK (XOAY VÒNG KHO STOOK CÓ SẴN, KHÔNG XÓA FILE)
+                    # 4. ĐÁNH DẤU LƯỢT DÙNG STOCK (Chế độ 1: Dùng xong tự xóa • Chế độ 2: Xoay vòng kho STOOK có sẵn, giữ nguyên file)
                     with self.stock_alloc_lock:
                         self.stock_manager.mark_as_used(chosen_stock["id"], proj_name)
+                        if delete_used_stocks and self.stock_manager.get_stock_source_mode() == "auto_download":
+                            self.stock_manager.delete_used_stock_file(chosen_stock["id"], proj_name)
 
                     # 5. Xuất file SEO & Kịch bản vào cùng thư mục renders (và đồng bộ sang Nơi Chứa Video Cuối nếu tách riêng)
                     timestamps_content = ""

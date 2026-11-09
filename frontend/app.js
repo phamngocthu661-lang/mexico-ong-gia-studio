@@ -1005,12 +1005,66 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // 7. Quản lý kho Stock
+  // 7. Quản lý kho Stock (2 Chế Độ: 1. Dùng Stock Tải Về Tự Động & 2. Dùng Stock Sẵn Có)
+  let currentStockSourceMode = "auto_download";
+
+  function syncStockModeUI(modeVal) {
+    currentStockSourceMode = (modeVal === "local_available") ? "local_available" : "auto_download";
+    const mainModeSel = document.getElementById("stock-source-mode-select");
+    const modalModeSel = document.getElementById("modal-stock-source-mode-select");
+    const autoDlBox = document.getElementById("stock-auto-download-box");
+    if (mainModeSel && mainModeSel.value !== currentStockSourceMode) {
+      mainModeSel.value = currentStockSourceMode;
+    }
+    if (modalModeSel && modalModeSel.value !== currentStockSourceMode) {
+      modalModeSel.value = currentStockSourceMode;
+    }
+    if (autoDlBox) {
+      // Hiển thị hộp điều khiển Tải Stock & Link Chống Trùng ở Chế độ 1; làm mờ nhẹ ở Chế độ 2
+      autoDlBox.style.display = currentStockSourceMode === "auto_download" ? "flex" : "none";
+    }
+    if (autoDeleteStock) {
+      if (currentStockSourceMode === "local_available") {
+        autoDeleteStock.checked = false;
+      } else {
+        autoDeleteStock.checked = true;
+      }
+    }
+    if (autoEnsureStock) {
+      if (currentStockSourceMode === "local_available") {
+        autoEnsureStock.checked = false;
+      } else {
+        autoEnsureStock.checked = true;
+      }
+    }
+  }
+
+  async function switchStockSourceModeBackend(newMode) {
+    syncStockModeUI(newMode);
+    try {
+      const res = await fetch("/api/stocks/mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: currentStockSourceMode })
+      });
+      if (res.ok) {
+        await loadStocks();
+      }
+    } catch (e) {
+      console.warn("Lỗi chuyển chế độ Stock:", e);
+    }
+  }
+
   async function loadStocks() {
     try {
       const res = await fetch("/api/stocks");
       const data = await res.json();
 
+      if (data.stock_source_mode) {
+        syncStockModeUI(data.stock_source_mode);
+      }
+
+      const isLocalMode = currentStockSourceMode === "local_available";
       const availFiles = data.available_count || 0;
       const availUses = data.available_uses_count !== undefined ? data.available_uses_count : availFiles;
       const rawHours = data.available_raw_hours !== undefined ? data.available_raw_hours : 0;
@@ -1020,12 +1074,14 @@ document.addEventListener("DOMContentLoaded", () => {
         updateReplenishButtonLabels(data.target_stock_hours);
       }
       if (availableStockCount) {
-        availableStockCount.innerText = `${availFiles} file (${rawHours}h gốc • ${availUses} lượt xuất)`;
+        availableStockCount.innerText = isLocalMode
+          ? `${availFiles} file sẵn có (${rawHours}h • Xoay vòng giữ nguyên file)`
+          : `${availFiles} file khả dụng (${rawHours}h gốc • ${availUses} lượt xuất)`;
       }
       if (modalTotalStocks) {
-        modalTotalStocks.innerText = data.deleted_count && data.deleted_count > 0
-          ? `${data.total || 0} file — ${rawHours}h gốc • ${availUses} lượt khả dụng`
-          : `${data.total || 0} file (${rawHours}h gốc • ${availUses} lượt khả dụng)`;
+        modalTotalStocks.innerText = isLocalMode
+          ? `📂 Chế độ 2 (Stock Sẵn Có): ${data.total || 0} file (${rawHours}h gốc • Xoay vòng không xóa)`
+          : `🌐 Chế độ 1 (Stock Tải Về): ${data.total || 0} file — ${rawHours}h khả dụng (${availUses} cuộn chưa dùng)`;
       }
 
       // Cập nhật hiển thị đường dẫn kho stock hiện tại
@@ -1034,7 +1090,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (modalStookDirInput) modalStookDirInput.value = data.current_stook_dir;
       }
 
-      // Cập nhật thông tin Note Online chống trùng đa máy
+      // Cập nhật thông tin Note Online chống trùng riêng của Mexico Ông Già
       if (data.used_links_count !== undefined) {
         if (cloudNoteCountMain) cloudNoteCountMain.innerText = `${data.used_links_count} links`;
         if (cloudNoteCountModal) cloudNoteCountModal.innerText = data.used_links_count;
@@ -1048,12 +1104,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (cloudNoteUrlText) cloudNoteUrlText.innerText = data.cloud_note_url;
       }
 
-      stockSelect.innerHTML = `<option value="auto_unique">🛡️ Tự động chọn Stock 720p chưa dùng (Dùng xong xóa ngay giải phóng bộ nhớ)</option>`;
+      const defaultOptText = isLocalMode
+        ? `📂 Tự động xoay vòng Stock sẵn có trong kho STOOK (Không tải mạng • Giữ nguyên file)`
+        : `🛡️ Tự động chọn Stock 720p tải về chưa dùng (Dùng xong tự xóa • Chống trùng 100%)`;
+
+      stockSelect.innerHTML = `<option value="auto_unique">${defaultOptText}</option>`;
       if (data.items && data.items.length > 0) {
         data.items.forEach(item => {
           const maxUses = item.max_uses || 1;
           const usedCount = item.usage_count || 0;
-          const isFullyUsed = usedCount >= maxUses || item.status === "used";
+          const isFullyUsed = !isLocalMode && (usedCount >= maxUses || item.status === "used");
           const opt = document.createElement("option");
           opt.value = item.id;
           if (isFullyUsed) {
@@ -1061,6 +1121,8 @@ document.addEventListener("DOMContentLoaded", () => {
             opt.innerText = `⛔ [ĐÃ DÙNG] ${item.name} (${item.duration_formatted}) — Đã khóa`;
             opt.style.color = "#ff6666";
             opt.style.background = "#2a1515";
+          } else if (isLocalMode) {
+            opt.innerText = `📂 [Sẵn có • Đã xoay vòng ${usedCount} lần] ${item.name} (${item.duration_formatted})`;
           } else {
             opt.innerText = `🟢 [Mới 100% • Dùng xong tự xóa] ${item.name} (${item.duration_formatted})`;
           }
@@ -1070,7 +1132,7 @@ document.addEventListener("DOMContentLoaded", () => {
         renderStockTable(data.items);
         renderInlineStockRolls(data.items);
       } else {
-        stockSelect.innerHTML = `<option value="auto_unique">⚠️ Kho này chưa có video (.mp4) nào</option>`;
+        stockSelect.innerHTML = `<option value="auto_unique">⚠️ Kho này chưa có video (.mp4) nào — Bấm Tải Sẵn Đủ 30 Tiếng Stock hoặc chọn thư mục STOOK!</option>`;
         renderStockTable([]);
         renderInlineStockRolls([]);
       }
@@ -1086,10 +1148,11 @@ document.addEventListener("DOMContentLoaded", () => {
       inlineList.innerHTML = `<div class="p-3 rounded-lg bg-surface-container-lowest/80 border border-outline-variant/20 text-center text-xs text-on-surface-variant">Kho STOOK hiện đang trống. Bấm <strong>Tải Sẵn Đủ 30 Tiếng Stock</strong> bên trên để tự động nạp video 720p mới!</div>`;
       return;
     }
+    const isLocalMode = currentStockSourceMode === "local_available";
     inlineList.innerHTML = items.slice(0, 25).map((item) => {
       const maxUses = item.max_uses || 1;
       const usedCount = item.usage_count || 0;
-      const isFullyUsed = usedCount >= maxUses || item.status === "used";
+      const isFullyUsed = !isLocalMode && (usedCount >= maxUses || item.status === "used");
       if (!isFullyUsed) {
         return `
           <div class="inline-stock-item flex items-center justify-between p-2 rounded-lg bg-surface-container-lowest/80 border border-outline-variant/20 hover:border-secondary-container/40 transition-colors cursor-pointer" data-stock-id="${item.id}">
@@ -1140,17 +1203,21 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    const isLocalMode = currentStockSourceMode === "local_available";
     stockTableBody.innerHTML = "";
     items.forEach(item => {
       const tr = document.createElement("tr");
       tr.className = "hover:bg-surface-container/60 transition-colors";
       const maxUses = item.max_uses || 1;
       const usedCount = item.usage_count || 0;
-      const isFullyUsed = usedCount >= maxUses || item.status === "used";
+      const isFullyUsed = !isLocalMode && (usedCount >= maxUses || item.status === "used");
 
       let statusBadge = "";
       let actionBtn = "";
-      if (!isFullyUsed) {
+      if (isLocalMode) {
+        statusBadge = `<span class="px-2 py-0.5 rounded bg-primary-container/15 text-primary-container border border-primary-container/30 text-[10px] font-bold">📂 Sẵn có (Đã dùng ${usedCount} lần)</span>`;
+        actionBtn = `<span class="text-secondary text-[11px] font-bold">♻️ Xoay vòng • Giữ file</span>`;
+      } else if (!isFullyUsed) {
         statusBadge = `<span class="px-2 py-0.5 rounded bg-primary-container/15 text-primary-container border border-primary-container/30 text-[10px] font-bold">🟢 Mới 100% (Khả dụng)</span>`;
         actionBtn = `<span class="text-primary-container text-[11px] font-bold">🗑️ Dùng xong tự xóa</span>`;
       } else {
@@ -1185,6 +1252,19 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function setupStockModal() {
+    const mainModeSel = document.getElementById("stock-source-mode-select");
+    const modalModeSel = document.getElementById("modal-stock-source-mode-select");
+    if (mainModeSel) {
+      mainModeSel.addEventListener("change", () => {
+        switchStockSourceModeBackend(mainModeSel.value);
+      });
+    }
+    if (modalModeSel) {
+      modalModeSel.addEventListener("change", () => {
+        switchStockSourceModeBackend(modalModeSel.value);
+      });
+    }
+
     if (targetStockHoursInput) {
       targetStockHoursInput.addEventListener("input", () => {
         updateReplenishButtonLabels(parseFloat(targetStockHoursInput.value) || 30);
@@ -1192,6 +1272,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     async function runAutoReplenishStock() {
+      if (currentStockSourceMode === "local_available") {
+        await switchStockSourceModeBackend("auto_download");
+      }
       const targetHrs = targetStockHoursInput ? (parseFloat(targetStockHoursInput.value) || 30) : 30;
       if (btnAutoReplenishMain) {
         btnAutoReplenishMain.disabled = true;
@@ -1202,13 +1285,14 @@ document.addEventListener("DOMContentLoaded", () => {
         btnAutoReplenishModal.innerText = `⏳ Đang tìm & tải bù đủ ${targetHrs}h (720p)...`;
       }
       if (mainReplenishMsg) {
+        mainReplenishMsg.classList.remove("hidden");
         mainReplenishMsg.style.display = "block";
         mainReplenishMsg.style.color = "var(--accent-cyan)";
-        mainReplenishMsg.innerText = `⏳ Đang kiểm tra kho Stock (Mục tiêu: ${targetHrs} tiếng). Nếu thiếu hệ thống sẽ tự động tìm video 720p mới trên YouTube và cắt thành các part 30 phút...`;
+        mainReplenishMsg.innerText = `⏳ Đang kiểm tra kho Stock (Mục tiêu: ${targetHrs} tiếng). Nếu thiếu hệ thống sẽ tự động tải từ Pexels / Pixabay / YouTube và cắt thành các part 30 phút...`;
       }
       if (ytDownloadMsg) {
         ytDownloadMsg.style.color = "var(--accent-cyan)";
-        ytDownloadMsg.innerText = `⏳ Đang tự động tìm video 720p mới trên YouTube và tải bù cho đủ ${targetHrs} tiếng...`;
+        ytDownloadMsg.innerText = `⏳ Đang tự động tìm video 720p mới (Pexels / Pixabay / YouTube) và tải bù cho đủ ${targetHrs} tiếng...`;
       }
 
       try {
@@ -1275,22 +1359,23 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (cloudSyncMsg) {
         cloudSyncMsg.style.color = "var(--accent-cyan)";
-        cloudSyncMsg.innerText = "⏳ Đang đọc & dán danh sách link YouTube đã tải lên File Note Online chung...";
+        cloudSyncMsg.innerText = "⏳ Đang đồng bộ danh sách link Stock đã tải lên File Note Online riêng của Mexico Ông Già...";
       }
       if (mainReplenishMsg) {
+        mainReplenishMsg.classList.remove("hidden");
         mainReplenishMsg.style.display = "block";
         mainReplenishMsg.style.color = "var(--accent-cyan)";
-        mainReplenishMsg.innerText = "⏳ Đang đồng bộ danh sách link YouTube với File Note Online chung...";
+        mainReplenishMsg.innerText = "⏳ Đang đồng bộ danh sách link Stock với File Note Online riêng của Mexico Ông Già...";
       }
 
       try {
         const res = await fetch("/api/stocks/sync-cloud-note", { method: "POST" });
         const data = await res.json();
         if (res.ok && data.success) {
-          const noteUrl = data.cloud_note_url || "https://rentry.co/nhat-drama-stock-9f8a7b6c";
+          const noteUrl = data.cloud_note_url || "https://rentry.co/mexico-ong-gia-stock-8a9b2c";
           const totalIds = data.total_synced_ids !== undefined ? data.total_synced_ids : 0;
           const pulledNew = data.new_from_cloud !== undefined ? data.new_from_cloud : 0;
-          const msg = `✅ Đã đồng bộ File Note Online (${noteUrl})! Tổng số link đã khóa trên toàn hệ thống: ${totalIds} link (Nhận mới từ máy khác: +${pulledNew} | Đẩy lên Note: ${data.pushed_to_cloud ? "Thành công" : "Đã khớp"}).`;
+          const msg = `✅ Đã đồng bộ File Note Online Mexico (${noteUrl})! Tổng số link đã khóa: ${totalIds} link (Nhận mới từ máy khác: +${pulledNew} | Đẩy lên Note: ${data.pushed_to_cloud ? "Thành công" : "Đã khớp"}).`;
           if (cloudSyncMsg) {
             cloudSyncMsg.style.color = "var(--accent-green)";
             cloudSyncMsg.innerText = msg;
@@ -1363,13 +1448,30 @@ document.addEventListener("DOMContentLoaded", () => {
         btnRescanStocks.innerText = "Đang quét...";
         await fetch("/api/stocks/scan", { method: "POST" });
         await loadStocks();
-        btnRescanStocks.innerText = "🔄 Quét Thêm Video Mới";
+        btnRescanStocks.innerText = "🔄 Quét Lại Kho";
+      });
+    }
+
+    const btnResetAllStocks = document.getElementById("btn-reset-all-stocks");
+    if (btnResetAllStocks) {
+      btnResetAllStocks.addEventListener("click", async () => {
+        btnResetAllStocks.disabled = true;
+        btnResetAllStocks.innerText = "⏳ Đang đặt lại...";
+        try {
+          await fetch("/api/stocks/reset-all", { method: "POST" });
+          await loadStocks();
+        } catch (e) {
+          alert("Lỗi đặt lại lượt dùng: " + e.message);
+        } finally {
+          btnResetAllStocks.disabled = false;
+          btnResetAllStocks.innerText = "♻️ Đặt Lại Lượt Dùng";
+        }
       });
     }
 
     if (btnCleanupUsedStocks) {
       btnCleanupUsedStocks.addEventListener("click", async () => {
-        if (!confirm("Bạn có chắc chắn muốn xóa tất cả các file video stock ĐÃ DÙNG khỏi ổ cứng để giải phóng dung lượng đĩa?\n\n(Lưu ý: Hệ thống vẫn lưu vĩnh viễn lịch sử để bảo đảm TUYỆT ĐỐI KHÔNG BAO GIỜ bị dùng lại).")) {
+        if (!confirm("Bạn có chắc chắn muốn xóa tất cả các file video stock ĐÃ DÙNG khỏi ổ cứng để giải phóng dung lượng đĩa?\n\n(Lưu ý: Hệ thống vẫn lưu vĩnh viễn lịch sử trên Link Note Online để bảo đảm TUYỆT ĐỐI KHÔNG BAO GIỜ bị tải trùng lại).")) {
           return;
         }
         btnCleanupUsedStocks.disabled = true;
@@ -1383,7 +1485,7 @@ document.addEventListener("DOMContentLoaded", () => {
           alert("Lỗi dọn dẹp: " + e.message);
         } finally {
           btnCleanupUsedStocks.disabled = false;
-          btnCleanupUsedStocks.innerText = "🗑️ Xóa File Stock Đã Dùng";
+          btnCleanupUsedStocks.innerText = "🗑️ Xóa File Đã Dùng";
         }
       });
     }
@@ -1463,9 +1565,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
       let endpoint = "/api/start";
       let payload = {};
-      const shouldDeleteUsedStocks = autoDeleteStock ? autoDeleteStock.checked : true;
-      const shouldAutoEnsureStock = autoEnsureStock ? autoEnsureStock.checked : true;
+      const isLocalStockMode = currentStockSourceMode === "local_available";
+      const shouldDeleteUsedStocks = !isLocalStockMode && (autoDeleteStock ? autoDeleteStock.checked : true);
+      const shouldAutoEnsureStock = !isLocalStockMode && (autoEnsureStock ? autoEnsureStock.checked : true);
       const targetStockHours = targetStockHoursInput ? (parseFloat(targetStockHoursInput.value) || 30.0) : 30.0;
+      const effectiveStockSelection = (stockSelect && stockSelect.value && stockSelect.value !== "auto_unique")
+        ? stockSelect.value
+        : currentStockSourceMode;
 
       if (currentMode === "adas") {
         const runAllBtn = document.getElementById("btn-adas-run-all");
@@ -1507,7 +1613,7 @@ document.addEventListener("DOMContentLoaded", () => {
           channel_name: channel,
           resolution: selectedResolution,
           fps: selectedFps,
-          stock_selection: (stockSelect && stockSelect.value) ? stockSelect.value : "auto_unique",
+          stock_selection: effectiveStockSelection,
           bgm_volume: bgmVol,
           delete_used_stocks: shouldDeleteUsedStocks,
           auto_ensure_stock_hours: shouldAutoEnsureStock,
@@ -1528,7 +1634,7 @@ document.addEventListener("DOMContentLoaded", () => {
           channel_name: channel,
           resolution: selectedResolution,
           fps: selectedFps,
-          stock_selection: (stockSelect && stockSelect.value) ? stockSelect.value : "auto_unique",
+          stock_selection: effectiveStockSelection,
           bgm_volume: bgmVol,
           delete_used_stocks: shouldDeleteUsedStocks,
           auto_ensure_stock_hours: shouldAutoEnsureStock,
@@ -2023,15 +2129,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const rawBgm = bgmVolSlider ? parseFloat(bgmVolSlider.value) : 8;
     const bgmVol = isNaN(rawBgm) ? 0.08 : (rawBgm <= 1.0 ? rawBgm : rawBgm / 100.0);
     const activePerfMode = localStorage.getItem("studio_perf_mode") || "full_100";
+    const isLocalStockMode = currentStockSourceMode === "local_available";
+    const effectiveSel = (stockSelect && stockSelect.value && stockSelect.value !== "auto_unique")
+      ? stockSelect.value
+      : currentStockSourceMode;
     return {
       output_dir: outputDirInput ? outputDirInput.value.trim() : "",
       channel_name: (channelNameInput ? channelNameInput.value.trim() : "") || ".",
       resolution: selectedResolution,
       fps: selectedFps,
-      stock_selection: (stockSelect && stockSelect.value) ? stockSelect.value : "auto_unique",
+      stock_selection: effectiveSel,
       bgm_volume: bgmVol,
-      delete_used_stocks: autoDeleteStock ? autoDeleteStock.checked : true,
-      auto_ensure_stock_hours: autoEnsureStock ? autoEnsureStock.checked : true,
+      delete_used_stocks: !isLocalStockMode && (autoDeleteStock ? autoDeleteStock.checked : true),
+      auto_ensure_stock_hours: !isLocalStockMode && (autoEnsureStock ? autoEnsureStock.checked : true),
       target_stock_hours: targetStockHoursInput ? parseFloat(targetStockHoursInput.value) || 30.0 : 30.0,
       performance_mode: activePerfMode,
       voice_config: getCurrentVoiceConfigFromUI()
@@ -2083,29 +2193,72 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!res.ok) return;
       const data = await res.json();
       const accs = data.accounts || {};
-      let openOrLoggedCount = 0;
+      let savedCount = 0;
+      let openCount = 0;
 
-      ["acc_1", "acc_2", "acc_3"].forEach((aid, idx) => {
+      ["acc_1", "acc_2", "acc_3", "acc_4", "acc_5"].forEach((aid, idx) => {
         const btn = document.getElementById(`btn-chatgpt-acc-${idx + 1}`);
         if (!btn) return;
         const info = accs[aid] || {};
-        if (info.browser_open) openOrLoggedCount += 1;
+        const isBrowserOpen = !!info.browser_open;
+        const isSavedOrLogged = !!(info.logged_in || info.saved_logged_in);
+        if (isBrowserOpen) openCount += 1;
+        if (isSavedOrLogged) savedCount += 1;
+
         const port = info.port || (9232 + idx);
         const activeJobs = (info.active_projects || []).length;
+        const rawEmail = (info.user_email || info.email || "").trim();
+        const shortEmail = (rawEmail && rawEmail.includes("@"))
+          ? (rawEmail.split("@")[0].slice(0, 12) + (rawEmail.split("@")[0].length > 12 ? "…" : ""))
+          : "";
 
-        if (!info.browser_open) {
-          btn.innerHTML = `<span class="w-2 h-2 rounded-full bg-on-surface-variant/60"></span>Acc #${idx + 1} (Cổng ${port}) — Chưa mở`;
-        } else if (info.logged_in) {
-          const busyTag = activeJobs > 0 ? ` • 🔥 Đang chạy ${activeJobs}` : "";
-          btn.innerHTML = `<span class="w-2 h-2 rounded-full bg-primary-container animate-pulse"></span>Acc #${idx + 1} (Cổng ${port})${busyTag}`;
+        if (isBrowserOpen && isSavedOrLogged) {
+          const busyTag = activeJobs > 0 ? ` • 🔥 Chạy ${activeJobs}` : " • Đang bật";
+          const mailTag = shortEmail ? ` (${shortEmail})` : ` (${port})`;
+          btn.className = "chatgpt-acc-btn flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container-high border border-primary-container text-primary-container font-label-sm text-[11px] font-bold shadow-[0_0_8px_rgba(0,255,135,0.25)]";
+          btn.innerHTML = `<span class="w-2 h-2 rounded-full bg-primary-container animate-pulse"></span>Acc #${idx + 1}${mailTag}${busyTag}`;
+          btn.title = `Acc #${idx + 1} (Cổng ${port}) — Đang bật Chrome (${rawEmail || "Đã đăng nhập"}). Hệ thống sẽ tự động tắt khi viết xong!`;
+        } else if (!isBrowserOpen && isSavedOrLogged) {
+          const mailTag = shortEmail ? ` (${shortEmail})` : ` (${port})`;
+          btn.className = "chatgpt-acc-btn flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container hover:bg-surface-container-high border border-primary-container/40 text-primary-container font-label-sm text-[11px] font-semibold";
+          btn.innerHTML = `<span class="w-2 h-2 rounded-full bg-primary-container"></span>Acc #${idx + 1}${mailTag} • Đã lưu`;
+          btn.title = `Acc #${idx + 1} (Cổng ${port}) — ĐÃ LƯU ĐĂNG NHẬP (${rawEmail}). Đang tắt Chrome tiết kiệm RAM, tự bật khi dùng hoặc bấm để mở!`;
+        } else if (isBrowserOpen && !isSavedOrLogged) {
+          btn.className = "chatgpt-acc-btn flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container-high border border-tertiary text-tertiary font-label-sm text-[11px] font-bold";
+          btn.innerHTML = `<span class="w-2 h-2 rounded-full bg-tertiary animate-ping"></span>Acc #${idx + 1} (${port}) • Chờ Login`;
+          btn.title = `Acc #${idx + 1} (Cổng ${port}) — Đang mở Chrome để bạn đăng nhập ChatGPT. Đăng nhập xong hệ thống sẽ tự lưu lại!`;
         } else {
-          btn.innerHTML = `<span class="w-2 h-2 rounded-full bg-tertiary"></span>Acc #${idx + 1} (Cổng ${port}) — Cần Login`;
+          btn.className = "chatgpt-acc-btn flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container/60 hover:bg-surface-container-high border border-outline-variant/25 text-on-surface-variant/75 font-label-sm text-[11px]";
+          btn.innerHTML = `<span class="w-2 h-2 rounded-full bg-outline-variant/50"></span>Acc #${idx + 1} (${port}) • Chưa Login`;
+          btn.title = `Acc #${idx + 1} (Cổng ${port}) — Chưa đăng nhập (Sẽ KHÔNG tự động mở). Bấm vào đây nếu muốn đăng nhập thêm tài khoản thứ #${idx + 1}!`;
         }
       });
 
+      const summaryLbl = document.getElementById("chatgpt-bar-summary-label");
+      if (summaryLbl) {
+        summaryLbl.innerText = `ChatGPT (${savedCount}/5 Đã Lưu${openCount > 0 ? ` • ${openCount} Đang Bật` : " • Đang Tắt Chrome"}):`;
+      }
+
       const cdpBadge = document.getElementById("adas-cdp-linked-badge");
       if (cdpBadge) {
-        cdpBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-primary-container animate-ping"></span>CDP LINKED (${openOrLoggedCount}/3 ACC)`;
+        cdpBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-primary-container animate-ping"></span>CDP LINKED (${savedCount}/5 ACC ĐÃ LƯU)`;
+      }
+
+      const addBtn = document.getElementById("btn-chatgpt-add-acc");
+      if (addBtn) {
+        if (savedCount >= 5) {
+          addBtn.innerHTML = `<span>✅ Đủ 5/5 Acc</span>`;
+        } else {
+          addBtn.innerHTML = `<span>➕ Thêm Acc (#${savedCount + 1}/5)</span>`;
+        }
+      }
+
+      const closeAllBtn = document.getElementById("btn-chatgpt-close-all");
+      if (closeAllBtn) {
+        closeAllBtn.style.opacity = openCount > 0 ? "1" : "0.6";
+        closeAllBtn.innerHTML = openCount > 0
+          ? `<span class="material-symbols-outlined text-[15px]">power_settings_new</span><span>Tắt Chrome (${openCount})</span>`
+          : `<span class="material-symbols-outlined text-[15px]">check_circle</span><span>Chrome Đã Tắt</span>`;
       }
 
       const visBtn = document.getElementById("btn-chatgpt-toggle-vis");
@@ -2302,8 +2455,10 @@ document.addEventListener("DOMContentLoaded", () => {
             `}
             ${(hasScript && !hasThumb) ? `
               <button type="button" class="btn-idea-thumb px-1.5 py-0.5 rounded bg-surface-container hover:bg-surface-bright text-secondary border border-outline-variant/30 text-[10px] transition-all" data-id="${maId}" title="Tạo Thumbnail">🖼</button>
-            ` : ""}
-            <button type="button" class="btn-idea-view p-1 rounded bg-surface-container hover:bg-surface-bright text-on-surface-variant hover:text-on-surface border border-outline-variant/30 transition-all" data-id="${maId}" title="Xem Chi Tiết Kịch Bản & SEO">
+            ` : (hasThumb ? `
+              <button type="button" class="btn-idea-view-thumbs px-1.5 py-0.5 rounded bg-primary-container/15 hover:bg-primary-container/30 text-primary-container border border-primary-container/40 text-[10px] font-bold transition-all" data-id="${maId}" title="Xem 2 Ảnh Thumbnail & Ảnh Nền Xanh (Có Phóng To)">🖼 Ảnh</button>
+            ` : "")}
+            <button type="button" class="btn-idea-view p-1 rounded bg-surface-container hover:bg-surface-bright text-on-surface-variant hover:text-on-surface border border-outline-variant/30 transition-all" data-id="${maId}" title="Xem Hồ Sơ Toàn Diện Dự Án Mexico (Kịch Bản, SEO, 2 Ảnh Thumbnail, Giàn Ý, QA)">
               <span class="material-symbols-outlined text-[13px]">visibility</span>
             </button>
             <button type="button" class="btn-idea-folder p-1 rounded bg-surface-container hover:bg-surface-bright text-on-surface-variant hover:text-tertiary border border-outline-variant/30 transition-all" data-id="${maId}" title="Mở Thư Mục Dự Án">
@@ -2465,7 +2620,15 @@ document.addEventListener("DOMContentLoaded", () => {
     listEl.querySelectorAll(".btn-idea-view").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const mid = btn.dataset.id;
-        await openProjectDetailModal(mid, "seo_pack");
+        await openProjectDetailModal(mid, "full_script");
+      });
+    });
+
+    listEl.querySelectorAll(".btn-idea-view-thumbs").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const mid = btn.dataset.id;
+        await openProjectDetailModal(mid, "thumbnails");
       });
     });
 
@@ -2609,39 +2772,258 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  async function openProjectDetailModal(maId, initialTab = "seo_pack") {
+  let currentZoomScale = 1.0;
+  let currentZoomKind = "main";
+
+  function openMexicoImageZoomLightbox(kind = "main") {
+    if (!currentProjectDetailData) return;
+    const cards = Array.isArray(currentProjectDetailData.thumbnail_cards)
+      ? currentProjectDetailData.thumbnail_cards
+      : [];
+    const targetCard = cards.find((c) => c.kind === kind && c.exists && c.data_url)
+      || cards.find((c) => c.exists && c.data_url);
+    if (!targetCard || !targetCard.data_url) {
+      alert("Chưa có file ảnh để phóng to!");
+      return;
+    }
+    currentZoomKind = targetCard.kind || kind;
+    currentZoomScale = 1.0;
+
+    const zoomModal = document.getElementById("mexico-image-zoom-modal");
+    const zoomImg = document.getElementById("mexico-zoom-img");
+    const zoomTitle = document.getElementById("mexico-zoom-title");
+    const zoomMeta = document.getElementById("mexico-zoom-meta");
+    if (!zoomModal || !zoomImg) return;
+
+    zoomImg.src = targetCard.data_url;
+    zoomImg.style.transform = `scale(${currentZoomScale})`;
+    if (zoomTitle) {
+      zoomTitle.innerText = `🇲🇽 Dự Án Mexico #${currentProjectDetailData.ma_id || ""} — ${targetCard.title || targetCard.filename}`;
+    }
+    if (zoomMeta) {
+      zoomMeta.innerText = `${Math.round(currentZoomScale * 100)}% • ${targetCard.meta || "1920×1080"}`;
+    }
+    zoomModal.classList.remove("hidden");
+    zoomModal.style.display = "flex";
+  }
+
+  function updateMexicoZoomScale(newScale) {
+    currentZoomScale = Math.max(0.5, Math.min(3.5, Number(newScale.toFixed(2))));
+    const zoomImg = document.getElementById("mexico-zoom-img");
+    const zoomMeta = document.getElementById("mexico-zoom-meta");
+    if (zoomImg) {
+      zoomImg.style.transform = `scale(${currentZoomScale})`;
+    }
+    if (zoomMeta && currentProjectDetailData) {
+      const cards = Array.isArray(currentProjectDetailData.thumbnail_cards) ? currentProjectDetailData.thumbnail_cards : [];
+      const card = cards.find((c) => c.kind === currentZoomKind) || {};
+      zoomMeta.innerText = `${Math.round(currentZoomScale * 100)}% • ${card.meta || "1920×1080"}`;
+    }
+  }
+
+  function renderModalThumbnailsGrid(data) {
+    const gridEl = document.getElementById("adas-thumbnails-grid");
+    if (!gridEl) return;
+    const cards = Array.isArray(data && data.thumbnail_cards) ? data.thumbnail_cards : [];
+    if (cards.length === 0) {
+      gridEl.innerHTML = `<div class="col-span-2 p-6 text-center text-on-surface-variant font-mono text-xs">Chưa có ảnh Thumbnail cho dự án này. Hãy bấm "🔄 Vẽ / Tách Lại Cặp Thumbnail".</div>`;
+      return;
+    }
+
+    gridEl.innerHTML = cards.map((card) => {
+      const borderCls = card.kind === "green"
+        ? "border-[#00ff87]/50 bg-[#001a0d]/40"
+        : "border-primary-container/40 bg-surface-container";
+      const badgeCls = card.kind === "green"
+        ? "bg-[#00ff87]/20 text-[#00ff87] border-[#00ff87]/40"
+        : "bg-secondary-container/20 text-secondary-container border-secondary-container/40";
+      if (!card.exists || !card.data_url) {
+        return `
+          <div class="rounded-lg p-3 border ${borderCls} flex flex-col justify-between gap-2">
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-bold text-xs text-primary">${card.title}</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${badgeCls}">${card.meta || "Chưa có"}</span>
+            </div>
+            <div class="aspect-video w-full rounded bg-surface-container-lowest border border-surface-container-high flex items-center justify-center text-xs text-outline font-mono">
+              Chưa tạo file ${card.filename}
+            </div>
+          </div>
+        `;
+      }
+      return `
+        <div class="rounded-lg p-2.5 border ${borderCls} flex flex-col gap-2 shadow-lg">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-bold text-xs text-primary truncate">${card.title}</span>
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono border shrink-0 ${badgeCls}">${card.meta || "1920×1080"}</span>
+          </div>
+          <div class="relative group aspect-video w-full rounded overflow-hidden bg-black border border-surface-container-highest cursor-zoom-in" data-zoom-kind="${card.kind}">
+            <img src="${card.data_url}" alt="${card.filename}" class="w-full h-full object-contain transition-transform duration-200 group-hover:scale-[1.02]" />
+            <div class="absolute inset-0 bg-black/0 group-hover:bg-black/35 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100">
+              <span class="px-3 py-1.5 rounded-full bg-black/85 text-white font-bold text-xs flex items-center gap-1 border border-white/30 shadow-xl">
+                <span class="material-symbols-outlined text-[16px]">zoom_in</span> Bấm để Phóng To Xem Rõ
+              </span>
+            </div>
+          </div>
+          <div class="flex items-center justify-between gap-2 pt-0.5">
+            <span class="font-mono text-[10.5px] text-on-surface-variant truncate" title="${card.path}">${card.filename}</span>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button type="button" class="btn-thumb-card-zoom px-2.5 py-1 rounded bg-primary-container text-on-primary-container font-bold text-[11px] flex items-center gap-1 hover:brightness-110 transition-all" data-zoom-kind="${card.kind}">
+                <span class="material-symbols-outlined text-[14px]">zoom_in</span> Phóng To
+              </button>
+              <button type="button" class="btn-thumb-card-folder px-2 py-1 rounded bg-surface-container-high hover:bg-surface-bright text-on-surface font-mono text-[11px] border border-outline-variant/40" data-folder-path="${card.path}">
+                📂 Mở File
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    gridEl.querySelectorAll("[data-zoom-kind]").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const k = el.getAttribute("data-zoom-kind") || "main";
+        openMexicoImageZoomLightbox(k);
+      });
+    });
+
+    gridEl.querySelectorAll(".btn-thumb-card-folder").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const p = btn.getAttribute("data-folder-path") || "";
+        const dir = p ? p.replace(/[\\/][^\\/]+$/, "") : (currentProjectDetailData.raw_project_dir || currentProjectDetailData.project_dir);
+        if (dir) await openSystemFolder(dir);
+      });
+    });
+  }
+
+  async function openProjectDetailModal(maId, initialTab = "full_script") {
     try {
       const res = await fetch(`/api/adas/project/${encodeURIComponent(maId)}`);
       if (!res.ok) return;
       currentProjectDetailData = await res.json();
 
       const modal = document.getElementById("adas-detail-modal");
-      const titleEl = document.getElementById("adas-detail-modal-title");
+      const titleEl = document.getElementById("adas-detail-title") || document.getElementById("adas-detail-modal-title");
       if (titleEl) {
-        titleEl.innerText = `📄 HỒ SƠ DỰ ÁN & SEO YOUTUBE — MÃ: ${maId}`;
+        titleEl.innerText = `🇲🇽 Hồ Sơ Toàn Diện Dự Án Mexico — Mã #${maId}`;
       }
+
+      const badgeId = document.getElementById("adas-detail-badge-id");
+      const badgeTitle = document.getElementById("adas-detail-badge-title");
+      const badgeChars = document.getElementById("adas-detail-badge-chars");
+      const badgeThumbs = document.getElementById("adas-detail-badge-thumbs");
+      const footerPath = document.getElementById("adas-detail-footer-path");
+
+      if (badgeId) badgeId.innerText = `#${maId}`;
+      if (badgeTitle) {
+        const lockedT = currentProjectDetailData.locked_title
+          || (currentProjectDetailData.idea && (currentProjectDetailData.idea.locked_title || currentProjectDetailData.idea.draft_title_ja))
+          || `Dự Án Mexico #${maId}`;
+        badgeTitle.innerText = lockedT;
+        badgeTitle.title = lockedT;
+      }
+      if (badgeChars) {
+        const cCount = Number(currentProjectDetailData.pure_char_count || 0);
+        const wCount = Number(currentProjectDetailData.word_count || 0);
+        badgeChars.innerText = `📝 ${cCount.toLocaleString()} chữ (${wCount.toLocaleString()} từ)`;
+      }
+      if (badgeThumbs) {
+        const cards = Array.isArray(currentProjectDetailData.thumbnail_cards) ? currentProjectDetailData.thumbnail_cards : [];
+        const readyCnt = cards.filter((c) => c.exists).length;
+        badgeThumbs.innerText = `🖼️ ${readyCnt}/2 Ảnh Thumbnail & Nền Xanh`;
+      }
+      if (footerPath) {
+        footerPath.innerText = `📁 Thư mục dự án: ${currentProjectDetailData.raw_project_dir || currentProjectDetailData.project_dir || ""}`;
+      }
+
+      renderModalThumbnailsGrid(currentProjectDetailData);
       switchDetailModalTab(initialTab);
-      if (modal) modal.style.display = "flex";
+      if (modal) {
+        modal.classList.remove("hidden");
+        modal.style.display = "flex";
+      }
     } catch (e) {
-      alert("Không thể đọc chi tiết dự án: " + e.message);
+      alert("Không thể đọc chi tiết dự án Mexico: " + e.message);
     }
   }
 
   function switchDetailModalTab(tabKey) {
     if (!currentProjectDetailData) return;
     const txtArea = document.getElementById("adas-detail-textarea");
+    const thumbsView = document.getElementById("adas-detail-thumbnails-view");
+    const stageBar = document.getElementById("adas-script-subfilter-bar");
+
     document.querySelectorAll(".adas-view-tab").forEach((b) => {
       if (b.dataset.tab === tabKey) {
         b.classList.add("active");
-        b.style.borderColor = "var(--accent-gold)";
-        b.style.color = "var(--accent-gold)";
+        b.style.borderColor = "#00ff87";
+        b.style.color = "#00ff87";
+        b.style.background = "rgba(0, 255, 135, 0.12)";
       } else {
         b.classList.remove("active");
-        b.style.borderColor = "rgba(255,255,255,0.2)";
-        b.style.color = "#fff";
+        b.style.borderColor = "rgba(255,255,255,0.15)";
+        b.style.color = "#e2e8f0";
+        b.style.background = "transparent";
       }
     });
-    const content = currentProjectDetailData[tabKey] || "(Chưa có dữ liệu ở bước này — hãy bấm ▶️ Chạy Step 2→Video để hệ thống tạo)";
+
+    if (thumbsView) {
+      if (tabKey === "thumbnails") {
+        thumbsView.classList.remove("hidden");
+        thumbsView.style.display = "flex";
+      } else {
+        thumbsView.classList.add("hidden");
+        thumbsView.style.display = "none";
+      }
+    }
+
+    if (stageBar) {
+      stageBar.style.display = (tabKey === "full_script") ? "flex" : "none";
+    }
+
+    let content = "";
+    if (tabKey === "full_script") {
+      content = currentProjectDetailData.full_script
+        || currentProjectDetailData.script_clean
+        || [currentProjectDetailData.part_a, currentProjectDetailData.part_b, currentProjectDetailData.part_c].filter(Boolean).join("\n\n")
+        || "(Chưa có kịch bản hoàn chỉnh cho dự án Mexico này)";
+      const stageInfoEl = document.getElementById("adas-script-stage-char-info");
+      if (stageInfoEl) {
+        const lenA = (currentProjectDetailData.part_a || "").replace(/\s+/g, "").length;
+        const lenB = (currentProjectDetailData.part_b || "").replace(/\s+/g, "").length;
+        const lenC = (currentProjectDetailData.part_c || "").replace(/\s+/g, "").length;
+        stageInfoEl.innerText = `A: ${lenA.toLocaleString()} | B: ${lenB.toLocaleString()} | C: ${lenC.toLocaleString()} chữ`;
+      }
+      if (txtArea) txtArea.rows = 15;
+    } else if (tabKey === "seo_pack") {
+      content = currentProjectDetailData.seo_pack
+        || currentProjectDetailData.step2_output
+        || "(Chưa có gói SEO YouTube es-MX cho dự án này)";
+      if (txtArea) txtArea.rows = 15;
+    } else if (tabKey === "thumbnails") {
+      const cards = Array.isArray(currentProjectDetailData.thumbnail_cards) ? currentProjectDetailData.thumbnail_cards : [];
+      const lines = cards.map((c, idx) => `${idx + 1}. ${c.title}: ${c.path || "(Chưa tạo)"} (${c.meta || ""})`);
+      content = "📌 ĐƯỜNG DẪN 2 FILE ẢNH THUMBNAIL & NHÂN VẬT NỀN XANH (#00FF00):\n" + lines.join("\n");
+      if (txtArea) txtArea.rows = 3;
+    } else if (tabKey === "outline") {
+      content = currentProjectDetailData.outline
+        || [currentProjectDetailData.step2_output, currentProjectDetailData.step3_output].filter(Boolean).join("\n\n")
+        || "(Chưa có Giàn ý 7 Phần & Tiêu đề cho dự án này)";
+      if (txtArea) txtArea.rows = 15;
+    } else if (tabKey === "audit_report") {
+      content = currentProjectDetailData.audit_report
+        || currentProjectDetailData.step5_output
+        || "(Chưa có Báo cáo kiểm định QA cho dự án này)";
+      if (txtArea) txtArea.rows = 15;
+    } else if (tabKey === "step2_prompt") {
+      content = currentProjectDetailData.step2_prompt
+        || "(Chưa có Lệnh khởi tạo cho dự án này)";
+      if (txtArea) txtArea.rows = 15;
+    } else {
+      content = currentProjectDetailData[tabKey] || "";
+    }
+
     if (txtArea) txtArea.value = content;
   }
 
@@ -2695,11 +3077,11 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    // 1. Nút mở từng tài khoản Chrome ChatGPT (Acc #1, Acc #2, Acc #3)
+    // 1. Nút mở từng tài khoản Chrome ChatGPT (Acc #1 .. Acc #5)
     document.querySelectorAll(".chatgpt-acc-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const accId = btn.dataset.acc || "acc_1";
-        const origText = btn.innerText;
+        const origHtml = btn.innerHTML;
         btn.innerText = `⏳ Đang mở ${accId.toUpperCase()}...`;
         try {
           await fetch("/api/chatgpt/open_browser", {
@@ -2709,10 +3091,72 @@ document.addEventListener("DOMContentLoaded", () => {
           });
           setTimeout(() => refreshChatGPTAccountsBar(true), 1200);
         } catch (e) {
-          btn.innerText = origText;
+          btn.innerHTML = origHtml;
         }
       });
     });
+
+    // 1a. Nút Thêm Acc (tự động mở slot tiếp theo chưa đăng nhập trong tối đa 5 Acc để user đăng nhập)
+    const addAccBtn = document.getElementById("btn-chatgpt-add-acc");
+    if (addAccBtn) {
+      addAccBtn.addEventListener("click", async () => {
+        const origHtml = addAccBtn.innerHTML;
+        addAccBtn.innerText = "⏳ Đang kiểm tra...";
+        try {
+          const stRes = await fetch("/api/chatgpt/status?force=true");
+          const stData = await stRes.json();
+          const accs = (stData && stData.accounts) || {};
+          const nextAcc = ["acc_1", "acc_2", "acc_3", "acc_4", "acc_5"].find(
+            (aid) => !(accs[aid] && (accs[aid].saved_logged_in || accs[aid].logged_in))
+          );
+          if (!nextAcc) {
+            alert("✅ Bạn đã đăng nhập và lưu đủ tối đa 5/5 tài khoản ChatGPT (Acc #1 -> Acc #5)!");
+            await refreshChatGPTAccountsBar(true);
+            return;
+          }
+          const idxNum = nextAcc.replace("acc_", "");
+          addAccBtn.innerText = `⏳ Mở Acc #${idxNum}...`;
+          appendInstantLogToUI(
+            `➕ Đang mở trình duyệt Chrome cho Acc #${idxNum} (Cổng ${9231 + parseInt(idxNum, 10)}) để bạn đăng nhập ChatGPT — Đăng nhập xong hệ thống sẽ tự động lưu lại!`,
+            "CHROME",
+            "INFO"
+          );
+          await fetch("/api/chatgpt/open_browser", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ acc_id: nextAcc })
+          });
+          setTimeout(() => refreshChatGPTAccountsBar(true), 1200);
+        } catch (e) {
+          addAccBtn.innerHTML = origHtml;
+        }
+      });
+    }
+
+    // 1a-2. Nút Tắt Chrome (Đóng toàn bộ cửa sổ Chrome ChatGPT khi không dùng, giữ nguyên trạng thái đã lưu)
+    const closeAllChromeBtn = document.getElementById("btn-chatgpt-close-all");
+    if (closeAllChromeBtn) {
+      closeAllChromeBtn.addEventListener("click", async () => {
+        const origHtml = closeAllChromeBtn.innerHTML;
+        closeAllChromeBtn.innerText = "🛑 Đang tắt Chrome...";
+        try {
+          const res = await fetch("/api/chatgpt/close_browsers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ only_if_idle: false })
+          });
+          const data = await res.json().catch(() => ({}));
+          appendInstantLogToUI(
+            `🛑 Đã tắt ${data.closed_count || 0} cửa sổ trình duyệt Chrome ChatGPT (Các tài khoản đã đăng nhập vẫn được lưu giữ 100%)!`,
+            "CHROME",
+            "INFO"
+          );
+          await refreshChatGPTAccountsBar(true);
+        } catch (e) {
+          closeAllChromeBtn.innerHTML = origHtml;
+        }
+      });
+    }
 
     // 1b. Nút mở Google Gemini 3.8 High trên cổng Chrome riêng (Gemini #1: 9225, #2: 9226, #3: 9227)
     document.querySelectorAll(".gemini-acc-btn").forEach((btn) => {
@@ -3357,15 +3801,130 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    // 9. Modal Xem Chi Tiết Kết Quả & Đẩy Sang Bàn Sản Xuất Video
+    // 9. Modal Xem Chi Tiết Kết Quả Dự Án Mexico & Phóng To Ảnh Thumbnail
     const closeDetailBtn = document.getElementById("btn-close-adas-detail-modal");
     const detailModal = document.getElementById("adas-detail-modal");
     if (closeDetailBtn && detailModal) {
-      closeDetailBtn.addEventListener("click", () => { detailModal.style.display = "none"; });
+      closeDetailBtn.addEventListener("click", () => {
+        detailModal.style.display = "none";
+        detailModal.classList.add("hidden");
+      });
+    }
+
+    const detailOpenFolderBtn = document.getElementById("btn-adas-detail-open-folder");
+    if (detailOpenFolderBtn) {
+      detailOpenFolderBtn.addEventListener("click", async () => {
+        if (!currentProjectDetailData) return;
+        const dir = currentProjectDetailData.raw_project_dir || currentProjectDetailData.project_dir;
+        if (dir) await openSystemFolder(dir);
+      });
+    }
+
+    const regenThumbsBtn = document.getElementById("btn-adas-regenerate-thumbs");
+    if (regenThumbsBtn) {
+      regenThumbsBtn.addEventListener("click", async () => {
+        if (!currentProjectDetailData || !currentProjectDetailData.ma_id) return;
+        const mid = currentProjectDetailData.ma_id;
+        const origTxt = regenThumbsBtn.innerText;
+        regenThumbsBtn.disabled = true;
+        regenThumbsBtn.innerText = "⏳ Đang vẽ lại...";
+        try {
+          const res = await fetch(`/api/adas/project/${encodeURIComponent(mid)}/generate-thumbnails?force=true`, {
+            method: "POST"
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            alert(data.detail || "Không thể khởi chạy vẽ lại Thumbnail!");
+          } else {
+            alert(`🎨 Đã bắt đầu vẽ & tách lại cặp Thumbnail + Nền Xanh cho dự án Mexico #${mid}!`);
+          }
+        } catch (e) {
+          alert("Lỗi khởi chạy vẽ lại Thumbnail: " + e.message);
+        } finally {
+          regenThumbsBtn.disabled = false;
+          regenThumbsBtn.innerText = origTxt;
+        }
+      });
     }
 
     document.querySelectorAll(".adas-view-tab").forEach((b) => {
       b.addEventListener("click", () => switchDetailModalTab(b.dataset.tab));
+    });
+
+    document.querySelectorAll(".adas-script-stage-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!currentProjectDetailData) return;
+        const stg = btn.dataset.stage || "full_script";
+        document.querySelectorAll(".adas-script-stage-btn").forEach((b) => {
+          if (b.dataset.stage === stg) {
+            b.className = "adas-script-stage-btn px-2 py-0.5 rounded bg-primary-container/20 text-primary-container border border-primary-container/40 font-bold";
+          } else {
+            b.className = "adas-script-stage-btn px-2 py-0.5 rounded bg-surface-container hover:bg-surface-container-high text-on-surface-variant";
+          }
+        });
+        const txtArea = document.getElementById("adas-detail-textarea");
+        if (!txtArea) return;
+        if (stg === "part_a") {
+          txtArea.value = currentProjectDetailData.part_a || "(Không tìm thấy file part_a.txt riêng — xem tại Toàn Bộ 7 Phần)";
+        } else if (stg === "part_b") {
+          txtArea.value = currentProjectDetailData.part_b || "(Không tìm thấy file part_b.txt riêng — xem tại Toàn Bộ 7 Phần)";
+        } else if (stg === "part_c") {
+          txtArea.value = currentProjectDetailData.part_c || "(Không tìm thấy file part_c.txt riêng — xem tại Toàn Bộ 7 Phần)";
+        } else {
+          txtArea.value = currentProjectDetailData.full_script || currentProjectDetailData.script_clean || "";
+        }
+      });
+    });
+
+    // Sự kiện cho Lightbox Phóng To Ảnh Thumbnail & Nền Xanh
+    const zoomModal = document.getElementById("mexico-image-zoom-modal");
+    const closeZoomBtn = document.getElementById("btn-close-mexico-zoom");
+    const zoomInBtn = document.getElementById("btn-zoom-in");
+    const zoomOutBtn = document.getElementById("btn-zoom-out");
+    const zoomResetBtn = document.getElementById("btn-zoom-reset");
+    const zoomSwitchMainBtn = document.getElementById("btn-zoom-switch-main");
+    const zoomSwitchGreenBtn = document.getElementById("btn-zoom-switch-green");
+    const zoomViewport = document.getElementById("mexico-zoom-viewport");
+
+    if (closeZoomBtn && zoomModal) {
+      closeZoomBtn.addEventListener("click", () => {
+        zoomModal.style.display = "none";
+        zoomModal.classList.add("hidden");
+      });
+    }
+    if (zoomInBtn) zoomInBtn.addEventListener("click", () => updateMexicoZoomScale(currentZoomScale + 0.25));
+    if (zoomOutBtn) zoomOutBtn.addEventListener("click", () => updateMexicoZoomScale(currentZoomScale - 0.25));
+    if (zoomResetBtn) zoomResetBtn.addEventListener("click", () => updateMexicoZoomScale(1.0));
+    if (zoomSwitchMainBtn) zoomSwitchMainBtn.addEventListener("click", () => openMexicoImageZoomLightbox("main"));
+    if (zoomSwitchGreenBtn) zoomSwitchGreenBtn.addEventListener("click", () => openMexicoImageZoomLightbox("green"));
+    if (zoomViewport) {
+      zoomViewport.addEventListener("wheel", (ev) => {
+        ev.preventDefault();
+        const delta = ev.deltaY < 0 ? 0.2 : -0.2;
+        updateMexicoZoomScale(currentZoomScale + delta);
+      }, { passive: false });
+      zoomViewport.addEventListener("click", (ev) => {
+        if (ev.target === zoomViewport && zoomModal) {
+          zoomModal.style.display = "none";
+          zoomModal.classList.add("hidden");
+        }
+      });
+    }
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        if (zoomModal && !zoomModal.classList.contains("hidden") && zoomModal.style.display !== "none") {
+          zoomModal.style.display = "none";
+          zoomModal.classList.add("hidden");
+          return;
+        }
+        ["adas-detail-modal", "stock-modal", "license-modal", "step2-template-modal"].forEach((mid) => {
+          const mEl = document.getElementById(mid);
+          if (mEl && (!mEl.classList.contains("hidden") || mEl.style.display === "flex")) {
+            mEl.style.display = "none";
+            mEl.classList.add("hidden");
+          }
+        });
+      }
     });
 
     const copyDetailBtn = document.getElementById("btn-adas-copy-detail");
@@ -3383,28 +3942,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const pushToSingleBtn = document.getElementById("btn-adas-push-to-single");
     if (pushToSingleBtn) {
-      pushToSingleBtn.addEventListener("click", () => {
+      pushToSingleBtn.addEventListener("click", async () => {
         if (!currentProjectDetailData || !currentProjectDetailData.script_clean) {
-          alert("Dự án này chưa có kịch bản tiếng Nhật hoàn chỉnh (Step 4).");
+          alert("Dự án Mexico này chưa có kịch bản hoàn chỉnh.");
           return;
         }
-        currentMode = "single";
-        if (scriptTextInput) {
-          scriptTextInput.value = currentProjectDetailData.script_clean;
-          scriptTextInput.dispatchEvent(new Event("input"));
+        if (detailModal) {
+          detailModal.style.display = "none";
+          detailModal.classList.add("hidden");
         }
-        if (legacyScriptTextInput && legacyScriptTextInput !== scriptTextInput) {
-          legacyScriptTextInput.value = currentProjectDetailData.script_clean;
-        }
-        if (projectNameInput && currentProjectDetailData.ma_id) {
-          projectNameInput.value = currentProjectDetailData.ma_id;
-        }
-        if (legacyProjectNameInput && currentProjectDetailData.ma_id && legacyProjectNameInput !== projectNameInput) {
-          legacyProjectNameInput.value = currentProjectDetailData.ma_id;
-        }
-        if (detailModal) detailModal.style.display = "none";
-        switchStudioTab("tab-render");
-        if (tabSingle) tabSingle.click();
+        await triggerRenderOnly([currentProjectDetailData.ma_id], false);
       });
     }
 
@@ -3538,7 +4085,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const cdpCountEl = document.getElementById("gauge-cdp-count");
         const cdpPortsBox = document.getElementById("gauge-cdp-ports-status");
         if (cdpCountEl && t.cdp_active_count !== undefined) {
-          cdpCountEl.innerText = `${t.cdp_active_count}/3 ACTIVE`;
+          cdpCountEl.innerText = `${t.cdp_active_count}/5 ACTIVE`;
         }
         if (cdpPortsBox && Array.isArray(t.cdp_ports)) {
           cdpPortsBox.innerHTML = t.cdp_ports.map((p) => {
@@ -4334,7 +4881,7 @@ document.addEventListener("DOMContentLoaded", () => {
           renderUpdateUI(data, isManual);
         } else {
           // Dự phòng trực tiếp tới GitHub nếu tiến trình server cũ chưa khởi động lại
-          const ghRes = await fetch(`https://raw.githubusercontent.com/phamngocthu661-lang/drama-nhat-studio/main/version.json?t=${Date.now()}`);
+          const ghRes = await fetch(`https://raw.githubusercontent.com/phamngocthu661-lang/mexico-ong-gia-studio/main/version.json?t=${Date.now()}`);
           if (ghRes.ok) {
             const ghData = await ghRes.json();
             const curVer = (verBadge && verBadge.innerText.trim()) || "V1.0.0";

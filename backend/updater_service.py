@@ -65,7 +65,7 @@ def parse_version_tuple(ver_str: str) -> Tuple[int, int, int]:
 
 
 def _resolve_root_dir(root_dir: Optional[Path] = None) -> Path:
-    r = Path(root_dir).resolve() if root_dir else Path(__file__).resolve().parent.parent
+    r = Path(os.path.abspath(str(root_dir))) if root_dir else Path(os.path.abspath(__file__)).parent.parent
     if r.name.lower() == "app":
         r = r.parent
     elif not (r / "STOOK").exists() and (r.parent / "STOOK").exists():
@@ -76,7 +76,6 @@ def _resolve_root_dir(root_dir: Optional[Path] = None) -> Path:
 def get_local_version_info(root_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Đọc thông tin phiên bản hiện tại của ứng dụng từ file version.json."""
     root_dir = _resolve_root_dir(root_dir)
-
     candidates = [
         root_dir / "version.json",
         root_dir / "app" / "version.json",

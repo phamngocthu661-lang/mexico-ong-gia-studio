@@ -373,3 +373,22 @@ select {
   max-width: 100%;
 }
 
+/* Cô lập hoàn toàn Z-Index của khung Preview 16:9 để Lớp #1 Sub Karaoke không bao giờ đè lên các cửa sổ Modal */
+#preview-container,
+.cinema-preview-container {
+  isolation: isolate !important;
+  z-index: 1 !important;
+}
+
+#stock-modal,
+#license-modal,
+#adas-detail-modal,
+#step2-template-modal {
+  z-index: 9999 !important;
+}
+
+#mexico-image-zoom-modal {
+  z-index: 10050 !important;
+}
+
+

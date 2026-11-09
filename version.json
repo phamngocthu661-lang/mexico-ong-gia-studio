@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.11",
-  "build_number": 131,
-  "released_at": "2026-11-09 03:13:19",
+  "version": "V1.0.17",
+  "build_number": 133,
+  "released_at": "2026-11-09 16:01:11",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "Tối ưu luồng viết kịch bản xuống đúng 4 đoạn New Chat: Chat #1 (Skill 01+02), Chat #2 (Skill 03 Stage A+B+C), Chat #3 (Skill 04 Vòng 1+2), Chat #4 (Skill 05+Vẽ Thumbnail)"
+  "changelog": "Nâng cấp Kho Stock 2 Chế Độ (1. Dùng Stock Tải Về Tự Động & 2. Dùng Stock Sẵn Có), tạo Link Note Chống Trùng riêng cho Mexico Ông Già, tối ưu tối đa 5 tài khoản ChatGPT (tự tắt Chrome khi rảnh) và sửa lỗi khởi động trên máy mới."
 }

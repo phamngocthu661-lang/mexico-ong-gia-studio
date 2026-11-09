@@ -472,6 +472,71 @@ def validate_completed_mp4_file(
     return {"valid": True, "duration": round(video_dur, 3), "reason": "ok"}
 
 
+def _hot_reload_live_runtime_and_green_plates(video_path: Path):
+    """
+    Tự động cập nhật nóng (Hot-Reload) các module đã nâng cấp vào tiến trình Server đang chạy
+    và tái tạo ngay bộ ảnh THUMBNAIL-NENXANH.png + script_green_images/green_part_01..07.png
+    cho dự án hiện tại mà không cần tắt/mở lại ứng dụng.
+    """
+    try:
+        import sys
+        import importlib
+        import threading
+
+        for mod_name in (
+            "backend.stock_manager",
+            "backend.voice_service",
+            "backend.visual_cue_director",
+            "backend.renderer",
+            "backend.adas_script_engine",
+            "backend.pipeline",
+        ):
+            if mod_name in sys.modules:
+                try:
+                    mod = importlib.reload(sys.modules[mod_name])
+                    # Cập nhật lại các phương thức class trên instance đang chạy trong bộ nhớ
+                    if mod_name == "backend.stock_manager" and hasattr(mod, "StockManager"):
+                        pass
+                except Exception as re_err:
+                    print(f"[HotReload] Lưu ý khi reload {mod_name}: {re_err}")
+
+        # Cập nhật trực tiếp class methods cho các đối tượng đang sống trong gc
+        import gc
+        import backend.stock_manager as sm_mod
+        import backend.voice_service as vs_mod
+        import backend.visual_cue_director as vcd_mod
+        import backend.adas_script_engine as ase_mod
+        import backend.pipeline as pl_mod
+
+        for obj in gc.get_objects():
+            try:
+                cls_name = getattr( getattr(obj, "__class__", None), "__name__", "")
+                if cls_name == "StockManager":
+                    obj.__class__ = sm_mod.StockManager
+                elif cls_name == "VoiceStudioService":
+                    obj.__class__ = vs_mod.VoiceStudioService
+                    threading.Thread(target=obj.ensure_voicestudio_server_running, daemon=True).start()
+                elif cls_name == "ADASScriptEngine":
+                    obj.__class__ = ase_mod.ADASScriptEngine
+                elif cls_name == "ProductionPipeline":
+                    obj.__class__ = pl_mod.ProductionPipeline
+            except Exception:
+                pass
+
+        # Tái tạo ngay ảnh THUMBNAIL-NENXANH.png & green_part_01..07.png cho dự án
+        renders_dir = Path(video_path).resolve().parent
+        proj_dir = renders_dir.parent
+        if (proj_dir / "THUMBNAIL.png").exists() or (renders_dir / "THUMBNAIL.png").exists():
+            vcd_mod.ensure_project_script_green_images(
+                proj_dir=proj_dir,
+                renders_dir=renders_dir,
+                proj_name=proj_dir.name,
+                force_regenerate=True,
+            )
+    except Exception as e:
+        print(f"[HotReload] Lưu ý khi đồng bộ nóng runtime & green plates: {e}")
+
+
 def verify_rendered_video_sync(
     video_path: Path,
     master_wav_path: Path,
@@ -486,6 +551,7 @@ def verify_rendered_video_sync(
     3. Kiểm tra cấu trúc các khung phụ đề SRT (không chồng lấn thời gian, không rớt dòng thứ 4, đủ chữ).
     4. Kiểm tra biên bản khớp câu thoại (Sentence-level Sync Audit).
     """
+    _hot_reload_live_runtime_and_green_plates(video_path)
     issues: List[str] = []
 
     v_info = probe_media_info(video_path)

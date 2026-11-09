@@ -8,7 +8,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(os.path.abspath(__file__)).parent
 
 
 def sync_root_to_app():

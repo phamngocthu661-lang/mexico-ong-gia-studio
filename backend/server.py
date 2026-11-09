@@ -24,6 +24,8 @@ from .chatgpt_web_client import (
     ensure_chrome_debug_browser_open,
     set_chrome_window_visibility,
     sweep_completed_and_idle_tabs_across_all_accounts,
+    close_all_chatgpt_browsers,
+    CHATGPT_ACCOUNTS,
 )
 from .adas_script_engine import ADASScriptEngine, build_step2_prompt_from_idea, parse_idea_input_block
 from .logger_service import (
@@ -43,7 +45,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 def create_app(root_dir: Optional[Path] = None) -> FastAPI:
-    base_dir = Path(root_dir).resolve() if root_dir else Path(__file__).resolve().parent.parent
+    base_dir = Path(os.path.abspath(str(root_dir))) if root_dir else Path(os.path.abspath(__file__)).parent.parent
     if base_dir.name.lower() == "app":
         base_dir = base_dir.parent
     elif not (base_dir / "STOOK").exists() and (base_dir.parent / "STOOK").exists():
@@ -53,8 +55,8 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     for cand in [
         base_dir / "frontend",
         base_dir / "app" / "frontend",
-        Path(__file__).resolve().parent.parent / "frontend",
-        Path(__file__).resolve().parent / "frontend"
+        Path(os.path.abspath(__file__)).parent.parent / "frontend",
+        Path(os.path.abspath(__file__)).parent / "frontend"
     ]:
         if (cand / "index.html").exists():
             frontend_dir = cand
@@ -341,7 +343,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
         import socket
         cdp_ports = []
-        for idx, port in enumerate((9232, 9233, 9234), start=1):
+        for idx, port in enumerate((9232, 9233, 9234, 9235, 9236), start=1):
             alive = False
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -433,7 +435,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         return {"success": True, "output": out_text}
 
     # ==========================================================================
-    # 4 API ĐIỀU KHIỂN 3 TÀI KHOẢN CHATGPT WEB (MASTER BLUEPRINT V6.0)
+    # 5 API ĐIỀU KHIỂN 5 TÀI KHOẢN CHATGPT WEB (MASTER BLUEPRINT V6.0)
     # ==========================================================================
     @app.get("/api/chatgpt/status")
     def api_chatgpt_status(force: bool = False):
@@ -446,6 +448,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             force_bring_to_front=True,
             run_hidden=False,
             acc_id=req.acc_id,
+            manual_open=True,
         )
 
     @app.post("/api/chatgpt/visibility")
@@ -455,6 +458,17 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     @app.post("/api/chatgpt/sweep_tabs")
     def api_chatgpt_sweep_tabs():
         return sweep_completed_and_idle_tabs_across_all_accounts()
+
+    @app.post("/api/chatgpt/close_browsers")
+    def api_chatgpt_close_browsers(payload: Optional[Dict[str, Any]] = None):
+        payload = payload or {}
+        acc_id = payload.get("acc_id")
+        only_if_idle = bool(payload.get("only_if_idle", False))
+        return close_all_chatgpt_browsers(
+            acc_id=acc_id,
+            only_if_idle=only_if_idle,
+            reason="Người dùng bấm nút Tắt Chrome trên giao diện",
+        )
 
     # ==========================================================================
     # API DÂY CHUYỀN ADAS (LƯU TIÊU ĐỀ NHÁP & CHẠY STEP 2 -> STEP 6 -> VIDEO)
@@ -866,9 +880,23 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     def get_status():
         return pipeline.get_state()
 
+    class StockSourceModeRequest(BaseModel):
+        mode: str = "auto_download"
+
     @app.get("/api/stocks")
     def get_stocks():
-        return pipeline.stock_manager.get_all_stocks()
+        return pipeline.stock_manager.get_all_stocks_info()
+
+    @app.post("/api/stocks/mode")
+    def set_stock_source_mode(req: StockSourceModeRequest):
+        res = pipeline.stock_manager.set_stock_source_mode(req.mode)
+        mode_lbl = (
+            "1. Dùng Stock Tải Về Tự Động (Pexels / Pixabay / YouTube • Chống trùng 100%)"
+            if res.get("stock_source_mode") == "auto_download"
+            else "2. Dùng Stock Sẵn Có Trong Máy (Xoay vòng kho STOOK • Giữ nguyên file)"
+        )
+        log_info("STOCK", f"🔄 Đã chuyển chế độ Nguồn Video Stock sang: {mode_lbl}")
+        return {"success": True, **res}
 
     @app.post("/api/stocks/scan")
     def rescan_stocks():
@@ -892,6 +920,73 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
     def cleanup_used_stocks():
         res = pipeline.stock_manager.cleanup_all_used_stocks()
         return res
+
+    @app.post("/api/stocks/download-youtube")
+    def download_youtube_stock(req: YouTubeDownloadRequest):
+        log_info("STOCK", f"📥 Bắt đầu tải & cắt Part {req.slice_minutes}p từ link YouTube: {req.url}")
+        res = pipeline.stock_manager.download_youtube_and_slice(
+            req.url,
+            slice_minutes=req.slice_minutes,
+            force_redownload=req.force,
+        )
+        if not res.get("success") and not res.get("already_exists"):
+            log_error("STOCK", f"❌ Lỗi tải Stock YouTube ({req.url}): {res.get('error')}")
+            raise HTTPException(status_code=400, detail=res.get("error", "Lỗi tải video YouTube"))
+        if res.get("success"):
+            log_info("STOCK", f"✅ Đã tải & cắt thành công {res.get('parts_count', 0)} part vào kho STOOK ({res.get('video_id')}).")
+        return res
+
+    class PexelsPixabayDownloadRequest(BaseModel):
+        query: str = ""
+        target_minutes: int = 30
+
+    @app.post("/api/stocks/download-pexels-pixabay")
+    def download_pexels_pixabay_stock(req: PexelsPixabayDownloadRequest):
+        def _on_px_progress(msg: str):
+            log_info("STOCK", msg)
+            on_pipeline_update({
+                **pipeline.get_state(),
+                "message": msg,
+            })
+
+        log_info("STOCK", f"🌐 Bắt đầu tải cuộn Stock {req.target_minutes}p từ Pexels & Pixabay API...")
+        res = pipeline.stock_manager.download_pexels_pixabay_stock_reel(
+            query=req.query,
+            target_minutes=req.target_minutes,
+            progress_callback=_on_px_progress,
+        )
+        if not res.get("success"):
+            log_error("STOCK", f"❌ Lỗi tải Stock Pexels/Pixabay: {res.get('error')}")
+            raise HTTPException(status_code=400, detail=res.get("error", "Lỗi tải video Pexels/Pixabay"))
+        log_info("STOCK", res.get("message", "✅ Đã tải xong cuộn Stock Pexels/Pixabay!"))
+        return res
+
+    @app.post("/api/stocks/auto-replenish")
+    def auto_replenish_stocks(req: AutoReplenishStockRequest):
+        def _on_replenish_progress(msg: str):
+            log_info("STOCK", msg)
+            on_pipeline_update({
+                **pipeline.get_state(),
+                "message": msg,
+            })
+
+        log_info("STOCK", f"⚡ Kiểm tra & tự động tải bù Kho Stock cho đủ {req.target_hours} giờ...")
+        res = pipeline.stock_manager.ensure_minimum_stock_hours(
+            target_hours=req.target_hours,
+            slice_minutes=req.slice_minutes,
+            progress_callback=_on_replenish_progress,
+        )
+        return res
+
+    @app.post("/api/stocks/sync-cloud-note")
+    def sync_cloud_note_stocks():
+        res = pipeline.stock_manager.sync_cloud_used_links(push_if_needed=True)
+        log_info("STOCK", f"☁️ Đã đồng bộ File Note Online Mexico Ông Già ({res.get('cloud_note_url')}): Tổng {res.get('total_synced_ids', 0)} link chống trùng.")
+        return res
+
+    @app.get("/api/stocks/cloud-note")
+    def get_cloud_note_info():
+        return pipeline.stock_manager.get_cloud_note_info()
 
     # ==========================================================================
     # API KHO VIDEO GREEN (`Kho_Green/`) & BỐ CỤC TÁCH LỚP PREVIEW (80/20 + KARAOKE)

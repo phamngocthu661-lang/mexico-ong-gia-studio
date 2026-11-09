@@ -345,9 +345,8 @@ def prepare_script_green_character_cutout(
 ) -> Optional[str]:
     """
     Tách sạch nền xanh `#00FF00` từ `THUMBNAIL-NENXANH.png` (hoặc `green_part_01..07.png`),
-    cắt sát khung nhân vật (loại bỏ khoảng trống phía dưới chân),
-    co giãn theo đúng khung `(width, height)` người dùng chọn trên Preview,
-    đặt SÁT ĐÁY DƯỚI CÙNG (`paste_y = target_h - new_h`), và áp dụng `opacity = 0.9`.
+    tự động kiểm tra và làm sạch chữ thừa nếu ảnh cũ chưa chuẩn,
+    phóng to nhân vật sắc nét theo khung Preview và đặt SÁT ĐÁY DƯỚI CÙNG (`paste_y = target_h - new_h`).
     """
     if not green_screen_path or not os.path.exists(green_screen_path):
         return None
@@ -355,17 +354,36 @@ def prepare_script_green_character_cutout(
         src_p = Path(green_screen_path).resolve()
         if src_p.stat().st_size < 5_000:
             return None
+
+        # Tự động kiểm tra xem ảnh nền xanh hiện tại có bị dính chữ cắt dở hoặc nhân vật nhỏ không; nếu có thì tái tạo ngay từ THUMBNAIL.png!
+        try:
+            from backend.visual_cue_director import (
+                _is_green_plate_clean_and_large,
+                normalize_character_to_strict_80_20_green_plate,
+            )
+            if not _is_green_plate_clean_and_large(src_p):
+                for cand_thumb in (
+                    src_p.parent / "THUMBNAIL.png",
+                    src_p.parent.parent / "THUMBNAIL.png",
+                    src_p.parent.parent / "renders" / "THUMBNAIL.png",
+                ):
+                    if cand_thumb.exists() and cand_thumb.stat().st_size > 5_000:
+                        normalize_character_to_strict_80_20_green_plate(cand_thumb, src_p, part_index=1)
+                        break
+        except Exception:
+            pass
+
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         scale_x = target_w / 1920.0
         scale_y = target_h / 1080.0
-        box_x = int(round(float(char_cfg.get("x", 1410)) * scale_x))
-        box_w = max(80, int(round(float(char_cfg.get("width", 490)) * scale_x)))
-        box_h = max(120, int(round(float(char_cfg.get("height", 780)) * scale_y)))
+        box_x = int(round(float(char_cfg.get("x", 1260)) * scale_x))
+        box_w = max(int(round(580 * scale_x)), int(round(float(char_cfg.get("width", 660)) * scale_x)))
+        box_h = max(int(round(880 * scale_y)), int(round(float(char_cfg.get("height", 1020)) * scale_y)))
         opacity = max(0.1, min(1.0, float(char_cfg.get("opacity", 0.90))))
 
         sig = (
-            f"char_bottom_v3|{src_p}|{src_p.stat().st_mtime_ns}|{src_p.stat().st_size}|"
+            f"char_bottom_v6|{src_p}|{src_p.stat().st_mtime_ns}|{src_p.stat().st_size}|"
             f"{target_w}x{target_h}|x{box_x}_w{box_w}_h{box_h}_op{opacity:.2f}"
         )
         sig_hash = hashlib.md5(sig.encode("utf-8")).hexdigest()[:12]
@@ -378,6 +396,11 @@ def prepare_script_green_character_cutout(
 
         im = Image.open(src_p).convert("RGBA")
         arr = np.asarray(im, dtype=np.float32)
+        # Chỉ lấy vùng nhân vật bên phải (x >= 55% chiều ngang) để tuyệt đối không bao giờ lấy nhầm chữ bên trái
+        w_src = arr.shape[1]
+        x_min_safe = int(round(w_src * 0.55))
+        arr[:, :x_min_safe, 3] = 0.0
+
         r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
 
         max_rb = np.maximum(r, b)
@@ -420,14 +443,18 @@ def prepare_script_green_character_cutout(
         char_crop = Image.fromarray(rgba_clean).crop((x1, y1, x2 + 1, y2 + 1))
         cw, ch = char_crop.size
 
-        scale = min(box_w / max(1, cw), box_h / max(1, ch))
-        new_w = max(64, int(round(cw * scale)))
-        new_h = max(64, int(round(ch * scale)))
+        scale = max(box_w / max(1, cw), min(box_h / max(1, ch), (target_w * 0.38) / max(1, cw)))
+        new_w = max(int(round(540 * scale_x)), min(int(round(740 * scale_x)), int(round(cw * scale))))
+        new_h = max(int(round(720 * scale_y)), min(int(round(target_h * 0.96)), int(round(ch * (new_w / max(1, cw))))))
+        if new_h > int(round(target_h * 0.96)):
+            new_h = int(round(target_h * 0.96))
+            new_w = max(int(round(520 * scale_x)), min(int(round(740 * scale_x)), int(round(cw * (new_h / max(1, ch))))))
+
         char_resized = char_crop.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
         canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
-        # Căn giữa theo chiều ngang trong khung box_x..box_x+box_w, và BẮT BUỘC SÁT ĐÁY DƯỚI CÙNG (paste_y = target_h - new_h)
-        paste_x = max(0, min(target_w - new_w, box_x + (box_w - new_w) // 2))
+        # Đặt sát mép phải và BẮT BUỘC SÁT ĐÁY DƯỚI CÙNG (paste_y = target_h - new_h)
+        paste_x = max(0, target_w - new_w)
         paste_y = max(0, target_h - new_h)
         canvas.paste(char_resized, (paste_x, paste_y), char_resized)
         canvas.save(out_png, format="PNG", optimize=True)

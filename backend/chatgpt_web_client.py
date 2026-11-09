@@ -106,35 +106,145 @@ ACCOUNTS_CONFIG: Dict[str, Dict[str, Any]] = {
         "port": 9234,
         "profile_dir": _resolve_persistent_profile_dir("acc_3", "BROWSER_PROFILE_3"),
     },
+    "acc_4": {
+        "acc_id": "acc_4",
+        "label": "Acc #4",
+        "port": 9235,
+        "profile_dir": _resolve_persistent_profile_dir("acc_4", "BROWSER_PROFILE_4"),
+    },
+    "acc_5": {
+        "acc_id": "acc_5",
+        "label": "Acc #5",
+        "port": 9236,
+        "profile_dir": _resolve_persistent_profile_dir("acc_5", "BROWSER_PROFILE_5"),
+    },
 }
+CHATGPT_ACCOUNTS: List[str] = list(ACCOUNTS_CONFIG.keys())
+
+_ACCOUNTS_STATE_FILE = ROOT_DIR / "config" / "chatgpt_accounts_state.json"
+_APPDATA_ACCOUNTS_STATE_FILE = _APPDATA_STUDIO_DIR / "chatgpt_accounts_state.json"
+_ACCOUNTS_STATE_IO_LOCK = threading.Lock()
 
 _STATE_LOCK = threading.Lock()
-_CHROME_HIDDEN_STATE: Dict[str, bool] = {
-    "acc_1": False,
-    "acc_2": False,
-    "acc_3": False,
-}
-_ACTIVE_JOBS_BY_ACC: Dict[str, Dict[str, str]] = {
-    "acc_1": {},  # tab_id -> project_id
-    "acc_2": {},
-    "acc_3": {},
-}
-_PENDING_PROJECTS_BY_ACC: Dict[str, set] = {
-    "acc_1": set(),
-    "acc_2": set(),
-    "acc_3": set(),
-}
+_CHROME_HIDDEN_STATE: Dict[str, bool] = {aid: False for aid in CHATGPT_ACCOUNTS}
+_ACTIVE_JOBS_BY_ACC: Dict[str, Dict[str, str]] = {aid: {} for aid in CHATGPT_ACCOUNTS}
+_PENDING_PROJECTS_BY_ACC: Dict[str, set] = {aid: set() for aid in CHATGPT_ACCOUNTS}
 ACCOUNT_LIMIT_COOLDOWN_SEC = 1800  # Tạm dừng 30 phút (1800 giây) khi tài khoản bị Limit
-_ACCOUNT_COOLDOWN_UNTIL: Dict[str, float] = {
-    "acc_1": 0.0,
-    "acc_2": 0.0,
-    "acc_3": 0.0,
-}
-_ACCOUNT_COOLDOWN_REASON: Dict[str, str] = {
-    "acc_1": "",
-    "acc_2": "",
-    "acc_3": "",
-}
+_ACCOUNT_COOLDOWN_UNTIL: Dict[str, float] = {aid: 0.0 for aid in CHATGPT_ACCOUNTS}
+_ACCOUNT_COOLDOWN_REASON: Dict[str, str] = {aid: "" for aid in CHATGPT_ACCOUNTS}
+_LAST_ACTIVITY_TS_BY_ACC: Dict[str, float] = {aid: 0.0 for aid in CHATGPT_ACCOUNTS}
+_MANUAL_OPEN_TS_BY_ACC: Dict[str, float] = {aid: 0.0 for aid in CHATGPT_ACCOUNTS}
+
+
+def _is_valid_saved_email(val: str) -> bool:
+    s = (val or "").strip()
+    if not s:
+        return False
+    invalid_markers = (
+        "chưa đăng nhập",
+        "chưa mở",
+        "đang ở trang login",
+        "đang tải trang",
+        "không rõ",
+    )
+    s_low = s.lower()
+    if any(m in s_low for m in invalid_markers):
+        return False
+    return True
+
+
+def _load_all_saved_accounts_state_map() -> Dict[str, Dict[str, Any]]:
+    data: Dict[str, Dict[str, Any]] = {}
+    for fpath in (_APPDATA_ACCOUNTS_STATE_FILE, _ACCOUNTS_STATE_FILE):
+        if fpath.exists():
+            try:
+                loaded = json.loads(fpath.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    for k, v in loaded.items():
+                        if k in ACCOUNTS_CONFIG and isinstance(v, dict):
+                            data[k] = dict(v)
+            except Exception:
+                pass
+    # Đồng bộ thêm từ file .studio_account_info.json trong từng thư mục BROWSER_PROFILE*
+    for aid, cfg in ACCOUNTS_CONFIG.items():
+        prof_dir = cfg["profile_dir"]
+        info_file = os.path.join(prof_dir, ".studio_account_info.json")
+        if os.path.exists(info_file):
+            try:
+                with open(info_file, "r", encoding="utf-8") as f:
+                    p_info = json.load(f)
+                if isinstance(p_info, dict):
+                    cur = data.get(aid) or {}
+                    if float(p_info.get("ts") or 0) >= float(cur.get("ts") or 0):
+                        data[aid] = dict(p_info)
+            except Exception:
+                pass
+    return data
+
+
+def _load_saved_account_login_info(acc_id: str) -> Dict[str, Any]:
+    if acc_id not in ACCOUNTS_CONFIG:
+        return {"logged_in": False, "user_email": "", "plan_type": "", "ts": 0.0}
+    with _ACCOUNTS_STATE_IO_LOCK:
+        all_map = _load_all_saved_accounts_state_map()
+    info = all_map.get(acc_id) or {}
+    email_val = str(info.get("user_email") or info.get("email") or "").strip()
+    logged = bool(info.get("logged_in")) and _is_valid_saved_email(email_val)
+    return {
+        "logged_in": logged,
+        "user_email": email_val if logged else "",
+        "plan_type": str(info.get("plan_type") or "") if logged else "",
+        "ts": float(info.get("ts") or 0.0),
+    }
+
+
+def _save_account_login_info(
+    acc_id: str,
+    logged_in: bool,
+    user_email: str = "",
+    plan_type: str = "",
+) -> Dict[str, Any]:
+    if acc_id not in ACCOUNTS_CONFIG:
+        return {}
+    clean_email = (user_email or "").strip()
+    if logged_in and not _is_valid_saved_email(clean_email):
+        clean_email = "Đã đăng nhập ChatGPT"
+    record = {
+        "acc_id": acc_id,
+        "logged_in": bool(logged_in),
+        "user_email": clean_email if logged_in else "",
+        "plan_type": str(plan_type or "") if logged_in else "",
+        "ts": time.time(),
+    }
+    with _ACCOUNTS_STATE_IO_LOCK:
+        all_map = _load_all_saved_accounts_state_map()
+        all_map[acc_id] = record
+        prof_dir = ACCOUNTS_CONFIG[acc_id]["profile_dir"]
+        if logged_in or os.path.exists(prof_dir):
+            try:
+                os.makedirs(prof_dir, exist_ok=True)
+                with open(os.path.join(prof_dir, ".studio_account_info.json"), "w", encoding="utf-8") as f:
+                    json.dump(record, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+        for fpath in (_ACCOUNTS_STATE_FILE, _APPDATA_ACCOUNTS_STATE_FILE):
+            try:
+                fpath.parent.mkdir(parents=True, exist_ok=True)
+                fpath.write_text(json.dumps(all_map, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+    return record
+
+
+# Khởi tạo đồng bộ trạng thái đăng nhập đã lưu của 5 tài khoản ngay khi nạp module
+try:
+    with _ACCOUNTS_STATE_IO_LOCK:
+        _init_map = _load_all_saved_accounts_state_map()
+        if _init_map:
+            _ACCOUNTS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _ACCOUNTS_STATE_FILE.write_text(json.dumps(_init_map, ensure_ascii=False, indent=2), encoding="utf-8")
+except Exception:
+    pass
 
 
 class AccountRateLimitError(RuntimeError):
@@ -284,15 +394,18 @@ _LAST_BLANK_NAV_TS_BY_PORT: Dict[int, float] = {}
 _KNOWN_EMAILS: Dict[str, str] = {}
 _WS_LOCKS: Dict[str, threading.Lock] = {}
 _ACC_TAB_LOCKS: Dict[str, threading.RLock] = {
-    "acc_1": threading.RLock(),
-    "acc_2": threading.RLock(),
-    "acc_3": threading.RLock(),
+    aid: threading.RLock() for aid in CHATGPT_ACCOUNTS
 }
 _PORT_INJECT_LOCKS: Dict[int, threading.Lock] = {
-    9232: threading.Lock(),
-    9233: threading.Lock(),
-    9234: threading.Lock(),
+    cfg["port"]: threading.Lock() for cfg in ACCOUNTS_CONFIG.values()
 }
+_LAST_ACTIVITY_TS_BY_ACC: Dict[str, float] = {
+    aid: 0.0 for aid in CHATGPT_ACCOUNTS
+}
+_MANUAL_OPEN_TS_BY_ACC: Dict[str, float] = {
+    aid: 0.0 for aid in CHATGPT_ACCOUNTS
+}
+_IDLE_WATCHER_STARTED: bool = False
 _ROUND_ROBIN_IDX = 0
 
 
@@ -649,9 +762,10 @@ def ensure_chrome_debug_browser_open(
     run_hidden: bool = False,
     acc_id: str = "acc_1",
     fast_if_already_open: bool = False,
+    manual_open: bool = False,
 ) -> Dict[str, Any]:
     """
-    Đảm bảo trình duyệt Chrome của tài khoản (acc_1 | acc_2 | acc_3) đã mở với cổng CDP.
+    Đảm bảo trình duyệt Chrome của tài khoản (acc_1 .. acc_5) đã mở với cổng CDP.
     Nếu chưa mở sẽ khởi chạy Chrome với Profile riêng biệt.
     Chuẩn API #2 trong Master Blueprint V6.0.
     """
@@ -661,6 +775,12 @@ def ensure_chrome_debug_browser_open(
     port = cfg["port"]
     profile_dir = cfg["profile_dir"]
     os.makedirs(profile_dir, exist_ok=True)
+
+    now_ts = time.time()
+    _LAST_ACTIVITY_TS_BY_ACC[acc_id] = now_ts
+    if manual_open:
+        _MANUAL_OPEN_TS_BY_ACC[acc_id] = now_ts
+    _start_idle_browser_auto_shutdown_watcher()
 
     acc_lock = _ACC_TAB_LOCKS.setdefault(acc_id, threading.RLock())
     with acc_lock:
@@ -698,8 +818,6 @@ def ensure_chrome_debug_browser_open(
                 "--window-size=1280,860",
                 start_url,
             ]
-            # Kiểm tra xem tiến trình Python hiện tại đã nằm trên Màn hình chính (WinSta0) của người dùng chưa.
-            # Nếu đã ở trên WinSta0 -> gọi trực tiếp subprocess.Popen(args) để mở Chrome ngay trên màn hình chính và không bao giờ bị Task Scheduler đóng!
             is_interactive_winsta0 = True
             if os.name == "nt":
                 try:
@@ -708,7 +826,6 @@ def ensure_chrome_debug_browser_open(
                     h_winsta = u32.GetProcessWindowStation()
                     buf = ctypes.create_unicode_buffer(128)
                     needed = ctypes.c_ulong(0)
-                    # UOI_NAME = 2
                     if u32.GetUserObjectInformationW(h_winsta, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed)):
                         winsta_name = (buf.value or "").strip()
                         if winsta_name and "winsta0" not in winsta_name.lower():
@@ -722,7 +839,6 @@ def ensure_chrome_debug_browser_open(
                     bat_dir = os.path.join(os.environ.get("LOCALAPPDATA") or str(ROOT_DIR), "Mexico_Ong_Gia_Studio")
                     os.makedirs(bat_dir, exist_ok=True)
                     bat_path = os.path.join(bat_dir, f"launch_chrome_{acc_id}.bat")
-                    # Dùng explorer.exe hoặc giữ tiến trình sống để Task Scheduler không đóng Chrome khi .bat kết thúc
                     with open(bat_path, "w", encoding="utf-8") as bf:
                         bf.write(
                             f'@echo off\r\n"{chrome_exe}" '
@@ -762,7 +878,6 @@ def ensure_chrome_debug_browser_open(
                     stderr=subprocess.DEVNULL,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
                 )
-                # Đợi cổng CDP sẵn sàng
                 for _ in range(30):
                     time.sleep(0.35)
                     tabs = _cdp_get_tabs(port)
@@ -775,7 +890,6 @@ def ensure_chrome_debug_browser_open(
     if tabs is not None:
         has_chatgpt = any("chatgpt.com" in (t.get("url") or "") for t in tabs)
         if open_chatgpt_home and not has_chatgpt:
-            # Nếu chỉ đang có 1 tab about:blank thì chuyển luôn tab đó sang CHATGPT_GUARD_URL
             blank_tab = next((t for t in tabs if (t.get("url") or "").startswith("about:blank")), None)
             if blank_tab and blank_tab.get("webSocketDebuggerUrl"):
                 _cdp_navigate(blank_tab["webSocketDebuggerUrl"], CHATGPT_GUARD_URL, timeout=2.5)
@@ -824,27 +938,24 @@ def ensure_chrome_debug_browser_open(
 def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
     """
     Kiểm tra trạng thái đăng nhập, email và danh sách tab của 1 tài khoản ChatGPT Web.
-    Áp dụng cơ chế Non-Blocking Cache (_LAST_VERIFIED_LOGIN_BY_PORT + .studio_account_info.json)
-    và fetch('/api/auth/session') chuẩn Master Blueprint V6.0.
+    - Nếu Chrome đang TẮT (`tabs is None`): Vẫn đọc trạng thái đăng nhập đã lưu từ ổ cứng (`saved_logged_in`, `user_email`)
+      để giao diện và bộ lập lịch biết chính xác tài khoản nào đã login mà KHÔNG CẦN mở Chrome!
+    - Nếu Chrome đang MỞ: Kiểm tra trực tiếp phiên đăng nhập qua `/api/auth/session` và tự động lưu lại vào ổ cứng.
     """
     cfg = ACCOUNTS_CONFIG[acc_id]
     port = cfg["port"]
-    profile_dir = cfg["profile_dir"]
-    tabs = _cdp_get_tabs(port, timeout=1.2)
+    tabs = _cdp_get_tabs(port, timeout=1.0)
     with _STATE_LOCK:
         active_map = dict(_ACTIVE_JOBS_BY_ACC.get(acc_id, {}))
         pending_set = set(_PENDING_PROJECTS_BY_ACC.get(acc_id, set()))
         is_hidden = bool(_CHROME_HIDDEN_STATE.get(acc_id, False))
     all_active_projects = list(dict.fromkeys(list(active_map.values()) + list(pending_set)))
 
-    acc_info_file = os.path.join(profile_dir, ".studio_account_info.json")
-    saved_disk_info: Dict[str, Any] = {}
-    if os.path.exists(acc_info_file):
-        try:
-            with open(acc_info_file, "r", encoding="utf-8") as f:
-                saved_disk_info = json.load(f)
-        except Exception:
-            pass
+    saved_disk_info = _load_saved_account_login_info(acc_id)
+    saved_logged_in = bool(saved_disk_info.get("logged_in") and saved_disk_info.get("user_email"))
+    saved_email = str(saved_disk_info.get("user_email") or "")
+    saved_plan = str(saved_disk_info.get("plan_type") or "")
+    in_cd, rem_cd_sec, cd_reason = is_account_in_cooldown(acc_id)
 
     if tabs is None:
         _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
@@ -854,22 +965,25 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
             "port": port,
             "browser_open": False,
             "browser_running": False,
-            "logged_in": False,
-            "email": "Chưa mở Chrome",
-            "user_email": "",
+            "logged_in": saved_logged_in,
+            "saved_logged_in": saved_logged_in,
+            "email": (saved_email if saved_logged_in else "Chưa đăng nhập"),
+            "user_email": (saved_email if saved_logged_in else ""),
+            "plan_type": saved_plan,
             "open_tabs_count": 0,
             "chatgpt_tabs": 0,
             "active_threads": len(all_active_projects),
             "max_threads": MAX_THREADS_PER_ACCOUNT,
             "active_projects": all_active_projects,
             "hidden": is_hidden,
+            "in_cooldown": in_cd,
+            "cooldown_remaining_sec": rem_cd_sec,
+            "cooldown_reason": cd_reason,
         }
 
     chatgpt_tabs = [t for t in tabs if "chatgpt.com" in (t.get("url") or "") or "openai.com" in (t.get("url") or "")]
     gemini_tabs = [t for t in tabs if "gemini.google.com" in (t.get("url") or "")]
     if not chatgpt_tabs and not gemini_tabs and tabs:
-        # Nếu cửa sổ Chrome đang mở ở about:blank (sau khi dọn tab), tự động chuyển tab đầu tiên về CHATGPT_GUARD_URL
-        # (Có khóa thời gian 25s để không bao giờ gọi lặp lại khi trang đang tải dở)
         first_ws = tabs[0].get("webSocketDebuggerUrl")
         now_nav = time.time()
         if (
@@ -895,11 +1009,10 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
 
     if chatgpt_tabs:
         cached_login = _LAST_VERIFIED_LOGIN_BY_PORT.get(port)
-        # Nếu đã xác thực trên cổng này trong vòng 25s (hoặc đang chạy dở dự án) -> trả về ngay từ bộ nhớ đệm (0ms)
         if cached_login and cached_login.get("logged_in") and (
             all_active_projects or has_active_conv_url or (time.time() - float(cached_login.get("ts") or 0)) < 25.0
         ):
-            email_val = cached_login.get("user_email") or cached_login.get("email") or "Đã đăng nhập ChatGPT"
+            email_val = cached_login.get("user_email") or cached_login.get("email") or saved_email or "Đã đăng nhập ChatGPT"
             return {
                 "acc_id": acc_id,
                 "label": cfg["label"],
@@ -907,8 +1020,10 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
                 "browser_open": True,
                 "browser_running": True,
                 "logged_in": True,
+                "saved_logged_in": True,
                 "email": email_val,
                 "user_email": email_val,
+                "plan_type": str(cached_login.get("plan_type") or saved_plan),
                 "open_tabs_count": len(chatgpt_tabs) + len(gemini_tabs),
                 "chatgpt_tabs": len(chatgpt_tabs),
                 "total_tabs_count": len(tabs),
@@ -916,6 +1031,9 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
                 "max_threads": MAX_THREADS_PER_ACCOUNT,
                 "active_projects": all_active_projects,
                 "hidden": is_hidden,
+                "in_cooldown": in_cd,
+                "cooldown_remaining_sec": rem_cd_sec,
+                "cooldown_reason": cd_reason,
             }
 
         target_tab = chatgpt_tabs[0]
@@ -974,29 +1092,36 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
         info = _cdp_eval_js(ws_url, js_check, await_promise=True, timeout=3.5)
         if isinstance(info, dict):
             logged_in = bool(info.get("logged_in") or has_active_conv_url)
+            raw_user = str(info.get("user") or "").strip()
             email_or_user = str(
-                info.get("user")
-                or (saved_disk_info.get("user_email") if logged_in else "")
+                raw_user
+                or (saved_email if logged_in else "")
                 or ("Đã đăng nhập" if logged_in else "Chưa đăng nhập")
             )
             if logged_in:
+                plan_val = str(info.get("plan") or saved_plan or "")
                 new_cache = {
                     "logged_in": True,
                     "user_email": email_or_user,
-                    "plan_type": info.get("plan") or saved_disk_info.get("plan_type") or "",
+                    "plan_type": plan_val,
                     "ts": time.time(),
                 }
                 _LAST_VERIFIED_LOGIN_BY_PORT[port] = new_cache
-                try:
-                    with open(acc_info_file, "w", encoding="utf-8") as f:
-                        json.dump(new_cache, f, ensure_ascii=False)
-                except Exception:
-                    pass
+                _save_account_login_info(acc_id, True, email_or_user, plan_val)
+                saved_logged_in = True
+                saved_email = email_or_user
             else:
                 _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
-        elif has_active_conv_url or (cached_login and cached_login.get("logged_in")):
+                if raw_user in ("Chưa đăng nhập", "Chưa đăng nhập ChatGPT", "Đang ở trang Login"):
+                    _save_account_login_info(acc_id, False, "", "")
+                    saved_logged_in = False
+                    saved_email = ""
+                elif saved_logged_in and raw_user in ("Đang tải trang...", "Không rõ", ""):
+                    logged_in = True
+                    email_or_user = saved_email
+        elif has_active_conv_url or (cached_login and cached_login.get("logged_in")) or saved_logged_in:
             logged_in = True
-            email_or_user = (cached_login or {}).get("user_email") or "Đã đăng nhập ChatGPT"
+            email_or_user = (cached_login or {}).get("user_email") or saved_email or "Đã đăng nhập ChatGPT"
     elif gemini_tabs:
         gem_ws = gemini_tabs[0].get("webSocketDebuggerUrl")
         gem_info = _cdp_eval_js(
@@ -1024,9 +1149,12 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
         else:
             email_or_user = "Đang mở Gemini Web"
     else:
-        email_or_user = "Chưa mở tab ChatGPT/Gemini"
+        if saved_logged_in:
+            logged_in = True
+            email_or_user = saved_email
+        else:
+            email_or_user = "Chưa mở tab ChatGPT/Gemini"
 
-    in_cd, rem_cd_sec, cd_reason = is_account_in_cooldown(acc_id)
     return {
         "acc_id": acc_id,
         "label": cfg["label"],
@@ -1034,8 +1162,10 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
         "browser_open": True,
         "browser_running": True,
         "logged_in": logged_in,
+        "saved_logged_in": bool(logged_in or saved_logged_in),
         "email": email_or_user,
-        "user_email": email_or_user if logged_in else "",
+        "user_email": email_or_user if logged_in else (saved_email if saved_logged_in else ""),
+        "plan_type": saved_plan,
         "open_tabs_count": len(chatgpt_tabs) + len(gemini_tabs),
         "chatgpt_tabs": len(chatgpt_tabs),
         "total_tabs_count": len(tabs),
@@ -1049,63 +1179,236 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
     }
 
 
-def _profile_has_saved_chatgpt_login(profile_dir: str) -> bool:
-    """Kiểm tra nhanh trên ổ cứng xem Profile này đã từng đăng nhập tài khoản ChatGPT thật hay chưa."""
+def _profile_has_saved_chatgpt_login(profile_dir: str, acc_id: Optional[str] = None) -> bool:
+    """
+    Kiểm tra chính xác trên ổ cứng xem Profile/Account này đã từng đăng nhập tài khoản ChatGPT thật hay chưa.
+    TUYỆT ĐỐI KHÔNG đoán mò qua dung lượng file Cookies (vì trang login chưa đăng nhập cũng tạo file Cookies > 45KB).
+    """
     try:
+        if acc_id and acc_id in ACCOUNTS_CONFIG:
+            st = _load_saved_account_login_info(acc_id)
+            return bool(st.get("logged_in") and st.get("user_email"))
+        norm_target = os.path.normpath(profile_dir).lower()
+        for aid, cfg in ACCOUNTS_CONFIG.items():
+            if os.path.normpath(cfg["profile_dir"]).lower() == norm_target:
+                st = _load_saved_account_login_info(aid)
+                return bool(st.get("logged_in") and st.get("user_email"))
         info_path = os.path.join(profile_dir, ".studio_account_info.json")
         if os.path.exists(info_path):
             with open(info_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            email_val = str(data.get("user_email") or data.get("email") or "")
-            if data.get("logged_in") and "@" in email_val:
+            email_val = str(data.get("user_email") or data.get("email") or "").strip()
+            if data.get("logged_in") and email_val and email_val not in ("Chưa đăng nhập", "Chưa mở Chrome"):
                 return True
-        cookie_path = os.path.join(profile_dir, "Default", "Network", "Cookies")
-        if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 45000:
-            return True
     except Exception:
         pass
     return False
 
 
-def ensure_all_saved_chatgpt_accounts_open(run_hidden: bool = False) -> List[str]:
+def close_chatgpt_browser(acc_id: str, only_if_idle: bool = False) -> Dict[str, Any]:
     """
-    Tự động mở trình duyệt Chrome cho toàn bộ các tài khoản (Acc #1, Acc #2, Acc #3)
-    đã có phiên đăng nhập ChatGPT lưu trên ổ cứng, sau đó xác thực và trả về danh sách acc_id đã đăng nhập.
+    Đóng hoàn toàn tiến trình trình duyệt Chrome của 1 tài khoản (`acc_id`) khi không còn sử dụng ChatGPT
+    để giải phóng RAM/CPU. Trạng thái đăng nhập (`saved_logged_in`, `user_email`) vẫn được giữ nguyên trên ổ cứng.
     """
-    for aid in ["acc_1", "acc_2", "acc_3"]:
-        cfg = ACCOUNTS_CONFIG[aid]
-        port = cfg["port"]
-        prof = cfg["profile_dir"]
-        tabs = _cdp_get_tabs(port, timeout=0.8)
-        if tabs is None and _profile_has_saved_chatgpt_login(prof):
-            ensure_chrome_debug_browser_open(
-                open_chatgpt_home=True,
-                force_bring_to_front=False,
-                run_hidden=run_hidden,
-                acc_id=aid,
-                fast_if_already_open=True,
+    if acc_id not in ACCOUNTS_CONFIG:
+        return {"success": False, "closed": False, "acc_id": acc_id, "reason": "INVALID_ACC"}
+    cfg = ACCOUNTS_CONFIG[acc_id]
+    port = cfg["port"]
+    profile_dir = cfg["profile_dir"]
+
+    with _STATE_LOCK:
+        active_jobs = dict(_ACTIVE_JOBS_BY_ACC.get(acc_id, {}))
+        pending_projs = set(_PENDING_PROJECTS_BY_ACC.get(acc_id, set()))
+
+    if only_if_idle and (active_jobs or pending_projs):
+        return {
+            "success": True,
+            "closed": False,
+            "acc_id": acc_id,
+            "reason": "BUSY",
+            "active_projects": list(active_jobs.values()) + list(pending_projs),
+        }
+
+    tabs = _cdp_get_tabs(port, timeout=0.8)
+    pids = _get_pids_using_profile(profile_dir, port)
+    if tabs is None and not pids:
+        with _STATE_LOCK:
+            _ACTIVE_JOBS_BY_ACC.get(acc_id, {}).clear()
+            _PENDING_PROJECTS_BY_ACC.get(acc_id, set()).clear()
+            _MANUAL_OPEN_TS_BY_ACC[acc_id] = 0.0
+        _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
+        _STATUS_CACHE["ts"] = 0.0
+        return {"success": True, "closed": False, "acc_id": acc_id, "reason": "ALREADY_CLOSED"}
+
+    # Trước khi tắt, nếu đang mở thì cập nhật nhanh trạng thái login lần cuối để lưu email mới đăng nhập (nếu có)
+    if tabs:
+        try:
+            _inspect_account_login_state(acc_id)
+        except Exception:
+            pass
+        for t in tabs:
+            ws_url = t.get("webSocketDebuggerUrl")
+            if ws_url:
+                try:
+                    with ws_connect(ws_url, open_timeout=1.2, close_timeout=0.8) as ws:
+                        ws.send(json.dumps({"id": 99, "method": "Browser.close", "params": {}}))
+                    break
+                except Exception:
+                    pass
+        time.sleep(0.35)
+
+    pids = _get_pids_using_profile(profile_dir, port)
+    for pid in pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
-            time.sleep(0.8)
-        elif tabs is not None:
-            has_cg = any("chatgpt.com" in (t.get("url") or "") for t in tabs)
-            if not has_cg and _profile_has_saved_chatgpt_login(prof):
+        except Exception:
+            pass
+
+    with _STATE_LOCK:
+        _ACTIVE_JOBS_BY_ACC.get(acc_id, {}).clear()
+        _PENDING_PROJECTS_BY_ACC.get(acc_id, set()).clear()
+        _MANUAL_OPEN_TS_BY_ACC[acc_id] = 0.0
+    _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
+    _STATUS_CACHE["ts"] = 0.0
+    log_info(f"🛑 Đã tắt trình duyệt {cfg['label']} (Cổng {port}) khi không sử dụng ChatGPT.", category="CHROME")
+    return {"success": True, "closed": True, "acc_id": acc_id, "port": port}
+
+
+def close_all_chatgpt_browsers(
+    acc_id: Optional[str] = None,
+    only_if_idle: bool = False,
+    reason: str = "",
+) -> Dict[str, Any]:
+    """
+    Đóng toàn bộ (hoặc 1) trình duyệt Chrome ChatGPT để giải phóng RAM khi không sử dụng ChatGPT.
+    """
+    target_accs = [acc_id] if (acc_id and acc_id in ACCOUNTS_CONFIG) else list(CHATGPT_ACCOUNTS)
+    closed_accs: List[str] = []
+    skipped_busy: List[str] = []
+    for aid in target_accs:
+        res = close_chatgpt_browser(aid, only_if_idle=only_if_idle)
+        if res.get("closed"):
+            closed_accs.append(aid)
+        elif res.get("reason") == "BUSY":
+            skipped_busy.append(aid)
+
+    _STATUS_CACHE["ts"] = 0.0
+    if closed_accs:
+        reason_str = f" ({reason})" if reason else ""
+        log_info(
+            f"🛑 Đã đóng {len(closed_accs)} trình duyệt Chrome ChatGPT: {closed_accs}{reason_str}",
+            category="CHROME",
+        )
+    return {
+        "success": True,
+        "closed_accounts": closed_accs,
+        "closed_count": len(closed_accs),
+        "skipped_busy": skipped_busy,
+        "reason": reason,
+    }
+
+
+def _start_idle_browser_auto_shutdown_watcher() -> None:
+    """
+    Luồng ngầm tự động:
+    1. Khi người dùng mở Chrome thủ công để đăng nhập: Tự động phát hiện ngay khi đăng nhập xong để lưu Email vào ổ cứng.
+    2. Khi tiến trình tự động (viết kịch bản / vẽ thumbnail) đã xong và không còn tác vụ ChatGPT nào chạy trong 45 giây:
+       Tự động tắt trình duyệt Chrome để không ngốn RAM vô ích.
+    """
+    global _IDLE_WATCHER_STARTED
+    with _STATE_LOCK:
+        if _IDLE_WATCHER_STARTED:
+            return
+        _IDLE_WATCHER_STARTED = True
+
+    def _watcher_loop():
+        while True:
+            time.sleep(10.0)
+            try:
+                now = time.time()
+                for aid in CHATGPT_ACCOUNTS:
+                    cfg = ACCOUNTS_CONFIG[aid]
+                    port = cfg["port"]
+                    tabs = _cdp_get_tabs(port, timeout=0.6)
+                    if tabs is None:
+                        continue
+                    with _STATE_LOCK:
+                        busy_now = bool(_ACTIVE_JOBS_BY_ACC.get(aid) or _PENDING_PROJECTS_BY_ACC.get(aid))
+                        last_act = float(_LAST_ACTIVITY_TS_BY_ACC.get(aid) or 0.0)
+                        manual_ts = float(_MANUAL_OPEN_TS_BY_ACC.get(aid) or 0.0)
+                    if busy_now:
+                        _LAST_ACTIVITY_TS_BY_ACC[aid] = now
+                        continue
+                    # Nếu đang mở thủ công để login: quét trạng thái để lưu ngay khi user vừa đăng nhập xong
+                    if manual_ts > 0 and (now - manual_ts) < 300.0:
+                        try:
+                            _inspect_account_login_state(aid)
+                        except Exception:
+                            pass
+                        continue
+                    # Nếu mở bởi hệ thống tự động (hoặc đã quá 5 phút mở thủ công không dùng) và đã rảnh > 45 giây -> Tự động tắt Chrome!
+                    idle_sec = now - max(last_act, manual_ts)
+                    if idle_sec >= 45.0:
+                        close_chatgpt_browser(aid, only_if_idle=True)
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_watcher_loop, daemon=True, name="ChatGPTChromeIdleShutdownWatcher")
+    t.start()
+
+
+def ensure_all_saved_chatgpt_accounts_open(
+    run_hidden: bool = False,
+    max_accounts: Optional[int] = None,
+    open_browsers_now: bool = False,
+) -> List[str]:
+    """
+    Trả về danh sách các tài khoản (trong tối đa 5 Acc: acc_1 .. acc_5) ĐÃ ĐĂNG NHẬP và lưu trên ổ cứng.
+    - TUYỆT ĐỐI KHÔNG BAO GIỜ mở các tài khoản chưa đăng nhập!
+    - Mặc định `open_browsers_now=False`: Chỉ trả về danh sách các Acc đã lưu đăng nhập, chỉ khi nào luồng viết kịch bản
+      thực sự dùng đến Acc nào thì `ChatGPTWebSession.open_session_tab()` mới bật Chrome của đúng Acc đó lên!
+    """
+    saved_logged_accs: List[str] = []
+    for aid in CHATGPT_ACCOUNTS:
+        cfg = ACCOUNTS_CONFIG[aid]
+        prof = cfg["profile_dir"]
+        if _profile_has_saved_chatgpt_login(prof, aid):
+            saved_logged_accs.append(aid)
+        else:
+            # Kiểm tra nếu trình duyệt của acc này đang mở sẵn và đã login
+            tabs = _cdp_get_tabs(cfg["port"], timeout=0.5)
+            if tabs is not None:
+                st = _inspect_account_login_state(aid)
+                if st.get("logged_in"):
+                    saved_logged_accs.append(aid)
+
+    if open_browsers_now and saved_logged_accs:
+        target_to_open = saved_logged_accs[:max_accounts] if (max_accounts and max_accounts > 0) else saved_logged_accs
+        for aid in target_to_open:
+            cfg = ACCOUNTS_CONFIG[aid]
+            tabs = _cdp_get_tabs(cfg["port"], timeout=0.6)
+            if tabs is None:
                 ensure_chrome_debug_browser_open(
                     open_chatgpt_home=True,
                     force_bring_to_front=False,
                     run_hidden=run_hidden,
                     acc_id=aid,
-                    fast_if_already_open=False,
+                    fast_if_already_open=True,
                 )
+                time.sleep(0.5)
 
-    st_all = check_all_web_accounts_status(force_refresh=True).get("accounts", {})
-    logged = [aid for aid in ["acc_1", "acc_2", "acc_3"] if st_all.get(aid, {}).get("logged_in")]
-    return logged
+    return saved_logged_accs
 
 
 def check_all_web_accounts_status(force_refresh: bool = False) -> Dict[str, Any]:
     """
-    Kiểm tra trạng thái cả 3 tài khoản (Acc #1, Acc #2, Acc #3).
-    Chuẩn API #1 trong Master Blueprint V6.0.
+    Kiểm tra trạng thái toàn bộ 5 tài khoản (Acc #1 .. Acc #5).
+    Ngay cả khi Chrome đang tắt, vẫn trả về chính xác `saved_logged_in` và `email` đã lưu.
     """
     now = time.time()
     if not force_refresh and _STATUS_CACHE["data"] and (now - _STATUS_CACHE["ts"] < 2.5):
@@ -1114,17 +1417,22 @@ def check_all_web_accounts_status(force_refresh: bool = False) -> Dict[str, Any]
     accounts = {}
     any_hidden = False
     any_open = False
-    for aid in ["acc_1", "acc_2", "acc_3"]:
+    saved_count = 0
+    for aid in CHATGPT_ACCOUNTS:
         st = _inspect_account_login_state(aid)
         accounts[aid] = st
-        if st["browser_open"]:
+        if st.get("browser_open"):
             any_open = True
-        if st["hidden"]:
+        if st.get("hidden"):
             any_hidden = True
+        if st.get("saved_logged_in") or st.get("logged_in"):
+            saved_count += 1
 
     result = {
         "success": True,
         "accounts": accounts,
+        "max_accounts": len(CHATGPT_ACCOUNTS),
+        "saved_accounts_count": saved_count,
         "any_browser_open": any_open,
         "chrome_hidden": any_hidden,
         "timestamp": int(now),
@@ -1138,8 +1446,6 @@ def _close_inactive_tabs_on_account(acc_id: str, keep_tab_id: Optional[str] = No
     """
     Đóng ngay lập tức toàn bộ các Tab không hoạt động (inactive / đã xong bước trước / dư thừa)
     trên trình duyệt Chrome của tài khoản `acc_id`.
-    Chỉ giữ lại các Tab đang thực sự chạy dự án (`_ACTIVE_JOBS_BY_ACC`) và `keep_tab_id` vừa mở.
-    Nếu không có dự án nào đang chạy, giữ lại duy nhất 1 tab trang chủ để không làm tắt cửa sổ Chrome.
     """
     if acc_id not in ACCOUNTS_CONFIG:
         return 0
@@ -1151,7 +1457,6 @@ def _close_inactive_tabs_on_account(acc_id: str, keep_tab_id: Optional[str] = No
     existing_ids = {t.get("id") for t in tabs if t.get("id")}
     with _STATE_LOCK:
         acc_jobs = _ACTIVE_JOBS_BY_ACC.setdefault(acc_id, {})
-        # Dọn các tab_id mồ côi không còn tồn tại trong trình duyệt
         for tid in list(acc_jobs.keys()):
             if tid not in existing_ids:
                 acc_jobs.pop(tid, None)
@@ -1159,7 +1464,6 @@ def _close_inactive_tabs_on_account(acc_id: str, keep_tab_id: Optional[str] = No
         if keep_tab_id:
             protected_ids.add(keep_tab_id)
 
-    # Luôn bảo vệ toàn bộ tab Gemini Pool & ChatGPT Pool có gắn studio_login_guard (tối đa MAX_THREADS_PER_ACCOUNT = 3 tab rảnh mỗi Acc)
     guarded_ids = [
         t.get("id")
         for t in tabs
@@ -1168,7 +1472,6 @@ def _close_inactive_tabs_on_account(acc_id: str, keep_tab_id: Optional[str] = No
     for gid in guarded_ids[:MAX_THREADS_PER_ACCOUNT]:
         protected_ids.add(gid)
 
-    # Nếu hoàn toàn không có tab nào đang hoạt động, giữ lại 1 tab đầu tiên để cửa sổ Chrome không bị đóng tắt
     if not protected_ids and tabs:
         first_chatgpt = next((t.get("id") for t in tabs if "chatgpt.com" in (t.get("url") or "")), None)
         protected_ids.add(first_chatgpt or tabs[0].get("id"))
@@ -1178,7 +1481,6 @@ def _close_inactive_tabs_on_account(acc_id: str, keep_tab_id: Optional[str] = No
         tid = t.get("id")
         if not tid or tid in protected_ids:
             continue
-        # Chỉ giữ lại 1 tab duy nhất nếu tất cả các tab khác đều bị đóng
         if (len(tabs) - closed_count) <= 1:
             break
         try:
@@ -1199,26 +1501,35 @@ def _close_inactive_tabs_on_account(acc_id: str, keep_tab_id: Optional[str] = No
     return closed_count
 
 
-def sweep_completed_and_idle_tabs_across_all_accounts() -> Dict[str, Any]:
+def sweep_completed_and_idle_tabs_across_all_accounts(close_idle_browsers: bool = False) -> Dict[str, Any]:
     """
-    Đóng toàn bộ các Tab kịch bản đã hoàn thành / không hoạt động trên cả 3 tài khoản (giữ lại tab đang chạy hoặc bể 3 tab chính mỗi Acc).
-    Chuẩn API #4 trong Master Blueprint V6.0.
+    Đóng toàn bộ các Tab kịch bản đã hoàn thành / không hoạt động trên các tài khoản.
+    Nếu `close_idle_browsers=True`, tắt luôn cửa sổ Chrome của tài khoản nào không còn tác vụ đang chạy.
     """
     closed_total = 0
     details: Dict[str, int] = {}
+    closed_browsers: List[str] = []
 
-    for aid in ACCOUNTS_CONFIG.keys():
+    for aid in CHATGPT_ACCOUNTS:
         closed_acc = _close_inactive_tabs_on_account(aid, keep_tab_id=None)
         details[aid] = closed_acc
         closed_total += closed_acc
+        if close_idle_browsers:
+            res_b = close_chatgpt_browser(aid, only_if_idle=True)
+            if res_b.get("closed"):
+                closed_browsers.append(aid)
 
     _STATUS_CACHE["ts"] = 0.0
-    log_info(f"Đã dọn sạch {closed_total} tab không hoạt động trên 3 tài khoản Chrome ({details}).", category="CHROME")
+    log_info(
+        f"Đã dọn sạch {closed_total} tab không hoạt động (Đóng trình duyệt rảnh: {closed_browsers}).",
+        category="CHROME",
+    )
     return {
         "success": True,
         "closed_tabs": closed_total,
+        "closed_browsers": closed_browsers,
         "by_account": details,
-        "message": f"Đã dọn sạch {closed_total} tab không hoạt động trên 3 tài khoản!",
+        "message": f"Đã dọn sạch {closed_total} tab không hoạt động!",
     }
 
 
@@ -1228,14 +1539,28 @@ def select_best_available_account(
     exclude_accs: Optional[set] = None,
 ) -> str:
     """
-    Chọn tài khoản ChatGPT đã đăng nhập, KHÔNG bị tạm dừng Limit 30 phút và đang rảnh nhất
-    (Load Balancing + Automatic Failover trực tiếp thời gian thực giữa các Acc).
+    Chọn tài khoản ChatGPT ĐÃ ĐĂNG NHẬP (lưu trên ổ cứng), KHÔNG bị tạm dừng Limit 30 phút và đang rảnh nhất
+    (Load Balancing + Automatic Failover giữa tối đa 5 Acc: acc_1 .. acc_5).
+    TUYỆT ĐỐI KHÔNG tự ý chọn hoặc mở những Acc chưa đăng nhập!
     """
     global _ROUND_ROBIN_IDX
     excl = set(exclude_accs or set())
 
-    # Nếu có preferred_acc_id nhưng nick đó KHÔNG bị loại trừ và KHÔNG đang trong 30 phút tạm dừng Limit thì dùng luôn
-    if preferred_acc_id and preferred_acc_id in ACCOUNTS_CONFIG and preferred_acc_id not in excl:
+    status_all = check_all_web_accounts_status(force_refresh=False).get("accounts", {})
+    logged_in_accs = [
+        aid for aid in CHATGPT_ACCOUNTS
+        if status_all.get(aid, {}).get("logged_in") or status_all.get(aid, {}).get("saved_logged_in")
+    ]
+    if not logged_in_accs:
+        logged_in_accs = ensure_all_saved_chatgpt_accounts_open(run_hidden=False, open_browsers_now=False)
+
+    # Nếu có preferred_acc_id, đã đăng nhập, KHÔNG bị loại trừ và KHÔNG đang trong 30 phút tạm dừng Limit thì dùng luôn
+    if (
+        preferred_acc_id
+        and preferred_acc_id in ACCOUNTS_CONFIG
+        and preferred_acc_id not in excl
+        and (preferred_acc_id in logged_in_accs or status_all.get(preferred_acc_id, {}).get("browser_open"))
+    ):
         in_cd, _, _ = is_account_in_cooldown(preferred_acc_id)
         if not in_cd:
             if project_id:
@@ -1245,21 +1570,15 @@ def select_best_available_account(
                     _PENDING_PROJECTS_BY_ACC.setdefault(preferred_acc_id, set()).add(project_id)
             return preferred_acc_id
 
-    status_all = check_all_web_accounts_status(force_refresh=False).get("accounts", {})
-    logged_in_accs = [aid for aid in ["acc_1", "acc_2", "acc_3"] if status_all.get(aid, {}).get("logged_in")]
-    if len(logged_in_accs) < 2 or excl:
-        # Tự động kiểm tra và bật đủ các tài khoản ChatGPT đã lưu trên ổ cứng (Acc #1, Acc #2, Acc #3)
-        logged_in_accs = ensure_all_saved_chatgpt_accounts_open(run_hidden=False)
-
-    # Ưu tiên 1: Các tài khoản đã đăng nhập, KHÔNG nằm trong danh sách loại trừ (excl) và KHÔNG bị tạm dừng 30p (cooldown)
+    # Ưu tiên 1: Các tài khoản ĐÃ ĐĂNG NHẬP, KHÔNG nằm trong danh sách loại trừ (excl) và KHÔNG bị tạm dừng 30p (cooldown)
     ready_accs = [
         aid for aid in logged_in_accs
         if aid not in excl and not is_account_in_cooldown(aid)[0]
     ]
-    # Ưu tiên 2: Nếu mọi tài khoản ngoài excl đều đang tạm dừng hoặc chưa lọc được, lấy tài khoản đã đăng nhập không nằm trong excl
+    # Ưu tiên 2: Nếu mọi tài khoản ngoài excl đều đang tạm dừng, lấy tài khoản ĐÃ ĐĂNG NHẬP không bị cooldown
     if not ready_accs:
         ready_accs = [aid for aid in logged_in_accs if not is_account_in_cooldown(aid)[0]]
-    # Ưu tiên 3: Nếu tất cả các nick đều đang trong 30p cooldown, chọn nick ngoài excl có thời gian chờ còn lại ngắn nhất
+    # Ưu tiên 3: Nếu tất cả các nick ĐÃ ĐĂNG NHẬP đều đang trong 30p cooldown, chọn nick ĐÃ ĐĂNG NHẬP có thời gian chờ ngắn nhất
     if not ready_accs and logged_in_accs:
         cand_pool = [aid for aid in logged_in_accs if aid not in excl] or list(logged_in_accs)
         cand_pool.sort(key=lambda a: is_account_in_cooldown(a)[1])
@@ -1285,21 +1604,12 @@ def select_best_available_account(
                 _PENDING_PROJECTS_BY_ACC.setdefault(chosen, set()).add(project_id)
             return chosen
 
-    # Nếu chưa tài khoản nào xác nhận đăng nhập, ưu tiên tài khoản đang mở trình duyệt (ngoài excl và không cooldown)
+    # Chỉ khi chưa có bất kỳ tài khoản nào đăng nhập trên máy thì mới fallback về acc_1
     open_accs = [
-        aid for aid in ["acc_1", "acc_2", "acc_3"]
+        aid for aid in CHATGPT_ACCOUNTS
         if status_all.get(aid, {}).get("browser_open") and aid not in excl and not is_account_in_cooldown(aid)[0]
     ]
-    if not open_accs:
-        open_accs = [aid for aid in ["acc_1", "acc_2", "acc_3"] if aid not in excl and not is_account_in_cooldown(aid)[0]]
-    fallback = open_accs[0] if open_accs else ("acc_2" if "acc_1" in excl else "acc_1")
-    ensure_chrome_debug_browser_open(
-        open_chatgpt_home=True,
-        force_bring_to_front=False,
-        run_hidden=False,
-        acc_id=fallback,
-        fast_if_already_open=True,
-    )
+    fallback = open_accs[0] if open_accs else "acc_1"
     if project_id:
         with _STATE_LOCK:
             _PENDING_PROJECTS_BY_ACC.setdefault(fallback, set()).add(project_id)
@@ -1766,6 +2076,7 @@ class ChatGPTWebSession:
     def close_session_tab(self, keep_open: bool = False):
         with _STATE_LOCK:
             _PENDING_PROJECTS_BY_ACC.setdefault(self.acc_id, set()).discard(self.project_id)
+            _LAST_ACTIVITY_TS_BY_ACC[self.acc_id] = time.time()
         if self.tab_id:
             acc_lock = _ACC_TAB_LOCKS.setdefault(self.acc_id, threading.RLock())
             with acc_lock:
@@ -1783,6 +2094,7 @@ class ChatGPTWebSession:
                         pass
                 with _STATE_LOCK:
                     _ACTIVE_JOBS_BY_ACC.get(self.acc_id, {}).pop(self.tab_id, None)
+                    _LAST_ACTIVITY_TS_BY_ACC[self.acc_id] = time.time()
 
     def _harvest_latest_turn_from_backend_api(self) -> str:
         """

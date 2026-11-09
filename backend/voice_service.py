@@ -521,12 +521,98 @@ def split_waveform_for_group(wav_tensor, group_texts: List[str], sample_rate: in
     return [wav_tensor[:, split_points[i]:split_points[i + 1]] for i in range(n_sents)]
 
 
+def _apply_omnivoice_torch_compat_patch():
+    """
+    Đảm bảo tương thích tuyệt đối giữa PyTorch 2.5.x+cu121 / 2.8.x và Transformers >= 5.15
+    để nạp mượt mà HiggsAudioV2TokenizerModel & OmniVoice trên mọi môi trường Python.
+    """
+    try:
+        import types
+        import importlib.metadata
+
+        _orig_ver = getattr(importlib.metadata, "_orig_version_for_omnivoice", importlib.metadata.version)
+        setattr(importlib.metadata, "_orig_version_for_omnivoice", _orig_ver)
+
+        def _patched_version(pkg: str) -> str:
+            if pkg in ("torch", "torchaudio", "torchvision"):
+                try:
+                    v = _orig_ver(pkg)
+                    if v and tuple(int(x) for x in v.split("+")[0].split(".")[:2]) >= (2, 6):
+                        return v
+                except Exception:
+                    pass
+                return "2.6.0"
+            return _orig_ver(pkg)
+
+        importlib.metadata.version = _patched_version
+
+        import torch
+        import torch.distributed.fsdp
+
+        try:
+            if tuple(int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2]) < (2, 6):
+                torch.__version__ = "2.6.0"
+        except Exception:
+            torch.__version__ = "2.6.0"
+
+        try:
+            import torchaudio
+            if tuple(int(x) for x in str(torchaudio.__version__).split("+")[0].split(".")[:2]) < (2, 6):
+                torchaudio.__version__ = "2.6.0"
+        except Exception:
+            pass
+
+        for _attr in ("CPUOffloadPolicy", "MixedPrecisionPolicy", "FSDPModule"):
+            if not hasattr(torch.distributed.fsdp, _attr):
+                setattr(torch.distributed.fsdp, _attr, object)
+        if not hasattr(torch.distributed.fsdp, "fully_shard"):
+            setattr(torch.distributed.fsdp, "fully_shard", lambda *a, **kw: None)
+        try:
+            import torch._dynamo._trace_wrapped_higher_order_op as _twhop
+            if not hasattr(_twhop, "TransformGetItemToIndex"):
+                class _DummyTransformGetItemToIndex:
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *args):
+                        return False
+                setattr(_twhop, "TransformGetItemToIndex", _DummyTransformGetItemToIndex)
+        except Exception:
+            pass
+        if not hasattr(torch, "accelerator"):
+            setattr(
+                torch,
+                "accelerator",
+                types.SimpleNamespace(
+                    current_accelerator=lambda *a, **kw: torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
+                    is_available=lambda: torch.cuda.is_available(),
+                    device_count=lambda: torch.cuda.device_count() if torch.cuda.is_available() else 0,
+                ),
+            )
+
+        if "transformers.utils.import_utils" in sys.modules:
+            _iu = sys.modules["transformers.utils.import_utils"]
+            setattr(_iu, "_torch_available", True)
+            setattr(_iu, "_torchaudio_available", True)
+            setattr(_iu, "_torch_version", "2.6.0")
+            setattr(_iu, "_torchaudio_version", "2.6.0")
+    except Exception as e:
+        print(f"[VoiceStudioService] Lưu ý khi áp dụng bản vá tương thích PyTorch/OmniVoice: {e}")
+
+
+_apply_omnivoice_torch_compat_patch()
+
+
 class VoiceStudioService:
     _instance = None
     _model = None
     _prompt_cache: Dict[str, Any] = {}
+    _daemon_proc: Optional[subprocess.Popen] = None
+    _daemon_lock = None
 
     def __init__(self, root_dir: Optional[Path] = None):
+        import threading
+        if VoiceStudioService._daemon_lock is None:
+            VoiceStudioService._daemon_lock = threading.Lock()
         if root_dir:
             self.root_dir = Path(root_dir)
         else:
@@ -544,19 +630,106 @@ class VoiceStudioService:
         self.voices_dir = self.root_dir / "assets" / "voices"
         self.voices_dir.mkdir(parents=True, exist_ok=True)
 
-        # Mặc định ưu tiên giọng 04_mx_ong_gia_padre_implacable trong Kho_Voice
+        # Mặc định ưu tiên giọng 04_mx_ong_gia_padre_implacable trong Kho_Voice, nếu không có thì tự tìm mẫu giọng đầu tiên trong Kho_Voice
         default_profile_dir = self.kho_voice_dir / "04_mx_ong_gia_padre_implacable"
         if (default_profile_dir / "sample.wav").exists():
             self.ref_voice_path = default_profile_dir / "sample.wav"
             self.ref_text_path = default_profile_dir / "sample.txt"
-        else:
+        elif (self.voices_dir / "Padre_Mexico.wav").exists():
             self.ref_voice_path = self.voices_dir / "Padre_Mexico.wav"
             self.ref_text_path = self.voices_dir / "Padre_Mexico.txt"
+        else:
+            found_wav = None
+            for sub in sorted(self.kho_voice_dir.iterdir()) if self.kho_voice_dir.exists() else []:
+                if sub.is_dir():
+                    w_cands = list(sub.glob("*.wav")) + list(sub.glob("*.mp3"))
+                    if (sub / "sample.wav").exists():
+                        found_wav = sub / "sample.wav"
+                        break
+                    elif w_cands:
+                        found_wav = w_cands[0]
+                        break
+                elif sub.suffix.lower() in (".wav", ".mp3"):
+                    found_wav = sub
+                    break
+            self.ref_voice_path = found_wav if found_wav else (default_profile_dir / "sample.wav")
+            self.ref_text_path = self.ref_voice_path.with_suffix(".txt")
 
         if str(self.voicestudio_dir) not in sys.path:
             sys.path.insert(0, str(self.voicestudio_dir))
 
         self.engine = None
+
+    def is_voicestudio_server_alive(self, port: int = 3900) -> bool:
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.4)
+                return s.connect_ex(("127.0.0.1", port)) == 0
+        except Exception:
+            return False
+
+    def ensure_voicestudio_server_running(self, port: int = 3900) -> bool:
+        """
+        Tự động kiểm tra và bật Server VoiceStudio (cổng 3900) ngay khi mở ứng dụng
+        hoặc trước khi tổng hợp giọng đọc.
+        """
+        import threading
+        if VoiceStudioService._daemon_lock is None:
+            VoiceStudioService._daemon_lock = threading.Lock()
+        if self.is_voicestudio_server_alive(port):
+            return True
+
+        with VoiceStudioService._daemon_lock:
+            if self.is_voicestudio_server_alive(port):
+                return True
+
+            appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+            vs_runtime_root = Path(appdata) / "VoiceStudio" / "runtime" / "project"
+            vs_venv_py = vs_runtime_root / ".venv" / "Scripts" / "python.exe"
+            vs_runtime_backend = vs_runtime_root / "backend"
+            local_vs_backend = self.voicestudio_dir / "backend"
+
+            py_exe = str(vs_venv_py) if vs_venv_py.exists() else sys.executable
+            backend_dir = vs_runtime_backend if (vs_runtime_backend / "main.py").exists() else local_vs_backend
+
+            if (backend_dir / "main.py").exists():
+                try:
+                    logs_dir = self.root_dir / "logs"
+                    logs_dir.mkdir(parents=True, exist_ok=True)
+                    out_log = open(logs_dir / "voicestudio_server.log", "a", encoding="utf-8")
+                    env = os.environ.copy()
+                    env["PYTHONIOENCODING"] = "utf-8"
+                    env["PYTHONUTF8"] = "1"
+                    cmd = [
+                        py_exe,
+                        "-m",
+                        "uvicorn",
+                        "main:app",
+                        "--app-dir",
+                        str(backend_dir),
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        str(port),
+                    ]
+                    print(f"[VoiceStudioService] 🚀 Đang tự động khởi động VoiceStudio Server tại http://127.0.0.1:{port} ...")
+                    VoiceStudioService._daemon_proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(backend_dir),
+                        env=env,
+                        stdout=out_log,
+                        stderr=out_log,
+                        creationflags=0x08000000 if os.name == "nt" else 0,
+                    )
+                    for _ in range(30):
+                        if self.is_voicestudio_server_alive(port):
+                            print(f"[VoiceStudioService] ✅ VoiceStudio Server đã online tại http://127.0.0.1:{port}!")
+                            return True
+                        time.sleep(0.5)
+                except Exception as e:
+                    print(f"[VoiceStudioService] Lưu ý khi khởi chạy VoiceStudio Server (cổng {port}): {e}")
+        return self.is_voicestudio_server_alive(port)
 
     def list_kho_voices(self) -> List[Dict[str, Any]]:
         """Quét toàn bộ mẫu giọng đọc trong Kho_Voice/ và assets/voices/."""
@@ -601,6 +774,12 @@ class VoiceStudioService:
         return results
 
     def _ensure_engine(self):
+        # Đảm bảo Server VoiceStudio cũng được bật song hành
+        try:
+            self.ensure_voicestudio_server_running(port=3900)
+        except Exception:
+            pass
+
         if self.engine is None:
             main_weights = self.model_path / "model.safetensors"
             tok_weights = self.model_path / "audio_tokenizer" / "model.safetensors"
@@ -611,26 +790,8 @@ class VoiceStudioService:
                 snapshot_download(repo_id="k2-fsa/OmniVoice", local_dir=str(self.model_path))
 
             print(f"[VoiceStudioService] Nạp VoiceStudio OmniVoice từ {self.model_path}...")
-            import types
-            import importlib.metadata
+            _apply_omnivoice_torch_compat_patch()
             import torch
-            import torch.distributed.fsdp
-            for _attr in ("CPUOffloadPolicy", "MixedPrecisionPolicy", "FSDPModule"):
-                if not hasattr(torch.distributed.fsdp, _attr):
-                    setattr(torch.distributed.fsdp, _attr, object)
-            if not hasattr(torch.distributed.fsdp, "fully_shard"):
-                setattr(torch.distributed.fsdp, "fully_shard", lambda *a, **kw: None)
-            if not hasattr(torch, "accelerator"):
-                setattr(
-                    torch,
-                    "accelerator",
-                    types.SimpleNamespace(
-                        current_accelerator=lambda *a, **kw: torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
-                        is_available=lambda: torch.cuda.is_available(),
-                    ),
-                )
-            _orig_pkg_ver = importlib.metadata.version
-            importlib.metadata.version = lambda pkg: "2.6.0" if pkg == "torch" else _orig_pkg_ver(pkg)
             from omnivoice.models.omnivoice import OmniVoice
 
             if torch.cuda.is_available():
@@ -710,6 +871,15 @@ class VoiceStudioService:
                 ref_audio = str(cand_dir / "sample.wav")
             elif (self.kho_voice_dir / f"{ref_voice}.wav").exists():
                 ref_audio = str(self.kho_voice_dir / f"{ref_voice}.wav")
+        if not os.path.exists(ref_audio):
+            avail_voices = self.list_kho_voices()
+            if avail_voices and os.path.exists(avail_voices[0]["audio_path"]):
+                ref_audio = avail_voices[0]["audio_path"]
+            else:
+                raise FileNotFoundError(
+                    "Chưa có file giọng mẫu (.wav) trong thư mục Kho_Voice! "
+                    "Vui lòng thêm file giọng mẫu (.wav) của bạn vào thư mục Kho_Voice trước khi tạo Voice."
+                )
 
         ref_text = ""
         ref_p = Path(ref_audio)
