@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import requests
 from websockets.sync.client import connect as ws_connect
@@ -3244,7 +3244,6 @@ import re
 import shutil
 import sys
 import threading
-import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -3255,7 +3254,7 @@ try:
     importlib.reload(_voice_service_mod)
 except Exception:
     pass
-from .logger_service import log_error, log_info, log_warn
+from .logger_service import log_error
 from .voice_service import split_japanese_script, strip_leaked_titles_and_metadata
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -3844,7 +3843,7 @@ def parse_idea_input_block(
             )
             rev2 = (
                 rev2
-                or f"Người cha âm thầm làm việc với Notario Público để kích hoạt điều khoản bảo vệ tài sản"
+                or "Người cha âm thầm làm việc với Notario Público để kích hoạt điều khoản bảo vệ tài sản"
             )
             rev3 = rev3 or parts[1]
         else:
@@ -3956,7 +3955,7 @@ def parse_idea_input_block(
         "goc_thumbnail": _pick_exact_or_contains(
             "22.",
             "góc thumbnail",
-            default=f"Layout 80/20: Bên trái 80% nền trắng chữ IN HOA Tây Ban Nha + Banner đỏ; Bên phải 20% chân dung người cha già Mexico (kèm bản nền xanh #00FF00).",
+            default="Layout 80/20: Bên trái 80% nền trắng chữ IN HOA Tây Ban Nha + Banner đỏ; Bên phải 20% chân dung người cha già Mexico (kèm bản nền xanh #00FF00).",
         ),
         "research_source": _pick_exact_or_contains(
             "23.",
@@ -4277,6 +4276,7 @@ class ADASScriptEngine:
 
         self.lock = threading.Lock()
         self.ideas_io_lock = threading.RLock()
+        self._disk_sync_in_progress = False
         self.is_running = False
         self.should_stop = False
         self.listeners: List[Callable[[Dict[str, Any]], None]] = []
@@ -10188,7 +10188,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         current_step="✅ Đã viết xong toàn bộ Kịch bản — Hàng đợi Render MP4 đang hoàn tất",
                         progress=100.0,
                         message=(
-                            f"🎉 Đã hoàn tất viết Kịch bản, tự động tắt Chrome ChatGPT và đẩy toàn bộ vào Hàng Đợi Voice & Render MP4!"
+                            "🎉 Đã hoàn tất viết Kịch bản, tự động tắt Chrome ChatGPT và đẩy toàn bộ vào Hàng Đợi Voice & Render MP4!"
                         ),
                     )
                 elif not auto_produce_video and not self.should_stop:

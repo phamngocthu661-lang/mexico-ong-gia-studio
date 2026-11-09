@@ -485,9 +485,15 @@ class ProductionPipeline:
             # Đợi cửa sổ giao diện chính hiển thị hoàn tất rồi mới nạp ngầm Model OmniVoice (nếu đã tải sẵn trên ổ cứng)
             time.sleep(5.0)
             main_weights = self.voice_service.model_path / "model.safetensors"
-            if main_weights.exists() and main_weights.stat().st_size > 1_000_000_000:
+            if (
+                not self.is_running
+                and main_weights.exists()
+                and main_weights.stat().st_size > 1_000_000_000
+            ):
                 try:
-                    self.voice_service._ensure_engine()
+                    with self.voice_synth_lock:
+                        if not self.is_running:
+                            self.voice_service._ensure_engine()
                 except Exception as ee:
                     log_warn("VOICE", f"Lưu ý khi nạp sớm Model OmniVoice GPU: {ee}")
             omni_loaded = getattr(self.voice_service, "model", None) is not None

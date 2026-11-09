@@ -522,8 +522,6 @@ def generate_karaoke_ass_from_srt(
 # ==============================================================================
 
 import json
-import os
-import re
 import subprocess
 import wave
 from pathlib import Path
@@ -1194,13 +1192,8 @@ def verify_rendered_video_sync(
 # MODEL PHẦN 3: DỊCH VỤ GIỌNG ĐỌC AI OMNIVOICE GPU (VOICE SERVICE)
 # ==============================================================================
 
-import json
-import os
-import re
-import subprocess
 import sys
 import time
-import wave
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -1853,10 +1846,158 @@ def _apply_omnivoice_torch_compat_patch():
             setattr(_iu, "_torchaudio_available", True)
             setattr(_iu, "_torch_version", "2.6.0")
             setattr(_iu, "_torchaudio_version", "2.6.0")
+            for _fn_name in (
+                "is_torch_available",
+                "is_torchaudio_available",
+                "is_torchvision_available",
+            ):
+                _fn = getattr(_iu, _fn_name, None)
+                if _fn is not None and hasattr(_fn, "cache_clear"):
+                    try:
+                        _fn.cache_clear()
+                    except Exception:
+                        pass
+            _bm = getattr(_iu, "BACKENDS_MAPPING", None)
+            if isinstance(_bm, dict):
+                try:
+                    if "torch" in _bm and isinstance(_bm["torch"], tuple):
+                        _bm["torch"] = (lambda: True, _bm["torch"][1])
+                except Exception:
+                    pass
+        if "transformers" in sys.modules:
+            _tf_mod = sys.modules["transformers"]
+            _ptm = getattr(_tf_mod, "PreTrainedModel", None)
+            _am = getattr(_tf_mod, "AutoModel", None)
+            if (
+                _ptm is None
+                or _am is None
+                or "DummyObject" in str(getattr(_ptm, "__mro__", ()))
+                or "DummyObject" in str(getattr(_am, "__mro__", ()))
+            ):
+                for _k in [
+                    k
+                    for k in list(sys.modules.keys())
+                    if k == "transformers" or k.startswith("transformers.")
+                ]:
+                    sys.modules.pop(_k, None)
     except Exception as e:
         print(
             f"[VoiceStudioService] Lưu ý khi áp dụng bản vá tương thích PyTorch/OmniVoice: {e}"
         )
+
+
+def _ensure_omnivoice_package_files(root_dir: Optional[Path] = None) -> Path:
+    """
+    Đảm bảo thư mục `VoiceStudio/omnivoice/` trên máy khách luôn đầy đủ và đồng bộ
+    bản mới nhất từ `assets/omnivoice_core/` (hoặc tải dự phòng từ GitHub Raw nếu thiếu),
+    tránh triệt để lỗi `cannot import name 'OmniVoice' from 'omnivoice.models.omnivoice'`.
+    """
+    import shutil
+
+    base = Path(root_dir) if root_dir else Path(__file__).resolve().parent.parent
+    if base.name.lower() == "app":
+        base = base.parent
+    vs_dir = base / "VoiceStudio"
+    vs_omnivoice = vs_dir / "omnivoice"
+    vs_omnivoice.mkdir(parents=True, exist_ok=True)
+
+    # 1. Đồng bộ từ assets/omnivoice_core (hoặc app/assets/omnivoice_core) sang VoiceStudio/omnivoice
+    core_candidates = [
+        base / "assets" / "omnivoice_core",
+        base / "app" / "assets" / "omnivoice_core",
+        base / "app" / "VoiceStudio" / "omnivoice",
+    ]
+    for core_dir in core_candidates:
+        if core_dir.exists() and core_dir.is_dir():
+            for src_file in core_dir.rglob("*"):
+                if not src_file.is_file():
+                    continue
+                if "__pycache__" in src_file.parts or src_file.suffix in (
+                    ".pyc",
+                    ".pyo",
+                ):
+                    continue
+                rel = src_file.relative_to(core_dir)
+                dst_file = vs_omnivoice / rel
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    need_copy = not dst_file.exists()
+                    if not need_copy:
+                        src_bytes = src_file.read_bytes()
+                        dst_bytes = dst_file.read_bytes()
+                        need_copy = src_bytes != dst_bytes
+                    if need_copy:
+                        shutil.copy2(str(src_file), str(dst_file))
+                except Exception:
+                    pass
+            break
+
+    # 2. Nếu file lõi models/omnivoice.py hoặc utils/audio.py vẫn thiếu hoặc bản cũ chưa có VoiceStudio = OmniVoice -> Tải từ GitHub Raw
+    critical_rel_files = [
+        "__init__.py",
+        "models/__init__.py",
+        "models/omnivoice.py",
+        "utils/__init__.py",
+        "utils/audio.py",
+        "utils/common.py",
+        "utils/duration.py",
+        "utils/lang_map.py",
+        "utils/text.py",
+        "utils/voice_design.py",
+    ]
+    omnivoice_model_py = vs_omnivoice / "models" / "omnivoice.py"
+    needs_remote_sync = not omnivoice_model_py.exists()
+    if not needs_remote_sync:
+        try:
+            txt = omnivoice_model_py.read_text(encoding="utf-8", errors="ignore")
+            if (
+                "class OmniVoice(" not in txt
+                or "VoiceStudio = OmniVoice" not in txt
+                or "cache_clear" not in txt
+            ):
+                needs_remote_sync = True
+        except Exception:
+            needs_remote_sync = True
+
+    if needs_remote_sync:
+        import requests
+
+        for rel_path in critical_rel_files:
+            dst_f = vs_omnivoice / rel_path
+            dst_f.parent.mkdir(parents=True, exist_ok=True)
+            if (
+                dst_f.exists()
+                and rel_path not in ("models/omnivoice.py", "utils/audio.py")
+                and dst_f.stat().st_size > 10
+            ):
+                continue
+            raw_urls = [
+                f"https://raw.githubusercontent.com/phamngocthu661-lang/mexico-ong-gia-studio/main/VoiceStudio/omnivoice/{rel_path}",
+                f"https://raw.githubusercontent.com/phamngocthu661-lang/mexico-ong-gia-studio/main/assets/omnivoice_core/{rel_path}",
+            ]
+            for url in raw_urls:
+                try:
+                    r = requests.get(
+                        url,
+                        timeout=15,
+                        headers={"User-Agent": "MexicoOngGiaStudio-OmniVoiceSync/1.0"},
+                    )
+                    if r.status_code == 200 and len(r.content) > 10:
+                        dst_f.write_bytes(r.content)
+                        break
+                except Exception:
+                    pass
+
+    # 3. Đưa VoiceStudio lên đầu sys.path để ưu tiên bản chuẩn trong thư mục dự án
+    vs_str = str(vs_dir)
+    if vs_str in sys.path:
+        if sys.path[0] != vs_str:
+            sys.path.remove(vs_str)
+            sys.path.insert(0, vs_str)
+    else:
+        sys.path.insert(0, vs_str)
+
+    return vs_dir
 
 
 _apply_omnivoice_torch_compat_patch()
@@ -1868,12 +2009,15 @@ class VoiceStudioService:
     _prompt_cache: Dict[str, Any] = {}
     _daemon_proc: Optional[subprocess.Popen] = None
     _daemon_lock = None
+    _engine_lock = None
 
     def __init__(self, root_dir: Optional[Path] = None):
         import threading
 
         if VoiceStudioService._daemon_lock is None:
             VoiceStudioService._daemon_lock = threading.Lock()
+        if VoiceStudioService._engine_lock is None:
+            VoiceStudioService._engine_lock = threading.RLock()
         if root_dir:
             self.root_dir = Path(root_dir)
         else:
@@ -1890,6 +2034,10 @@ class VoiceStudioService:
         self.kho_voice_dir.mkdir(parents=True, exist_ok=True)
         self.voices_dir = self.root_dir / "assets" / "voices"
         self.voices_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            _ensure_omnivoice_package_files(self.root_dir)
+        except Exception:
+            pass
         try:
             _ensure_default_padre_voice_profile(self.root_dir)
         except Exception:
@@ -2083,13 +2231,29 @@ class VoiceStudioService:
         return results
 
     def _ensure_engine(self):
+        import importlib
+        import threading
+
+        if VoiceStudioService._engine_lock is None:
+            VoiceStudioService._engine_lock = threading.RLock()
+
         # Đảm bảo Server VoiceStudio cũng được bật song hành
         try:
             self.ensure_voicestudio_server_running(port=3900)
         except Exception:
             pass
 
-        if self.engine is None:
+        with VoiceStudioService._engine_lock:
+            if self.engine is not None and getattr(self, "model", None) is not None:
+                return
+            if VoiceStudioService._model is not None:
+                import torch
+
+                self.model = VoiceStudioService._model
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+                self.engine = True
+                return
+
             main_weights = self.model_path / "model.safetensors"
             tok_weights = self.model_path / "audio_tokenizer" / "model.safetensors"
             if (
@@ -2111,9 +2275,26 @@ class VoiceStudioService:
             print(
                 f"[VoiceStudioService] Nạp VoiceStudio OmniVoice từ {self.model_path}..."
             )
+            _ensure_omnivoice_package_files(self.root_dir)
             _apply_omnivoice_torch_compat_patch()
             import torch
-            from omnivoice.models.omnivoice import OmniVoice
+
+            try:
+                from omnivoice.models.omnivoice import OmniVoice
+            except Exception as _imp_err:
+                print(
+                    f"[VoiceStudioService] Phát hiện cache module omnivoice chưa đồng bộ ({_imp_err}), đang tự động làm sạch và nạp lại..."
+                )
+                for _mod_k in [
+                    k
+                    for k in list(sys.modules.keys())
+                    if k == "omnivoice" or k.startswith("omnivoice.")
+                ]:
+                    sys.modules.pop(_mod_k, None)
+                importlib.invalidate_caches()
+                _ensure_omnivoice_package_files(self.root_dir)
+                _apply_omnivoice_torch_compat_patch()
+                from omnivoice.models.omnivoice import OmniVoice
 
             if torch.cuda.is_available():
                 torch.backends.cudnn.benchmark = True
@@ -2453,8 +2634,16 @@ class VoiceStudioService:
                 f.write(f"file '{clean_p}'\n")
 
         master_wav = output_dir / "master_voice.wav"
+        import shutil as _shutil
+
+        local_ffmpeg = self.root_dir / "bin" / "ffmpeg.exe"
+        ffmpeg_exe = (
+            str(local_ffmpeg)
+            if local_ffmpeg.exists()
+            else (_shutil.which("ffmpeg") or "ffmpeg")
+        )
         cmd = [
-            "ffmpeg",
+            ffmpeg_exe,
             "-y",
             "-f",
             "concat",
@@ -2466,7 +2655,11 @@ class VoiceStudioService:
             "pcm_s16le",
             str(master_wav),
         ]
-        subprocess.run(cmd, check=True)
+        subprocess.run(
+            cmd,
+            check=True,
+            creationflags=0x08000000 if os.name == "nt" else 0,
+        )
 
         # Xuất subtitles.srt (Đảm bảo tối đa 3 dòng / khung phụ đề, tự động tách câu dài tại đúng điểm nghỉ trong WAV)
         srt_file = output_dir / "subtitles.srt"
@@ -3684,6 +3877,8 @@ def _get_voice_config_file() -> Path:
 def _ensure_default_padre_voice_profile(root_dir: Optional[Path] = None) -> Path:
     """Đảm bảo hồ sơ giọng mẫu mặc định 04_mx_ong_gia_padre_implacable luôn có mặt đầy đủ trong Kho_Voice/."""
     import shutil
+
+    import requests
 
     base = Path(root_dir) if root_dir else Path(__file__).resolve().parent.parent
     if base.name.lower() == "app":

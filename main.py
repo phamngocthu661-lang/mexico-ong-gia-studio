@@ -930,7 +930,7 @@ def main():
                 f"✅ Server Backend & Giao diện HTML đã sẵn sàng 100% tại {url}"
             )
 
-    print(f"-> Đang mở cửa sổ ứng dụng Desktop Mexico Ông Già Studio...")
+    print("-> Đang mở cửa sổ ứng dụng Desktop Mexico Ông Già Studio...")
     ui_proc = open_desktop_ui_window(url)
 
     if reuse_existing:
@@ -941,7 +941,7 @@ def main():
     print(
         "================================================================================"
     )
-    print(f"✅ GIAO DIỆN DESKTOP ĐÃ MỞ THÀNH CÔNG")
+    print("✅ GIAO DIỆN DESKTOP ĐÃ MỞ THÀNH CÔNG")
     print(
         "💡 Khi đóng cửa sổ ứng dụng bằng nút [X], toàn bộ Server Backend & Server Voice (run.exe) sẽ tự động tắt sạch 100%!"
     )

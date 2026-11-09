@@ -885,10 +885,8 @@ import datetime
 import hashlib
 import hmac
 import json
-import os
 import re
 import secrets
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -1285,13 +1283,9 @@ def get_network_timestamp(timeout: float = 2.5) -> Optional[int]:
 # ==============================================================================
 
 import importlib
-import json
-import os
-import re
 import shutil
 import sys
 import threading
-import time
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -1574,24 +1568,26 @@ def _hot_reload_backend_modules(adas_engine: Any = None, pipeline: Any = None):
         log_warn("UPDATER", f"Lưu ý khi cập nhật nóng ProductionPipeline: {e}")
 
     try:
-        if (
-            "backend.voicevox_service" in reloaded_mods
-            and pipeline is not None
-            and getattr(pipeline, "voicevox_service", None) is not None
-        ):
-            new_vv_cls = getattr(
-                reloaded_mods["backend.voicevox_service"],
-                "VoicevoxStandaloneService",
-                None,
-            )
-            if new_vv_cls is not None:
-                for attr_name, attr_val in vars(new_vv_cls).items():
-                    if not attr_name.startswith("__"):
-                        setattr(
-                            pipeline.voicevox_service.__class__, attr_name, attr_val
-                        )
+        if "backend.voice_service" in reloaded_mods:
+            vs_mod = reloaded_mods["backend.voice_service"]
+            if hasattr(vs_mod, "_ensure_omnivoice_package_files"):
+                try:
+                    vs_mod._ensure_omnivoice_package_files(_resolve_root_dir())
+                except Exception:
+                    pass
+            if (
+                pipeline is not None
+                and getattr(pipeline, "voice_service", None) is not None
+            ):
+                new_vs_cls = getattr(vs_mod, "VoiceStudioService", None)
+                if new_vs_cls is not None:
+                    for attr_name, attr_val in vars(new_vs_cls).items():
+                        if not attr_name.startswith("__") and callable(attr_val):
+                            setattr(
+                                pipeline.voice_service.__class__, attr_name, attr_val
+                            )
     except Exception as e:
-        log_warn("UPDATER", f"Lưu ý khi cập nhật nóng VoicevoxStandaloneService: {e}")
+        log_warn("UPDATER", f"Lưu ý khi cập nhật nóng VoiceStudioService: {e}")
 
     try:
         if (
@@ -2101,13 +2097,15 @@ def apply_github_update(
             updated_files_count = 0
             app_subdir = root_dir / "app"
 
-            # 1. Cập nhật các thư mục code: backend, frontend, adas_skills (An toàn chống lỗi PermissionError)
+            # 1. Cập nhật các thư mục code: backend, frontend, adas_skills, Kho_Voice, assets, VoiceStudio, bin
             for folder_name in (
                 "backend",
                 "frontend",
                 "adas_skills",
                 "Kho_Voice",
                 "assets",
+                "VoiceStudio",
+                "bin",
             ):
                 s_folder = src_root / folder_name
                 if not s_folder.exists():
