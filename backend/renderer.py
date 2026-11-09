@@ -714,10 +714,42 @@ def ensure_green_icons_and_sfx_assets(
 def _get_person_segmentation_model():
     if _DEEPLAB_CACHE["model"] is None:
         import torch
-        from torchvision.models.segmentation import (
-            DeepLabV3_ResNet50_Weights,
-            deeplabv3_resnet50,
-        )
+
+        try:
+            from torchvision.models.segmentation import (
+                DeepLabV3_ResNet50_Weights,
+                deeplabv3_resnet50,
+            )
+        except ImportError:
+            import importlib
+            import subprocess
+            import sys
+
+            tv_ver = (
+                "torchvision==0.20.1"
+                if str(torch.__version__).startswith("2.5.")
+                else "torchvision"
+            )
+            cmd = [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--prefer-binary",
+                "--no-deps",
+                tv_ver,
+            ]
+            if "+cu" in str(torch.__version__):
+                cu_tag = str(torch.__version__).split("+")[-1].strip()
+                cmd += ["--index-url", f"https://download.pytorch.org/whl/{cu_tag}"]
+            subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180
+            )
+            importlib.invalidate_caches()
+            from torchvision.models.segmentation import (
+                DeepLabV3_ResNet50_Weights,
+                deeplabv3_resnet50,
+            )
 
         weights = DeepLabV3_ResNet50_Weights.DEFAULT
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -739,14 +771,14 @@ def extract_clean_large_green_character_bytes(
     """
     Tách chân dung người cha Mexico từ ảnh THUMBNAIL.png sang ảnh nền xanh #00FF00 (1920x1080):
     1. Loại bỏ 100% chữ tiêu đề, băng rôn đỏ bên trái và giấy tờ có chữ ở phía dưới.
-    2. Dùng AI DeepLabV3_ResNet50 (Person Segmentation) tách sạch phông nền sau đầu/vai.
+    2. Dùng AI DeepLabV3_ResNet50 (Person Segmentation) + SciPy/PIL (không phụ thuộc cv2) tách sạch phông nền sau đầu/vai.
     3. Phóng to nhân vật rõ nét, uy nghi ở góc phải màn hình (rộng ~580..740px, cao ~820..1055px) trên nền #00FF00.
     """
     import io
 
-    import cv2
     import numpy as np
     from PIL import Image, ImageEnhance
+    from scipy import ndimage as ndi
 
     im = Image.open(io.BytesIO(thumb_bytes)).convert("RGB")
     if im.size != (1920, 1080):
@@ -813,8 +845,11 @@ def extract_clean_large_green_character_bytes(
         with torch.no_grad():
             out = model(inp)["out"][0]
         probs_wide = torch.softmax(out, dim=0)[15].detach().cpu().numpy()
-        probs_wide_full = cv2.resize(
-            probs_wide, wide_im.size, interpolation=cv2.INTER_CUBIC
+        probs_wide_full = np.asarray(
+            Image.fromarray(probs_wide.astype(np.float32), mode="F").resize(
+                wide_im.size, Image.Resampling.BICUBIC
+            ),
+            dtype=np.float32,
         )
         probs_crop = probs_wide_full[:, (x_crop_start - x_wide) :]
     except Exception as e:
@@ -822,77 +857,95 @@ def extract_clean_large_green_character_bytes(
         probs_crop = None
 
     if probs_crop is not None:
-        mask = (probs_crop >= 0.42).astype(np.uint8) * 255
+        mask = (probs_crop >= 0.44).astype(np.uint8) * 255
     else:
-        mask = np.full((ch_raw, cw_raw), 255, dtype=np.uint8)
+        # Dự phòng giải phẫu học + màu viền khi chạy hoàn toàn offline chưa có model DeepLabV3
+        yy, xx = np.mgrid[0:ch_raw, 0:cw_raw].astype(np.float32)
+        yn = yy / float(max(1, ch_raw))
+        xn = xx / float(max(1, cw_raw))
+        head_d = ((xn - 0.55) / 0.39) ** 2 + ((yn - 0.28) / 0.22) ** 2
+        neck_d = ((xn - 0.57) / 0.27) ** 2 + ((yn - 0.50) / 0.14) ** 2
+        torso_mask = (yn >= 0.60) & (
+            xn >= 0.02 + 0.24 * np.clip((0.72 - yn) / 0.12, 0.0, 1.0) ** 2
+        )
+        anat_fg = (head_d <= 1.0) | (neck_d <= 1.0) | torso_mask
+        mask = np.where(anat_fg, 255, 0).astype(np.uint8)
 
-    # Xóa nền trắng/sáng kết nối với viền trên hoặc viền trái
+    # Xóa nền trắng/sáng kết nối với viền trên hoặc viền trái bằng SciPy ndimage.label
     is_white = (
         (crop_arr[:, :, 0] > 232)
         & (crop_arr[:, :, 1] > 232)
         & (crop_arr[:, :, 2] > 232)
         & (np.abs(crop_arr[:, :, 0].astype(int) - crop_arr[:, :, 1].astype(int)) < 14)
-    ).astype(np.uint8)
-    num_w, lbl_w, stats_w, _ = cv2.connectedComponentsWithStats(
-        is_white, connectivity=8
     )
-    for lbl_i in range(1, num_w):
-        top_y = stats_w[lbl_i, cv2.CC_STAT_TOP]
-        left_x = stats_w[lbl_i, cv2.CC_STAT_LEFT]
-        if top_y <= 5 or (left_x <= 5 and top_y < ch_raw * 0.65):
-            mask[lbl_w == lbl_i] = 0
+    lbl_w, num_w = ndi.label(is_white, structure=np.ones((3, 3), dtype=np.int32))
+    if num_w > 0:
+        border_w = np.zeros_like(is_white, dtype=bool)
+        border_w[:6, :] = True
+        border_w[: int(ch_raw * 0.65), :6] = True
+        w_ids = np.unique(lbl_w[border_w & is_white])
+        w_ids = w_ids[w_ids > 0]
+        if len(w_ids) > 0:
+            mask[np.isin(lbl_w, w_ids)] = 0
 
-    # Xác định hàng vai (y_shoulder)
+    # Xác định hàng vai (y_shoulder ở vùng thân áo y >= 62% chiều cao, tránh nhầm ngang tai/cổ)
     row_fg_counts = np.sum(mask > 127, axis=1)
     shoulder_rows = np.where(
-        (np.arange(ch_raw) >= int(ch_raw * 0.35))
+        (np.arange(ch_raw) >= int(ch_raw * 0.62))
         & (row_fg_counts >= int(cw_raw * 0.80))
     )[0]
-    y_shoulder = int(shoulder_rows[0]) if len(shoulder_rows) > 0 else int(ch_raw * 0.50)
+    y_shoulder = int(shoulder_rows[0]) if len(shoulder_rows) > 0 else int(ch_raw * 0.68)
 
     # Nếu nửa dưới có cầm giấy tờ văn bản (xác suất person giảm thấp), cắt ngay trên mép giấy để không dính chữ
-    y_cut_bottom = int(round(ch_raw * 0.86))
+    y_cut_bottom = int(round(ch_raw * 0.88))
     if probs_crop is not None:
         lower_probs = probs_crop[y_shoulder + 30 :, :]
         low_prob_rows = np.where(np.mean(lower_probs > 0.35, axis=1) < 0.45)[0]
         if len(low_prob_rows) > 40:
             y_cut_bottom = min(ch_raw, y_shoulder + 30 + int(low_prob_rows[0]) - 45)
-            y_cut_bottom = max(int(ch_raw * 0.46), y_cut_bottom)
+            y_cut_bottom = max(int(ch_raw * 0.56), y_cut_bottom)
 
     # Lấp đầy phần thân áo từ đường vai xuống y_cut_bottom
     for x in range(cw_raw):
         fg_ys_shoulder = np.where(
-            mask[max(0, y_shoulder - 30) : y_cut_bottom, x] > 127
+            mask[max(0, y_shoulder - 15) : y_cut_bottom, x] > 127
         )[0]
         if len(fg_ys_shoulder) > 0:
-            y_st = max(0, y_shoulder - 30) + int(fg_ys_shoulder[0])
+            y_st = max(0, y_shoulder - 15) + int(fg_ys_shoulder[0])
             mask[y_st:y_cut_bottom, x] = 255
 
     # Xóa lại nền trắng sát biên trái nếu có sau khi lấp đầy
-    for lbl_i in range(1, num_w):
-        top_y = stats_w[lbl_i, cv2.CC_STAT_TOP]
-        left_x = stats_w[lbl_i, cv2.CC_STAT_LEFT]
-        if top_y <= 5 or (left_x <= 5 and top_y < ch_raw * 0.68):
-            mask[lbl_w == lbl_i] = 0
+    if num_w > 0:
+        border_w2 = np.zeros_like(is_white, dtype=bool)
+        border_w2[:6, :] = True
+        border_w2[: int(ch_raw * 0.68), :6] = True
+        w_ids2 = np.unique(lbl_w[border_w2 & is_white])
+        w_ids2 = w_ids2[w_ids2 > 0]
+        if len(w_ids2) > 0:
+            mask[np.isin(lbl_w, w_ids2)] = 0
 
     crop_arr = crop_arr[:y_cut_bottom, :, :]
     mask = mask[:y_cut_bottom, :]
 
-    # Giữ khối nhân vật chính lớn nhất
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        (mask > 127).astype(np.uint8), connectivity=8
+    # Giữ khối nhân vật chính lớn nhất bằng SciPy ndimage.label
+    labels, num_labels = ndi.label(
+        mask > 127, structure=np.ones((3, 3), dtype=np.int32)
     )
-    clean_mask = np.zeros_like(mask)
-    if num_labels > 1:
-        largest_lbl = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-        clean_mask[labels == largest_lbl] = 255
+    if num_labels > 0:
+        counts = np.bincount(labels.ravel())
+        counts[0] = 0
+        largest_lbl = int(np.argmax(counts))
+        clean_mask = np.where(labels == largest_lbl, 255, 0).astype(np.uint8)
     else:
         clean_mask = mask
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    clean_mask = cv2.morphologyEx(clean_mask, cv2.MORPH_CLOSE, kernel)
-    clean_mask = cv2.morphologyEx(clean_mask, cv2.MORPH_OPEN, kernel)
-    clean_mask = cv2.GaussianBlur(clean_mask, (5, 5), 0)
+    y_g, x_g = np.ogrid[-3:4, -3:4]
+    struct_ell = (x_g * x_g + y_g * y_g) <= 9
+    m_bool = ndi.binary_closing(clean_mask > 127, structure=struct_ell)
+    m_bool = ndi.binary_opening(m_bool, structure=struct_ell)
+    clean_mask = ndi.gaussian_filter(
+        m_bool.astype(np.float32) * 255.0, sigma=1.2
+    ).astype(np.uint8)
 
     ys, xs = np.where(clean_mask >= 140)
     if len(xs) >= 40 and len(ys) >= 40:
@@ -946,10 +999,18 @@ def extract_clean_large_green_character_bytes(
         new_h = int(round(h * 0.97))
         new_w = max(560, min(800, int(round(cw_c * (new_h / max(1, ch_c))))))
 
-    char_rgb_res = cv2.resize(
-        char_rgb, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4
+    char_rgb_res = np.asarray(
+        Image.fromarray(char_rgb, mode="RGB").resize(
+            (new_w, new_h), Image.Resampling.LANCZOS
+        ),
+        dtype=np.uint8,
     )
-    char_a_res = cv2.resize(char_a, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    char_a_res = np.asarray(
+        Image.fromarray(char_a, mode="L").resize(
+            (new_w, new_h), Image.Resampling.BILINEAR
+        ),
+        dtype=np.uint8,
+    )
     hard_mask = char_a_res >= 145
 
     canvas_arr = np.zeros((h, w, 3), dtype=np.uint8)

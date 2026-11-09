@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.19",
-  "build_number": 135,
-  "released_at": "2026-11-09 18:28:22",
+  "version": "V1.0.20",
+  "build_number": 136,
+  "released_at": "2026-11-09 18:50:25",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "Đóng gói kèm sẵn Giọng mẫu mặc định Ông Già Mexico (04_mx_ong_gia_padre_implacable / sample.wav) trong Kho_Voice & assets/voices khi cài đặt và cập nhật từ GitHub"
+  "changelog": "V1.0.20: Sua triet de loi khong tao anh nen xanh THUMBNAIL-NENXANH.png tren may khach (khong can cv2, tu dong tach nen ngay khi mo du an)"
 }

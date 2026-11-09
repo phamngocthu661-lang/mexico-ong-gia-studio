@@ -100,7 +100,11 @@ def run_install_setup():
     except Exception:
         has_nvidia_gpu = False
 
-    has_torch = check_module("torch") and check_module("torchaudio")
+    has_torch = (
+        check_module("torch")
+        and check_module("torchaudio")
+        and check_module("torchvision")
+    )
     if has_torch and has_nvidia_gpu:
         cuda_ok = (
             subprocess.run(
@@ -127,10 +131,11 @@ def run_install_setup():
                 "--prefer-binary",
                 "torch==2.5.1",
                 "torchaudio==2.5.1",
+                "torchvision==0.20.1",
                 "--index-url",
                 "https://download.pytorch.org/whl/cu121",
             ],
-            "Đang tải PyTorch 2.5.1 GPU (CUDA 12.1)...",
+            "Đang tải PyTorch 2.5.1 + TorchVision GPU (CUDA 12.1)...",
         )
         if not ok_cu121 or not check_module("torch"):
             print("[!] Đang chuyển sang tải PyTorch GPU (CUDA 12.4)...")
@@ -140,6 +145,7 @@ def run_install_setup():
                     "--prefer-binary",
                     "torch>=2.5.0,<2.9.0",
                     "torchaudio>=2.5.0,<2.9.0",
+                    "torchvision",
                     "--index-url",
                     "https://download.pytorch.org/whl/cu124",
                 ],
@@ -152,6 +158,7 @@ def run_install_setup():
                         "--prefer-binary",
                         "torch>=2.5.0,<2.9.0",
                         "torchaudio>=2.5.0,<2.9.0",
+                        "torchvision",
                     ],
                     "Đang tải PyTorch bản tiêu chuẩn...",
                 )

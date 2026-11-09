@@ -10111,6 +10111,39 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         green_thumb_path = cand_g
                         break
 
+        # Tự động tách nền tạo ngay THUMBNAIL-NENXANH.png nếu đã có THUMBNAIL.png nhưng chưa có ảnh nền xanh
+        if main_thumb_path is not None and green_thumb_path is None:
+            try:
+                green_bytes = self._create_matched_green_screen_from_thumbnail_bytes(
+                    main_thumb_path.read_bytes()
+                )
+                if green_bytes and len(green_bytes) > 5_000:
+                    renders_dir.mkdir(parents=True, exist_ok=True)
+                    proj_dir.mkdir(parents=True, exist_ok=True)
+                    out_g_renders = renders_dir / "THUMBNAIL-NENXANH.png"
+                    out_g_id = renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png"
+                    out_g_proj = proj_dir / "THUMBNAIL-NENXANH.png"
+                    out_g_renders.write_bytes(green_bytes)
+                    out_g_id.write_bytes(green_bytes)
+                    out_g_proj.write_bytes(green_bytes)
+                    green_thumb_path = out_g_renders
+                    try:
+                        from backend.renderer import (
+                            ensure_project_script_green_images,
+                        )
+
+                        ensure_project_script_green_images(
+                            proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
+                        )
+                    except Exception:
+                        pass
+            except Exception as e_auto_gr:
+                log_warn(
+                    "SCRIPT",
+                    f"[{ma_id}] Lưu ý khi tự động tách nền tạo THUMBNAIL-NENXANH.png: {e_auto_gr}",
+                    project_id=ma_id,
+                )
+
         for p_cand in (main_thumb_path, green_thumb_path):
             if p_cand is not None and p_cand not in thumb_files:
                 thumb_files.append(p_cand)
@@ -10311,6 +10344,70 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 proj_dir.mkdir(parents=True, exist_ok=True)
                 renders_dir = proj_dir / "renders"
                 renders_dir.mkdir(parents=True, exist_ok=True)
+
+                existing_main = next(
+                    (
+                        p
+                        for p in (
+                            renders_dir / "THUMBNAIL.png",
+                            proj_dir / "THUMBNAIL.png",
+                            renders_dir / f"{ma_id}_THUMBNAIL_1.png",
+                        )
+                        if p.exists() and p.stat().st_size > 10_000
+                    ),
+                    None,
+                )
+                existing_green = next(
+                    (
+                        p
+                        for p in (
+                            renders_dir / "THUMBNAIL-NENXANH.png",
+                            proj_dir / "THUMBNAIL-NENXANH.png",
+                        )
+                        if p.exists() and p.stat().st_size > 10_000
+                    ),
+                    None,
+                )
+                if existing_main is not None and existing_green is None:
+                    self._emit(
+                        status="running",
+                        current_ma_id=ma_id,
+                        current_step="Đang tách nền tạo THUMBNAIL-NENXANH.png từ THUMBNAIL.png sẵn có...",
+                        progress=60.0,
+                        message=f"[{ma_id}] 🟩 Đang tách nền tạo THUMBNAIL-NENXANH.png từ {existing_main.name}...",
+                    )
+                    g_bytes = self._create_matched_green_screen_from_thumbnail_bytes(
+                        existing_main.read_bytes()
+                    )
+                    for g_out in (
+                        renders_dir / "THUMBNAIL-NENXANH.png",
+                        renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                        proj_dir / "THUMBNAIL-NENXANH.png",
+                    ):
+                        g_out.write_bytes(g_bytes)
+                    try:
+                        from backend.renderer import (
+                            ensure_project_script_green_images,
+                        )
+
+                        ensure_project_script_green_images(
+                            proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
+                        )
+                    except Exception:
+                        pass
+                    self._update_idea_record(
+                        ma_id,
+                        has_thumbnail=True,
+                        current_step="✅ Đã tách xong THUMBNAIL-NENXANH.png từ THUMBNAIL.png",
+                    )
+                    self._emit(
+                        status="completed",
+                        current_step="Hoàn tất tách nền THUMBNAIL-NENXANH.png",
+                        progress=100.0,
+                        message=f"[{ma_id}] 🎉 Đã tạo xong THUMBNAIL-NENXANH.png tại {renders_dir}!",
+                    )
+                    completed_ok = True
+                    return
 
                 if force_regenerate:
                     for old_t in list(renders_dir.glob(f"{ma_id}_THUMBNAIL*.png")) + [
