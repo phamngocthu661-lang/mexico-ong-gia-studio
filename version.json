@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.21",
-  "build_number": 137,
-  "released_at": "2026-11-09 19:03:28",
+  "version": "V1.0.22",
+  "build_number": 138,
+  "released_at": "2026-11-09 19:20:39",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.21: Nang cap Skill tao anh nhan vat Thumbnail ngau nhien doc ban (da dang khuon mat ong gia, râu/toc/mu/kinh va 16 bo trang phuc khac nhau giua cac video)"
+  "changelog": "V1.0.22: Tu dong tai va khoi phuc file giong mau sample.wav (04. Padre Implacable) truc tiep khi update hoac tao Voice tren may khach"
 }

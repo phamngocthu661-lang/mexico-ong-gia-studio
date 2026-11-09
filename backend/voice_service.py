@@ -1890,6 +1890,10 @@ class VoiceStudioService:
         self.kho_voice_dir.mkdir(parents=True, exist_ok=True)
         self.voices_dir = self.root_dir / "assets" / "voices"
         self.voices_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            _ensure_default_padre_voice_profile(self.root_dir)
+        except Exception:
+            pass
 
         # Mặc định ưu tiên giọng 04_mx_ong_gia_padre_implacable trong Kho_Voice, nếu không có thì tự tìm mẫu giọng đầu tiên trong Kho_Voice
         default_profile_dir = self.kho_voice_dir / "04_mx_ong_gia_padre_implacable"
@@ -2016,6 +2020,10 @@ class VoiceStudioService:
 
     def list_kho_voices(self) -> List[Dict[str, Any]]:
         """Quét toàn bộ mẫu giọng đọc trong Kho_Voice/ và assets/voices/."""
+        try:
+            _ensure_default_padre_voice_profile(self.root_dir)
+        except Exception:
+            pass
         results: List[Dict[str, Any]] = []
         if self.kho_voice_dir.exists():
             for item in sorted(self.kho_voice_dir.iterdir()):
@@ -2195,6 +2203,14 @@ class VoiceStudioService:
                 ref_audio = str(cand_dir / "sample.wav")
             elif (self.kho_voice_dir / f"{ref_voice}.wav").exists():
                 ref_audio = str(self.kho_voice_dir / f"{ref_voice}.wav")
+        if not os.path.exists(ref_audio):
+            try:
+                ensured_wav = _ensure_default_padre_voice_profile(self.root_dir)
+                if ensured_wav.exists() and ensured_wav.stat().st_size > 10_000:
+                    self.ref_voice_path = ensured_wav
+                    ref_audio = str(ensured_wav)
+            except Exception:
+                pass
         if not os.path.exists(ref_audio):
             avail_voices = self.list_kho_voices()
             if avail_voices and os.path.exists(avail_voices[0]["audio_path"]):
@@ -3681,11 +3697,104 @@ def _ensure_default_padre_voice_profile(root_dir: Optional[Path] = None) -> Path
     fallback_wav = base / "assets" / "voices" / "Padre_Mexico.wav"
     fallback_txt = base / "assets" / "voices" / "Padre_Mexico.txt"
 
-    if not sample_wav.exists() and fallback_wav.exists():
-        try:
-            shutil.copy2(str(fallback_wav), str(sample_wav))
-        except Exception:
-            pass
+    # 1. Tìm từ các nguồn cục bộ nếu sample.wav chưa tồn tại hoặc bị rỗng
+    if not sample_wav.exists() or sample_wav.stat().st_size < 10_000:
+        local_candidates = [
+            fallback_wav,
+            base
+            / "app"
+            / "Kho_Voice"
+            / "04_mx_ong_gia_padre_implacable"
+            / "sample.wav",
+            base / "app" / "assets" / "voices" / "Padre_Mexico.wav",
+            Path(os.environ.get("APPDATA", ""))
+            / "VoiceStudio"
+            / "voices"
+            / "04_mx_ong_gia_padre_implacable"
+            / "sample.wav",
+            Path.home()
+            / "VoiceStudio"
+            / "voices"
+            / "04_mx_ong_gia_padre_implacable"
+            / "sample.wav",
+        ]
+        for cand in local_candidates:
+            try:
+                if cand.exists() and cand.stat().st_size > 10_000:
+                    shutil.copy2(str(cand), str(sample_wav))
+                    break
+            except Exception:
+                pass
+
+    # 2. Nếu máy khách vừa update từ bản cũ (chưa copy Kho_Voice/assets) -> Tự động tải trực tiếp sample.wav từ GitHub
+    if not sample_wav.exists() or sample_wav.stat().st_size < 10_000:
+        raw_urls = [
+            "https://raw.githubusercontent.com/phamngocthu661-lang/mexico-ong-gia-studio/main/Kho_Voice/04_mx_ong_gia_padre_implacable/sample.wav",
+            "https://github.com/phamngocthu661-lang/mexico-ong-gia-studio/raw/refs/heads/main/Kho_Voice/04_mx_ong_gia_padre_implacable/sample.wav",
+        ]
+        for url in raw_urls:
+            try:
+                resp = requests.get(
+                    url,
+                    timeout=20,
+                    headers={"User-Agent": "MexicoOngGiaStudio-VoiceSync/1.0"},
+                )
+                if resp.status_code == 200 and len(resp.content) > 10_000:
+                    sample_wav.write_bytes(resp.content)
+                    print(
+                        f"[VoiceStudio] ✅ Đã tự động tải giọng mẫu mặc định Padre Mexico ({len(resp.content)} bytes) về {sample_wav}"
+                    )
+                    break
+            except Exception:
+                try:
+                    import urllib3
+
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    resp = requests.get(
+                        url,
+                        timeout=20,
+                        verify=False,
+                        headers={"User-Agent": "MexicoOngGiaStudio-VoiceSync/1.0"},
+                    )
+                    if resp.status_code == 200 and len(resp.content) > 10_000:
+                        sample_wav.write_bytes(resp.content)
+                        break
+                except Exception:
+                    pass
+        if (
+            not sample_wav.exists() or sample_wav.stat().st_size < 10_000
+        ) and os.name == "nt":
+            for url in raw_urls:
+                try:
+                    subprocess.run(
+                        [
+                            "curl.exe",
+                            "-L",
+                            "-k",
+                            "-s",
+                            "--connect-timeout",
+                            "15",
+                            "-o",
+                            str(sample_wav),
+                            url,
+                        ],
+                        timeout=30,
+                        check=False,
+                        creationflags=0x08000000,
+                    )
+                    if sample_wav.exists() and sample_wav.stat().st_size > 10_000:
+                        break
+                except Exception:
+                    pass
+
+    # Đồng bộ ngược sang assets/voices/Padre_Mexico.wav để dự phòng
+    if sample_wav.exists() and sample_wav.stat().st_size > 10_000:
+        if not fallback_wav.exists() or fallback_wav.stat().st_size < 10_000:
+            try:
+                fallback_wav.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(sample_wav), str(fallback_wav))
+            except Exception:
+                pass
     if not sample_txt.exists():
         if fallback_txt.exists():
             try:

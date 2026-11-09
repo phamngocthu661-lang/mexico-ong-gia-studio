@@ -2052,12 +2052,12 @@ def apply_github_update(
 
             if not downloaded:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
-            try:
-                from backend import migrate_customer_workspace_layout
+                try:
+                    from backend import migrate_customer_workspace_layout
 
-                migrate_customer_workspace_layout(root_dir)
-            except Exception:
-                pass
+                    migrate_customer_workspace_layout(root_dir)
+                except Exception:
+                    pass
                 msg = f"Không thể tải gói cập nhật từ GitHub ({last_err}). Vui lòng kiểm tra kết nối mạng!"
                 log_error("UPDATER", msg)
                 return {"success": False, "error": msg}
@@ -2069,12 +2069,12 @@ def apply_github_update(
                     zf.extractall(extract_dir)
             except Exception as e:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
-            try:
-                from backend import migrate_customer_workspace_layout
+                try:
+                    from backend import migrate_customer_workspace_layout
 
-                migrate_customer_workspace_layout(root_dir)
-            except Exception:
-                pass
+                    migrate_customer_workspace_layout(root_dir)
+                except Exception:
+                    pass
                 msg = f"Gói cập nhật tải về bị lỗi giải nén: {e}"
                 log_error("UPDATER", msg)
                 return {"success": False, "error": msg}
@@ -2088,12 +2088,12 @@ def apply_github_update(
                 or not (src_root / "frontend").exists()
             ):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
-            try:
-                from backend import migrate_customer_workspace_layout
+                try:
+                    from backend import migrate_customer_workspace_layout
 
-                migrate_customer_workspace_layout(root_dir)
-            except Exception:
-                pass
+                    migrate_customer_workspace_layout(root_dir)
+                except Exception:
+                    pass
                 msg = "Gói cập nhật không hợp lệ (Thiếu thư mục backend/frontend)."
                 log_error("UPDATER", msg)
                 return {"success": False, "error": msg}
@@ -2160,6 +2160,12 @@ def apply_github_update(
                 from backend import migrate_customer_workspace_layout
 
                 migrate_customer_workspace_layout(root_dir)
+            except Exception:
+                pass
+            try:
+                from backend.voice_service import _ensure_default_padre_voice_profile
+
+                _ensure_default_padre_voice_profile(root_dir)
             except Exception:
                 pass
 
