@@ -6752,7 +6752,7 @@ class ADASScriptEngine:
             f"- Right 20-22% zone (UNIQUE RANDOMIZED PROTAGONIST & OUTFIT FOR THIS STORY): {persona['full_en_prompt']} in a softly blurred Mexican setting ({setting}).\n"
             f"</THUMBNAIL_PROMPT_1>\n\n"
             f"<THUMBNAIL_GREEN_PROMPT_1>\n"
-            f"Matched 16:9 1920x1080 chroma-key green screen deliverable (THUMBNAIL-NENXANH.png): pure solid #00FF00 (RGB 0, 255, 0) background across the entire left 80% and behind the character, keeping ONLY the exact same older Mexican father portrait ({persona['short_en_tag']}) on the right 20% at identical pixel coordinates.\n"
+            f"Matched 16:9 1920x1080 chroma-key green screen deliverable (THUMBNAIL-NENXANH.png) generated from THUMBNAIL.png: REMOVE 100% of all text, titles, banners, and documents; draw the COMPLETE upper-body portrait of the exact same older Mexican father ({persona['short_en_tag']}) with full head, hair, both ears, neck, and both full shoulders/chest on the right side, isolated against a 100% pure flat solid #00FF00 (RGB 0, 255, 0) green screen background with zero background behind his neck.\n"
             f"</THUMBNAIL_GREEN_PROMPT_1>\n\n"
             f"PURE_CHARACTER_COUNT: {total_pure:,} ký tự (~{round(total_pure / 780)} phút giọng đọc es-MX)\n"
         )
@@ -7291,7 +7291,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
      + Bên trái 78–80% khung hình: Nền trắng sáng sạch (`#FFFFFF`), trình bày các dòng chữ Tây Ban Nha IN HOA đậm nét (L1..L5) với màu Đen, Xanh Cyan và Cam; phía dưới bên trái là băng rôn nền Đỏ tươi với dòng chữ L6 màu Vàng/Cam rực rỡ.
      + Bên phải 20–22% khung hình (BẮT BUỘC DÙNG ĐÚNG NGOẠI HÌNH & TRANG PHỤC NGẪU NHIÊN ĐỘC BẢN DƯỚI ĐÂY ĐỂ KHÔNG TRÙNG LẶP VỚI VIDEO KHÁC): {persona["full_en_prompt"]}
    - `</THUMBNAIL_PROMPT_1>`
-   - `<THUMBNAIL_GREEN_PROMPT_1>`: Prompt mô tả bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (16:9 `1920x1080`): giữ nguyên 100% nhân vật người cha Mexico ({persona["short_en_tag"]}) ở đúng vị trí bên phải, toàn bộ phần nền và 80% bên trái phủ màu xanh lá thuần khiết `#00FF00` (`RGB 0, 255, 0`), không có bất kỳ chữ hay băng rôn nào.
+   - `<THUMBNAIL_GREEN_PROMPT_1>`: Prompt tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (16:9 `1920x1080`) lấy từ `THUMBNAIL.png`: xóa sạch 100% tất cả chữ, tiêu đề, băng rôn và giấy tờ; vẽ ĐẦY ĐỦ nhân vật người cha Mexico ({persona["short_en_tag"]}) gồm trọn vẹn đầu, tóc, hai tai, cổ và đầy đủ cả hai vai/thân trên ở bên phải khung hình, tách biệt hoàn toàn trên nền xanh lá thuần khiết `#00FF00` (`RGB 0, 255, 0`) không dính bất kỳ phông nền nào ở hốc cổ dưới tai.
    - `</THUMBNAIL_GREEN_PROMPT_1>`"""
 
     def _extract_six_lines_from_single_source(self, src: str) -> List[str]:
@@ -7784,15 +7784,37 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         green_id_file = renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png"
         proj_green_file = proj_dir / "THUMBNAIL-NENXANH.png"
 
-        def _save_matched_pair(thumb_1080p_bytes: bytes) -> List[Path]:
+        def _save_matched_pair(
+            thumb_1080p_bytes: bytes,
+            chatgpt_green_raw_bytes: Optional[bytes] = None,
+        ) -> List[Path]:
             target_file.write_bytes(thumb_1080p_bytes)
             target_std_file.write_bytes(thumb_1080p_bytes)
             proj_std_file.write_bytes(thumb_1080p_bytes)
             out_list = [target_file]
             try:
-                green_bytes = self._create_matched_green_screen_from_thumbnail_bytes(
-                    thumb_1080p_bytes
-                )
+                green_bytes = None
+                if chatgpt_green_raw_bytes and len(chatgpt_green_raw_bytes) > 20_000:
+                    try:
+                        norm_g = self._normalize_thumbnail_to_16_9_1080p(
+                            chatgpt_green_raw_bytes
+                        )
+                        cand_g = self._create_matched_green_screen_from_thumbnail_bytes(
+                            norm_g
+                        )
+                        val_cand = self._validate_thumbnail_pair_bytes(
+                            thumb_1080p_bytes, cand_g
+                        )
+                        if val_cand.get("passed"):
+                            green_bytes = cand_g
+                    except Exception:
+                        green_bytes = None
+                if not green_bytes:
+                    green_bytes = (
+                        self._create_matched_green_screen_from_thumbnail_bytes(
+                            thumb_1080p_bytes
+                        )
+                    )
                 val_pair = self._validate_thumbnail_pair_bytes(
                     thumb_1080p_bytes, green_bytes
                 )
@@ -7938,7 +7960,44 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
 
             if is_qa_pass:
-                saved_paths = _save_matched_pair(img_bytes)
+                # Lượt 2 ngay trên cùng đoạn chat ChatGPT: Yêu cầu ChatGPT lấy đúng nhân vật ông già từ ảnh THUMBNAIL.png vừa tạo,
+                # vẽ đầy đủ đầu, tai, cổ và 2 vai hoàn chỉnh trên nền xanh lá #00FF00 thuần khiết, loại bỏ 100% chữ & phông nền!
+                chatgpt_green_raw: Optional[bytes] = None
+                try:
+                    self._emit(
+                        current_step="New Chat #4 — ChatGPT đang vẽ ảnh nhân vật nền xanh THUMBNAIL-NENXANH.png (Đầy đủ nhân vật, xóa sạch chữ)...",
+                        progress=96.5,
+                        message=f"[{ma_id}] 🟩 [{acc_lbl}] Đang yêu cầu ChatGPT tách & vẽ đầy đủ nhân vật ông già sang nền xanh #00FF00 (Loại bỏ 100% chữ)...",
+                    )
+                    green_prompt_2 = (
+                        "Call the image generation tool immediately to create the matched SECOND image (THUMBNAIL-NENXANH.png, horizontal landscape 1536x1024) based directly on the thumbnail image you just generated above:\n"
+                        "1. REMOVE 100% OF ALL TEXT, HEADLINES, LETTERS, NUMBERS, BANNERS, AND DOCUMENTS. There must be ZERO text anywhere in the image.\n"
+                        "2. Keep the EXACT SAME older Mexican man from the image above (identical face, age, hair, beard/mustache, eyewear, expression, and exact same clothing/outfit).\n"
+                        "3. Draw the COMPLETE upper-body portrait of this man (showing his full head, hair, both ears, neck, and BOTH FULL SHOULDERS & CHEST cleanly without cutting off his shoulders) positioned on the right side of the frame (occupying the right 30%-35% of the canvas).\n"
+                        "4. Replace 100% of the background (the entire left side and 100% of the space behind his head, hair, ears, neck, and shoulders) with a pure, flat, solid chroma-key green screen (#00FF00, RGB 0, 255, 0) — NO courtyard, NO plants, NO walls behind his neck, NO shadows, and NO gradients.\n"
+                        "Strict rule: Generate the image directly right now without asking any questions."
+                    )
+                    green_res = session.generate_image_and_harvest_base64(
+                        green_prompt_2,
+                        step_label=f"THUMB_2_GREEN_TRY_{attempt}",
+                        timeout_sec=220,
+                        progress_cb=lambda st, sec, at=attempt, al=acc_lbl: self._emit(
+                            message=f"[{ma_id}] 🟩 {al} đang vẽ ảnh nhân vật nền xanh #00FF00 (Lượt {at}: {sec}s)..."
+                        ),
+                        should_stop_cb=lambda: self.should_stop,
+                    )
+                    if green_res.get("success") and green_res.get("b64_data"):
+                        chatgpt_green_raw = base64.b64decode(green_res["b64_data"])
+                except Exception as e_g2:
+                    log_warn(
+                        "SCRIPT",
+                        f"[{ma_id}] Lưu ý khi ChatGPT vẽ ảnh nền xanh lượt 2 (sẽ dùng AI DeepLabV3 tách sạch): {e_g2}",
+                        project_id=ma_id,
+                    )
+
+                saved_paths = _save_matched_pair(
+                    img_bytes, chatgpt_green_raw_bytes=chatgpt_green_raw
+                )
                 self._update_idea_record(ma_id, has_thumbnail=True)
                 self._emit(
                     message=f"[{ma_id}] ✅ Cặp ảnh THUMBNAIL.png + THUMBNAIL-NENXANH.png ĐẠT CHUẨN QA -> Đã lưu vào {renders_dir}!"

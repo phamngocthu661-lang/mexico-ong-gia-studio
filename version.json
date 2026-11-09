@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.25",
-  "build_number": 141,
-  "released_at": "2026-11-09 21:44:27",
+  "version": "V1.0.26",
+  "build_number": 142,
+  "released_at": "2026-11-09 22:05:07",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.25: Khoi phuc tach nen AI DeepLabV3_ResNet50 chuan V1.0.18, xoa khoi cat elip va tu dong tai tao toan bo anh nen xanh cu"
+  "changelog": "V1.0.26: Ket hop ChatGPT ve anh nen xanh day du 2 vai luot 2 va sua triet de loi ket nen hoc co duoi tai"
 }
