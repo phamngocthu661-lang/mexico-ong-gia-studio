@@ -1323,6 +1323,8 @@ PROTECTED_CUSTOMER_PATHS = {
     "GEMINI_PROFILE_1",
     "saved_ideas.json",
     "deleted_ideas.json",
+    "idea_id_counter.json",
+    "_idea_id_counter.json",
     "license.json",
     "settings.json",
     "used_stocks_history.json",
@@ -2097,12 +2099,13 @@ def apply_github_update(
             updated_files_count = 0
             app_subdir = root_dir / "app"
 
-            # 1. Cập nhật các thư mục code: backend, frontend, adas_skills, Kho_Voice, assets, VoiceStudio, bin
+            # 1. Cập nhật các thư mục code & tài nguyên: backend, frontend, adas_skills, Kho_Voice, Kho_Green, assets, VoiceStudio, bin
             for folder_name in (
                 "backend",
                 "frontend",
                 "adas_skills",
                 "Kho_Voice",
+                "Kho_Green",
                 "assets",
                 "VoiceStudio",
                 "bin",

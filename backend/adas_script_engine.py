@@ -4832,12 +4832,15 @@ class ADASScriptEngine:
                     for d in sorted(f_path.iterdir(), key=_natural_dir_sort_key):
                         if d.is_dir():
                             nm = d.name.strip()
+                            if (d / ".deleted_by_user").exists():
+                                self._mark_ids_deleted([nm])
+                                self._force_rmtree_path(d)
+                                continue
                             if (
                                 nm
                                 and not nm.startswith(".")
                                 and not nm.startswith("_")
                                 and nm.lower() not in ignore_names
-                                and not (d / ".deleted_by_user").exists()
                             ):
                                 found[nm] = d
                         elif d.is_file() and d.name.endswith("_master.mp4"):
@@ -4852,12 +4855,15 @@ class ADASScriptEngine:
                 for d in sorted(self.projects_dir.iterdir(), key=_natural_dir_sort_key):
                     if d.is_dir():
                         nm = d.name.strip()
+                        if (d / ".deleted_by_user").exists():
+                            self._mark_ids_deleted([nm])
+                            self._force_rmtree_path(d)
+                            continue
                         if (
                             nm
                             and not nm.startswith(".")
                             and not nm.startswith("_")
                             and nm.lower() not in ignore_names
-                            and not (d / ".deleted_by_user").exists()
                         ):
                             found[nm] = d
             except Exception:
@@ -4909,6 +4915,209 @@ class ADASScriptEngine:
                 changed = True
         if changed:
             self._save_deleted_ids(cur)
+
+    def _get_idea_counter_files(self) -> List[Path]:
+        files = [
+            self.root_dir / "config" / "idea_id_counter.json",
+            self._get_persistent_appdata_dir() / "idea_id_counter.json",
+        ]
+        if getattr(self, "projects_dir", None):
+            files.append(Path(self.projects_dir) / "_idea_id_counter.json")
+        return files
+
+    def _load_idea_id_counter_state(
+        self, extra_ids: Optional[List[str]] = None
+    ) -> Tuple[int, set[str]]:
+        """
+        Đọc bộ đếm Mã Tiêu Đề (STT) lũy tiến vĩnh viễn:
+        - Luôn lấy giá trị lớn nhất từng được cấp phát trên máy (kể cả các mã đã xóa).
+        - Đảm bảo khi thêm tiêu đề mới, mã luôn tăng lên tiếp nối và KHÔNG BAO GIỜ trùng lặp với bất kỳ mã nào trước đó.
+        """
+        max_id = 0
+        used_ids: set[str] = set()
+        for fp in self._get_idea_counter_files():
+            if fp.exists():
+                try:
+                    data = json.loads(fp.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        lid = int(data.get("last_id", 0) or 0)
+                        if lid > max_id:
+                            max_id = lid
+                        for x in data.get("used_ids", []):
+                            sx = str(x).strip()
+                            if sx:
+                                used_ids.add(sx)
+                                if sx.isdigit() and int(sx) > max_id:
+                                    max_id = int(sx)
+                except Exception:
+                    pass
+
+        for sx in self._load_deleted_ids():
+            s = str(sx).strip()
+            if s:
+                used_ids.add(s)
+                if s.isdigit() and int(s) > max_id:
+                    max_id = int(s)
+
+        for sx in self._list_all_existing_project_ids_on_disk().keys():
+            s = str(sx).strip()
+            if s:
+                used_ids.add(s)
+                if s.isdigit() and int(s) > max_id:
+                    max_id = int(s)
+
+        if extra_ids:
+            for sx in extra_ids:
+                s = str(sx).strip()
+                if s:
+                    used_ids.add(s)
+                    if s.isdigit() and int(s) > max_id:
+                        max_id = int(s)
+
+        return max_id, used_ids
+
+    def _save_idea_id_counter_state(
+        self, max_id: int, used_ids: Optional[set[str]] = None
+    ) -> int:
+        """Lưu lại mốc Mã Tiêu Đề lớn nhất và tập hợp toàn bộ mã đã cấp phát để không bao giờ cấp trùng."""
+        cur_max, cur_used = self._load_idea_id_counter_state(
+            list(used_ids) if used_ids else None
+        )
+        if int(max_id or 0) > cur_max:
+            cur_max = int(max_id)
+        for sx in list(cur_used):
+            if sx.isdigit() and int(sx) > cur_max:
+                cur_max = int(sx)
+        payload = json.dumps(
+            {
+                "last_id": int(cur_max),
+                "used_ids": sorted(
+                    cur_used,
+                    key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
+                ),
+                "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        for fp in self._get_idea_counter_files():
+            try:
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_text(payload, encoding="utf-8")
+            except Exception:
+                pass
+        return cur_max
+
+    def _force_rmtree_path(self, target_path: Path) -> bool:
+        """Xóa triệt để thư mục hoặc file trên Windows (tự động gỡ thuộc tính Read-Only nếu có)."""
+        if not target_path.exists():
+            return True
+
+        def _on_rm_error(func, path_str, _exc_info):
+            try:
+                os.chmod(path_str, 0o666)
+                func(path_str)
+            except Exception:
+                pass
+
+        for _ in range(3):
+            try:
+                if target_path.is_dir():
+                    shutil.rmtree(target_path, onerror=_on_rm_error)
+                else:
+                    os.chmod(str(target_path), 0o666)
+                    target_path.unlink(missing_ok=True)
+                if not target_path.exists():
+                    return True
+            except Exception:
+                time.sleep(0.08)
+        return not target_path.exists()
+
+    def _force_delete_project_folder_and_files(self, ma_id: str) -> List[str]:
+        """
+        Xóa sạch 100% thư mục dự án của mã tiêu đề (`projects/{ma_id}`) cùng toàn bộ các file/thư mục liên quan
+        (kịch bản, câu thoại TTS, ảnh thumbnail, ảnh nền xanh, bộ đệm render, thư mục xuất video...).
+        """
+        target = str(ma_id or "").strip()
+        reserved_names = {
+            "",
+            ".",
+            "..",
+            "projects",
+            "stook",
+            "video xong",
+            "kho_green",
+            "kho_voice",
+            "assets",
+            "backend",
+            "frontend",
+            "config",
+            "bin",
+            "voicestudio",
+        }
+        if target.lower() in reserved_names:
+            return []
+
+        candidates: List[Path] = []
+        try:
+            mp4_resolved = self.resolve_project_mp4_path(target)
+            if mp4_resolved is not None:
+                candidates.append(mp4_resolved)
+                if (
+                    mp4_resolved.parent.name.lower() == "renders"
+                    and mp4_resolved.parent.parent.name == target
+                ):
+                    candidates.append(mp4_resolved.parent.parent)
+                elif mp4_resolved.parent.name == target:
+                    candidates.append(mp4_resolved.parent)
+        except Exception:
+            pass
+
+        if getattr(self, "projects_dir", None):
+            p_root = Path(self.projects_dir)
+            candidates.extend(
+                [
+                    p_root / target,
+                    p_root / "ssd_render_staging" / target,
+                    p_root / "renders" / f"{target}_master.mp4",
+                    p_root / "renders" / f"_{target}_master_resume_cache",
+                    p_root / f"{target}_master.mp4",
+                ]
+            )
+
+        f_dir = getattr(self, "final_video_dir", None)
+        if f_dir:
+            f_root = Path(f_dir)
+            candidates.extend(
+                [
+                    f_root / target,
+                    f_root / "ssd_render_staging" / target,
+                    f_root / "renders" / f"{target}_master.mp4",
+                    f_root / "renders" / f"_{target}_master_resume_cache",
+                    f_root / f"{target}_master.mp4",
+                ]
+            )
+
+        deleted_paths: List[str] = []
+        seen: set[str] = set()
+        for cand in candidates:
+            try:
+                c_str = str(cand.resolve()) if cand.exists() else str(cand)
+            except Exception:
+                c_str = str(cand)
+            if c_str in seen:
+                continue
+            seen.add(c_str)
+            if cand.exists():
+                if self._force_rmtree_path(cand):
+                    deleted_paths.append(str(cand))
+
+        if hasattr(self, "_proj_dir_mtime_cache"):
+            self._proj_dir_mtime_cache.pop(target, None)
+        if hasattr(self, "_mp4_valid_cache"):
+            self._mp4_valid_cache.pop(target, None)
+
+        return deleted_paths
 
     def _register_and_sync_external_projects(self):
         """
@@ -5711,6 +5920,9 @@ class ADASScriptEngine:
         with self.ideas_io_lock:
             self._last_disk_sync_ts = time.time()
             if force_restore_deleted:
+                prev_deleted = self._load_deleted_ids()
+                if prev_deleted:
+                    self._save_idea_id_counter_state(0, prev_deleted)
                 self._save_deleted_ids(set())
                 if hasattr(self, "_proj_dir_mtime_cache"):
                     self._proj_dir_mtime_cache.clear()
@@ -5719,6 +5931,10 @@ class ADASScriptEngine:
             self._register_and_sync_external_projects()
             deleted_ids = self._load_deleted_ids()
             disk_proj_map = self._list_all_existing_project_ids_on_disk()
+            if disk_proj_map or deleted_ids:
+                self._save_idea_id_counter_state(
+                    0, set(disk_proj_map.keys()) | set(deleted_ids)
+                )
             raw_ideas = self.load_saved_ideas()
             changed = False
 
@@ -6466,6 +6682,10 @@ class ADASScriptEngine:
         """Khởi tạo sẵn mẫu đầu vào PADRE MX V3.0 của người dùng nếu danh sách đang trống."""
         ideas = self.load_saved_ideas()
         if not ideas:
+            max_stt, ever_used = self._load_idea_id_counter_state()
+            next_id = str(max_stt + 1)
+            ever_used.add(next_id)
+            self._save_idea_id_counter_state(max_stt + 1, ever_used)
             sample_raw = (
                 "P01 — Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable que firmé hace diez años.\n"
                 "VI: Con trai và con dâu đuổi người cha già khỏi ngôi nhà ông tự tay xây từng viên gạch; hôm sau công chứng viên đọc điều khoản thu hồi tặng cho có điều kiện.\n"
@@ -6474,7 +6694,7 @@ class ADASScriptEngine:
                 "Reveal: La casa y el taller mecánico nunca pasaron a nombre del hijo sin la firma del usufructuario\n"
                 "Capacity: PASS"
             )
-            parsed = parse_idea_input_block(sample_raw, custom_id="1")
+            parsed = parse_idea_input_block(sample_raw, custom_id=next_id)
             self.save_ideas_list([parsed])
 
     def add_or_update_ideas_bulk_from_raw(
@@ -6482,7 +6702,9 @@ class ADASScriptEngine:
     ) -> List[Dict[str, Any]]:
         """
         Phân tích danh sách tiêu đề người dùng dán (MỖI TIÊU ĐỀ 1 DÒNG),
-        tự động bỏ qua mọi Mã đầu dòng và gán Mã dự án theo Số Thứ Tự (STT: 1, 2, 3...).
+        tự động bỏ qua mọi Mã đầu dòng và gán Mã dự án theo Số Thứ Tự lũy tiến vĩnh viễn:
+        - Mã luôn tăng lên tiếp nối từ mốc lớn nhất đã lưu (kể cả sau khi xóa tiêu đề cũ).
+        - Lưu lại mã vào bộ đếm bền vững, tuyệt đối không bao giờ trùng mã nào với mã nào.
         """
         blocks = split_raw_text_into_idea_blocks(raw_text)
         if not blocks:
@@ -6495,19 +6717,26 @@ class ADASScriptEngine:
         saved_items: List[Dict[str, Any]] = []
         new_items_to_append: List[Dict[str, Any]] = []
 
-        # Tìm STT lớn nhất hiện có trong Kho Dự Án để đánh tiếp theo STT (1, 2, 3...)
-        max_stt = max([int(x) for x in existing_ids if x.isdigit()], default=0)
+        # Đọc bộ đếm Mã Tiêu Đề lớn nhất từng được cấp phát để tăng tiếp nối, không bao giờ trùng lại mã cũ
+        max_stt, ever_used_ids = self._load_idea_id_counter_state(list(existing_ids))
         next_num = max_stt + 1
 
         for block_str in blocks:
-            while str(next_num) in existing_ids:
+            while (
+                str(next_num) in existing_ids
+                or str(next_num) in ever_used_ids
+                or (self.projects_dir / str(next_num)).exists()
+            ):
                 next_num += 1
             assigned_id = str(next_num)
+            ever_used_ids.add(assigned_id)
+            max_stt = max(max_stt, next_num)
             next_num += 1
 
             parsed = parse_idea_input_block(block_str, custom_id=assigned_id)
             mid_cur = parsed["ma_id"]
             existing_ids.add(mid_cur)
+            ever_used_ids.add(mid_cur)
 
             # Bảo toàn tiến độ nếu mã này đã có sẵn kịch bản / thumbnail / SEO trên ổ cứng
             has_sc_disk, _, sc_chars_disk = self.has_valid_script_on_disk(mid_cur)
@@ -6556,6 +6785,9 @@ class ADASScriptEngine:
             )
             saved_items.append(parsed)
 
+        # Lưu ngay mốc mã lớn nhất vào bộ đếm bền vững để không bao giờ bị trùng lặp
+        self._save_idea_id_counter_state(max_stt, ever_used_ids)
+
         if saved_items:
             self._unmark_ids_deleted([it.get("ma_id", "") for it in saved_items])
 
@@ -6568,7 +6800,7 @@ class ADASScriptEngine:
         ids_str = ", ".join([f"#{it.get('ma_id', '')}" for it in saved_items])
         log_info(
             "SCRIPT",
-            f"📥 Đã phân tích và lưu {len(saved_items)} tiêu đề theo STT vào Kho Dự Án: [{ids_str}]",
+            f"📥 Đã phân tích và lưu {len(saved_items)} tiêu đề theo Mã lũy tiến không trùng vào Kho Dự Án: [{ids_str}] (Mốc mã hiện tại: #{max_stt})",
         )
         return saved_items
 
@@ -6583,9 +6815,20 @@ class ADASScriptEngine:
 
     def delete_idea(self, ma_id: str) -> List[Dict[str, Any]]:
         target = (ma_id or "").strip()
+        deleted_paths: List[str] = []
         with self.ideas_io_lock:
-            self._mark_ids_deleted([target])
             before_list = self.load_saved_ideas()
+            all_known = [
+                str(it.get("ma_id", "")).strip()
+                for it in before_list
+                if it.get("ma_id")
+            ]
+            if target:
+                all_known.append(target)
+            max_id, used_ids = self._load_idea_id_counter_state(all_known)
+            self._save_idea_id_counter_state(max_id, used_ids)
+
+            self._mark_ids_deleted([target])
             ideas = [
                 it for it in before_list if str(it.get("ma_id", "")).strip() != target
             ]
@@ -6604,46 +6847,52 @@ class ADASScriptEngine:
                     except Exception:
                         pass
 
-            p_dir = self.projects_dir / target
-            if p_dir.exists() and p_dir.is_dir():
-                has_sc, _, _ = self.has_valid_script_on_disk(target)
-                mp4_f = p_dir / "renders" / f"{target}_master.mp4"
-                has_mp4 = mp4_f.exists() and mp4_f.stat().st_size > 1_000_000
-                if not has_sc and not has_mp4:
-                    # Dự án chỉ là tiêu đề nháp chưa có kịch bản -> xóa sạch hoàn toàn thư mục để không bao giờ tồn đọng
-                    shutil.rmtree(p_dir, ignore_errors=True)
-                else:
-                    for fname in ("idea_info.json", "step2_prompt_ready.txt"):
-                        fpath = p_dir / fname
-                        if fpath.exists():
-                            try:
-                                fpath.unlink()
-                            except Exception:
-                                pass
-                    try:
-                        (p_dir / ".deleted_by_user").write_text(
-                            time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8"
-                        )
-                    except Exception:
-                        pass
+            # Xóa sạch 100% folder dự án chứa các file liên quan đến mã tiêu đề đó
+            deleted_paths = self._force_delete_project_folder_and_files(target)
+
         log_info(
             "SCRIPT",
-            f"🗑️ Đã xóa vĩnh viễn mã [{target}] khỏi Kho Dự Án (Còn lại {len(ideas)} mã).",
+            f"🗑️ Đã xóa vĩnh viễn mã [{target}] và toàn bộ folder/file liên quan ({len(deleted_paths)} đường dẫn) khỏi Kho Dự Án (Còn lại {len(ideas)} mã).",
             project_id=target,
         )
         return ideas
 
     def delete_all_ideas(self) -> List[Dict[str, Any]]:
+        deleted_folders_cnt = 0
         with self.ideas_io_lock:
             old_ideas = self.load_saved_ideas()
             count = len(old_ideas)
             all_ids = [
                 str(it.get("ma_id", "")).strip() for it in old_ideas if it.get("ma_id")
             ]
+            ignore_sys_dirs = {
+                "renders",
+                "assets",
+                "sentences",
+                "stook",
+                "ssd_render_staging",
+                "__pycache__",
+            }
             if self.projects_dir.exists():
                 for p_dir in self.projects_dir.iterdir():
                     if p_dir.is_dir():
-                        all_ids.append(p_dir.name.strip())
+                        nm = p_dir.name.strip()
+                        if (
+                            nm
+                            and not nm.startswith(".")
+                            and not nm.startswith("_")
+                            and nm.lower() not in ignore_sys_dirs
+                        ):
+                            all_ids.append(nm)
+
+            for disk_mid in self._list_all_existing_project_ids_on_disk().keys():
+                if disk_mid and disk_mid not in all_ids:
+                    all_ids.append(disk_mid)
+
+            # Lưu lại mốc Mã Tiêu Đề lớn nhất trước khi xóa hết để lần thêm sau tiếp tục tăng lên, không trùng lại
+            max_id, used_ids = self._load_idea_id_counter_state(all_ids)
+            self._save_idea_id_counter_state(max_id, used_ids)
+
             self._mark_ids_deleted(all_ids)
             self.save_ideas_list([])
             for extra_fp in (
@@ -6655,30 +6904,17 @@ class ADASScriptEngine:
                         extra_fp.write_text("[]", encoding="utf-8")
                     except Exception:
                         pass
-            if self.projects_dir.exists():
-                for p_dir in self.projects_dir.iterdir():
-                    if p_dir.is_dir():
-                        mid = p_dir.name.strip()
-                        has_sc, _, _ = self.has_valid_script_on_disk(mid)
-                        mp4_f = p_dir / "renders" / f"{mid}_master.mp4"
-                        has_mp4 = mp4_f.exists() and mp4_f.stat().st_size > 1_000_000
-                        if not has_sc and not has_mp4:
-                            shutil.rmtree(p_dir, ignore_errors=True)
-                        else:
-                            for fname in ("idea_info.json", "step2_prompt_ready.txt"):
-                                fp = p_dir / fname
-                                if fp.exists():
-                                    try:
-                                        fp.unlink()
-                                    except Exception:
-                                        pass
-                            try:
-                                (p_dir / ".deleted_by_user").write_text(
-                                    time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8"
-                                )
-                            except Exception:
-                                pass
-        log_info("SCRIPT", f"🗑️ Đã xóa toàn bộ {count} mã tiêu đề khỏi Kho Dự Án.")
+
+            for mid in set(all_ids):
+                if mid:
+                    removed = self._force_delete_project_folder_and_files(mid)
+                    if removed:
+                        deleted_folders_cnt += 1
+
+        log_info(
+            "SCRIPT",
+            f"🗑️ Đã xóa toàn bộ {count} mã tiêu đề và {deleted_folders_cnt} folder dự án liên quan (Mốc mã lưu giữ: #{max_id}).",
+        )
         return []
 
     def _update_idea_record(self, ma_id: str, **fields):

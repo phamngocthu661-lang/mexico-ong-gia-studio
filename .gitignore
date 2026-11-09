@@ -2,7 +2,6 @@
 projects/
 STOOK/
 VIDEO XONG/
-Kho_Green/
 VoiceStudio/*
 pretrained_models/
 bin/*
@@ -25,6 +24,9 @@ saved_ideas.json
 app/saved_ideas.json
 deleted_ideas.json
 app/deleted_ideas.json
+idea_id_counter.json
+_idea_id_counter.json
+app/idea_id_counter.json
 license.json
 app/license.json
 settings.json
@@ -55,7 +57,9 @@ ARCHITECTURE_ONTOLOGY.md
 RESTRUCTURE_PLAN.md
 CODE_PROGRESS.md
 
-# Cho phép đẩy Giọng mẫu mặc định Ông Già Mexico, assets & gói lõi VoiceStudio/omnivoice lên GitHub cho máy khách
+# Cho phép đẩy Giọng mẫu mặc định Ông Già Mexico, Kho_Green, assets & gói lõi VoiceStudio/omnivoice lên GitHub cho máy khách
+!Kho_Green/
+!Kho_Green/**
 !Kho_Voice/
 !Kho_Voice/04_mx_ong_gia_padre_implacable/
 !Kho_Voice/04_mx_ong_gia_padre_implacable/**

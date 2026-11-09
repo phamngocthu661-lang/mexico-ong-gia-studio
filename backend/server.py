@@ -587,9 +587,13 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/adas/ideas/preview-prompt")
     def api_adas_preview_prompt(req: SaveIdeaInputRequest):
-        parsed = parse_idea_input_block(
-            req.raw_text, custom_id=req.custom_id or "IDEA_PREVIEW"
+        next_preview_id = str(adas_engine._load_idea_id_counter_state()[0] + 1)
+        eff_id = (
+            req.custom_id
+            if (req.custom_id and req.custom_id not in ("1", "IDEA_PREVIEW"))
+            else next_preview_id
         )
+        parsed = parse_idea_input_block(req.raw_text, custom_id=eff_id)
         step2_prompt = build_step2_prompt_from_idea(
             parsed, adas_engine.get_step2_template()
         )
