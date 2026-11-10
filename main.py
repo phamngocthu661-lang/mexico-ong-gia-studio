@@ -238,9 +238,38 @@ def run_install_setup():
             "huggingface_hub": "huggingface-hub",
             "PIL": "Pillow",
             "faster_whisper": "faster-whisper",
+            "transformers": "transformers>=5.3.0",
         }
         for m in missing:
             run_pip(["install", "--prefer-binary", pkg_map.get(m, m)])
+
+    # Đảm bảo transformers >= 5.3.0 để tương thích hoàn toàn với OmniVoice (HiggsAudioV2TokenizerModel & extra_special_tokens list)
+    has_tf53 = (
+        subprocess.run(
+            [
+                PYTHON_EXE,
+                "-c",
+                "import importlib.metadata as im; v = tuple(int(x) for x in im.version('transformers').split('.')[0:2] if x.isdigit()); raise SystemExit(0 if v >= (5, 3) else 1)",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).returncode
+        == 0
+    )
+    if not has_tf53:
+        print(
+            "⚡ Đang nâng cấp transformers >= 5.3.0 để tương thích với bộ giải mã giọng OmniVoice..."
+        )
+        run_pip(
+            [
+                "install",
+                "--upgrade",
+                "--prefer-binary",
+                "transformers>=5.3.0",
+                "accelerate>=1.1.0",
+            ],
+            "Đang nâng cấp transformers>=5.3.0 & accelerate>=1.1.0...",
+        )
 
     # Tự động đảm bảo onnxruntime-gpu được kích hoạt trên máy có card NVIDIA RTX/GTX
     if has_nvidia_gpu:

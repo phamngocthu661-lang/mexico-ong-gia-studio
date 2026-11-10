@@ -286,6 +286,92 @@ def _ensure_omnivoice_runtime_compat():
                 setattr(_twhop, "TransformGetItemToIndex", _TransformGetItemToIndex)
         except Exception:
             pass
+
+        # Vá tương thích ngược cho PreTrainedTokenizerBase khi nạp tokenizer_config.json có extra_special_tokens kiểu list trên transformers < 5.0
+        # (Khắc phục triệt để lỗi: AttributeError: 'list' object has no attribute 'keys')
+        try:
+            from transformers.tokenization_utils_base import (
+                AddedToken,
+                PreTrainedTokenizerBase,
+            )
+
+            if not getattr(
+                PreTrainedTokenizerBase, "_patched_list_special_tokens", False
+            ):
+                _orig_set_msst = getattr(
+                    PreTrainedTokenizerBase,
+                    "_set_model_specific_special_tokens",
+                    None,
+                )
+                if callable(_orig_set_msst):
+
+                    def _safe_set_model_specific_special_tokens(
+                        self, special_tokens
+                    ):
+                        if isinstance(special_tokens, (list, tuple)):
+                            self._extra_special_tokens = [
+                                AddedToken(t, special=True)
+                                if isinstance(t, str)
+                                else t
+                                for t in special_tokens
+                            ]
+                            try:
+                                self.add_special_tokens(
+                                    {
+                                        "additional_special_tokens": [
+                                            str(t) for t in special_tokens
+                                        ]
+                                    }
+                                )
+                            except Exception:
+                                pass
+                            return
+                        if not isinstance(special_tokens, dict):
+                            return
+                        return _orig_set_msst(self, special_tokens)
+
+                    PreTrainedTokenizerBase._set_model_specific_special_tokens = (
+                        _safe_set_model_specific_special_tokens
+                    )
+
+                _orig_tok_init = getattr(
+                    PreTrainedTokenizerBase, "__init__", None
+                )
+                if callable(_orig_tok_init):
+
+                    def _safe_tok_init(self, *args, **kwargs):
+                        _est = kwargs.get("extra_special_tokens")
+                        if isinstance(_est, (list, tuple)):
+                            try:
+                                return _orig_tok_init(self, *args, **kwargs)
+                            except (AttributeError, TypeError, AssertionError):
+                                _est_list = list(
+                                    kwargs.pop("extra_special_tokens", [])
+                                )
+                                _add_st = list(
+                                    kwargs.get("additional_special_tokens") or []
+                                )
+                                for _tok in _est_list:
+                                    if _tok not in _add_st:
+                                        _add_st.append(_tok)
+                                kwargs["additional_special_tokens"] = _add_st
+                                _res = _orig_tok_init(self, *args, **kwargs)
+                                self._extra_special_tokens = [
+                                    AddedToken(t, special=True)
+                                    if isinstance(t, str)
+                                    else t
+                                    for t in _est_list
+                                ]
+                                return _res
+                        return _orig_tok_init(self, *args, **kwargs)
+
+                    PreTrainedTokenizerBase.__init__ = _safe_tok_init
+
+                setattr(
+                    PreTrainedTokenizerBase, "_patched_list_special_tokens", True
+                )
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -607,16 +693,46 @@ def _audio_tokenizer_cls():
     try:
         _ensure_omnivoice_runtime_compat()
         from transformers import HiggsAudioV2TokenizerModel
-    except Exception as e:
-        raise ImportError(
-            "Could not import module 'HiggsAudioV2TokenizerModel' — OmniVoice's "
-            "audio tokenizer. transformers gates it on torchaudio, so this is "
-            "almost always a torchaudio that is missing, broken, or mismatched "
-            "with the installed torch/transformers. Reinstall them together "
-            "(`uv pip install --reinstall torch torchaudio transformers`; add "
-            "--system on Colab), then restart the backend. Underlying error: "
-            f"{type(e).__name__}: {e}"
-        ) from e
+    except Exception:
+        try:
+            import importlib as _il_up
+            import subprocess as _sp_up
+
+            _sp_up.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--upgrade",
+                    "--prefer-binary",
+                    "transformers>=5.3.0",
+                    "accelerate>=1.1.0",
+                ],
+                stdout=_sp_up.PIPE,
+                stderr=_sp_up.PIPE,
+                timeout=240,
+                creationflags=0x08000000 if os.name == "nt" else 0,
+            )
+            _il_up.invalidate_caches()
+            for _tf_k in [
+                k
+                for k in list(sys.modules.keys())
+                if k == "transformers" or k.startswith("transformers.")
+            ]:
+                sys.modules.pop(_tf_k, None)
+            _ensure_omnivoice_runtime_compat()
+            from transformers import HiggsAudioV2TokenizerModel
+        except Exception as e:
+            raise ImportError(
+                "Could not import module 'HiggsAudioV2TokenizerModel' — OmniVoice's "
+                "audio tokenizer. transformers gates it on torchaudio, so this is "
+                "almost always a torchaudio that is missing, broken, or mismatched "
+                "with the installed torch/transformers. Reinstall them together "
+                "(`uv pip install --reinstall torch torchaudio transformers`; add "
+                "--system on Colab), then restart the backend. Underlying error: "
+                f"{type(e).__name__}: {e}"
+            ) from e
     return HiggsAudioV2TokenizerModel
 
 
@@ -743,9 +859,51 @@ class OmniVoice(PreTrainedModel):
                 # installed model (#959; see _resolve_snapshot_dir).
                 resolved_path = _resolve_snapshot_dir(pretrained_model_name_or_path)
 
-                model.text_tokenizer = AutoTokenizer.from_pretrained(
-                    pretrained_model_name_or_path
-                )
+                try:
+                    model.text_tokenizer = AutoTokenizer.from_pretrained(
+                        pretrained_model_name_or_path
+                    )
+                except (AttributeError, TypeError, AssertionError) as _tok_err:
+                    if (
+                        "keys" in str(_tok_err)
+                        or "extra_special_tokens" in str(_tok_err)
+                        or "values" in str(_tok_err)
+                    ):
+                        import json as _json_tok
+
+                        _extra_toks = []
+                        _tc_path = os.path.join(
+                            resolved_path, "tokenizer_config.json"
+                        )
+                        if os.path.isfile(_tc_path):
+                            try:
+                                with open(
+                                    _tc_path, "r", encoding="utf-8"
+                                ) as _f_tc:
+                                    _tc_data = _json_tok.load(_f_tc)
+                                if isinstance(
+                                    _tc_data, dict
+                                ) and isinstance(
+                                    _tc_data.get("extra_special_tokens"), list
+                                ):
+                                    _extra_toks = list(
+                                        _tc_data["extra_special_tokens"]
+                                    )
+                            except Exception:
+                                pass
+                        model.text_tokenizer = AutoTokenizer.from_pretrained(
+                            pretrained_model_name_or_path,
+                            extra_special_tokens={},
+                        )
+                        if _extra_toks:
+                            try:
+                                model.text_tokenizer.add_special_tokens(
+                                    {"additional_special_tokens": _extra_toks}
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        raise
 
                 audio_tokenizer_path = os.path.join(resolved_path, "audio_tokenizer")
 

@@ -1630,6 +1630,8 @@ def build_visual_cues_schedule(
             matched_kw = ""
 
             # Ưu tiên danh mục khác với danh mục vừa bật liền trước để hình ảnh đa dạng
+            if not isinstance(icon_assets, dict):
+                icon_assets = {}
             cat_order = list(icon_assets.keys())
             if last_category in cat_order:
                 cat_order.remove(last_category)

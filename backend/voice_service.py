@@ -2061,6 +2061,92 @@ def _apply_omnivoice_torch_compat_patch():
                 setattr(_twhop, "TransformGetItemToIndex", _TransformGetItemToIndex)
         except Exception:
             pass
+
+        # Vá tương thích ngược cho PreTrainedTokenizerBase khi nạp tokenizer_config.json có extra_special_tokens kiểu list trên transformers < 5.0
+        # (Khắc phục triệt để lỗi: AttributeError: 'list' object has no attribute 'keys')
+        try:
+            from transformers.tokenization_utils_base import (
+                AddedToken,
+                PreTrainedTokenizerBase,
+            )
+
+            if not getattr(
+                PreTrainedTokenizerBase, "_patched_list_special_tokens", False
+            ):
+                _orig_set_msst = getattr(
+                    PreTrainedTokenizerBase,
+                    "_set_model_specific_special_tokens",
+                    None,
+                )
+                if callable(_orig_set_msst):
+
+                    def _safe_set_model_specific_special_tokens(
+                        self, special_tokens
+                    ):
+                        if isinstance(special_tokens, (list, tuple)):
+                            self._extra_special_tokens = [
+                                AddedToken(t, special=True)
+                                if isinstance(t, str)
+                                else t
+                                for t in special_tokens
+                            ]
+                            try:
+                                self.add_special_tokens(
+                                    {
+                                        "additional_special_tokens": [
+                                            str(t) for t in special_tokens
+                                        ]
+                                    }
+                                )
+                            except Exception:
+                                pass
+                            return
+                        if not isinstance(special_tokens, dict):
+                            return
+                        return _orig_set_msst(self, special_tokens)
+
+                    PreTrainedTokenizerBase._set_model_specific_special_tokens = (
+                        _safe_set_model_specific_special_tokens
+                    )
+
+                _orig_tok_init = getattr(
+                    PreTrainedTokenizerBase, "__init__", None
+                )
+                if callable(_orig_tok_init):
+
+                    def _safe_tok_init(self, *args, **kwargs):
+                        _est = kwargs.get("extra_special_tokens")
+                        if isinstance(_est, (list, tuple)):
+                            try:
+                                return _orig_tok_init(self, *args, **kwargs)
+                            except (AttributeError, TypeError, AssertionError):
+                                _est_list = list(
+                                    kwargs.pop("extra_special_tokens", [])
+                                )
+                                _add_st = list(
+                                    kwargs.get("additional_special_tokens") or []
+                                )
+                                for _tok in _est_list:
+                                    if _tok not in _add_st:
+                                        _add_st.append(_tok)
+                                kwargs["additional_special_tokens"] = _add_st
+                                _res = _orig_tok_init(self, *args, **kwargs)
+                                self._extra_special_tokens = [
+                                    AddedToken(t, special=True)
+                                    if isinstance(t, str)
+                                    else t
+                                    for t in _est_list
+                                ]
+                                return _res
+                        return _orig_tok_init(self, *args, **kwargs)
+
+                    PreTrainedTokenizerBase.__init__ = _safe_tok_init
+
+                setattr(
+                    PreTrainedTokenizerBase, "_patched_list_special_tokens", True
+                )
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -2133,6 +2219,7 @@ def _ensure_omnivoice_package_files(root_dir: Optional[Path] = None) -> Path:
                 "class OmniVoice(" not in txt
                 or "VoiceStudio = OmniVoice" not in txt
                 or "cache_clear" not in txt
+                or "_patched_list_special_tokens" not in txt
             ):
                 needs_remote_sync = True
         except Exception:
@@ -2456,6 +2543,57 @@ class VoiceStudioService:
             )
             _ensure_omnivoice_package_files(self.root_dir)
             _apply_omnivoice_torch_compat_patch()
+
+            # Tự động kiểm tra và nâng cấp transformers >= 5.3.0 nếu máy khách đang dùng transformers 4.x cũ
+            # (tránh lỗi 'list' object has no attribute 'keys' và thiếu HiggsAudioV2TokenizerModel)
+            try:
+                import importlib.metadata as _im_tf
+
+                _orig_v_fn = getattr(
+                    _im_tf, "_orig_version_for_omnivoice", _im_tf.version
+                )
+                _tf_ver_str = str(_orig_v_fn("transformers") or "0.0.0")
+                _tf_parts = [
+                    int(x)
+                    for x in _tf_ver_str.split("+")[0].split(".")[:2]
+                    if x.isdigit()
+                ]
+                if tuple(_tf_parts) < (5, 3):
+                    print(
+                        f"[VoiceStudioService] ⚡ Phát hiện transformers {_tf_ver_str} (< 5.3.0), đang tự động nâng cấp lên transformers>=5.3.0..."
+                    )
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "pip",
+                            "install",
+                            "--upgrade",
+                            "--prefer-binary",
+                            "transformers>=5.3.0",
+                            "accelerate>=1.1.0",
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=240,
+                        creationflags=0x08000000 if os.name == "nt" else 0,
+                    )
+                    for _mod_k in [
+                        k
+                        for k in list(sys.modules.keys())
+                        if k in ("omnivoice", "transformers", "tokenizers")
+                        or k.startswith(
+                            ("omnivoice.", "transformers.", "tokenizers.")
+                        )
+                    ]:
+                        sys.modules.pop(_mod_k, None)
+                    importlib.invalidate_caches()
+                    _apply_omnivoice_torch_compat_patch()
+            except Exception as _up_err:
+                print(
+                    f"[VoiceStudioService] Lưu ý khi kiểm tra phiên bản transformers: {_up_err}"
+                )
+
             import torch
 
             try:

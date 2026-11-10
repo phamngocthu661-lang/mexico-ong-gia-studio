@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.34",
-  "build_number": 150,
-  "released_at": "2026-11-10 23:03:03",
+  "version": "V1.0.35",
+  "build_number": 151,
+  "released_at": "2026-11-10 23:50:16",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.34 (Build #150): Tăng gấp đôi độ dài 1 đoạn phụ đề Karaoke (10 từ / 52 ký tự) và tự động chia thành 2 dòng cân đối khi câu dài (hỗ trợ cả Tây Ban Nha & Tiếng Anh)."
+  "changelog": "V1.0.35 (Build #151): Sửa triệt để lỗi Render Video trên máy khách 'list' object has no attribute 'keys' khi nạp bộ giải mã giọng OmniVoice trên transformers cũ và chuẩn hóa dữ liệu kho Stock."
 }

@@ -425,7 +425,17 @@ class StockManager:
         kv_ok = False
         if used_ids is not None:
             try:
-                compact_ids = ",".join(list(used_ids.keys())[-300:])
+                if isinstance(used_ids, dict):
+                    id_keys = list(used_ids.keys())
+                elif isinstance(used_ids, (list, tuple, set)):
+                    id_keys = [
+                        str(x.get("id", x) if isinstance(x, dict) else x)
+                        for x in used_ids
+                        if x
+                    ]
+                else:
+                    id_keys = []
+                compact_ids = ",".join(id_keys[-300:])
                 if compact_ids:
                     val_encoded = urllib.parse.quote(compact_ids, safe="")
                     kv_update_url = self._get_cloud_kv_update_url(slug, val_encoded)
@@ -456,9 +466,9 @@ class StockManager:
         local_ids = self._load_local_used_yt_links_only()
         cloud_ids = self._pull_from_rentry(slug)
 
-        merged_ids = dict(local_ids)
+        merged_ids = dict(local_ids) if isinstance(local_ids, dict) else {}
         new_from_cloud = 0
-        if cloud_ids is not None:
+        if isinstance(cloud_ids, dict):
             for vid, info in cloud_ids.items():
                 if vid not in merged_ids:
                     merged_ids[vid] = info
@@ -563,12 +573,51 @@ class StockManager:
     # =========================================================================
     # QUẢN LÝ INVENTORY KHO STOOK
     # =========================================================================
+    def _normalize_inventory_structure(self, raw_data: object) -> Dict:
+        """Đảm bảo cấu trúc inventory luôn là Dict {'stocks': Dict[str, Dict], 'history': List}."""
+        stocks_map: Dict[str, Dict] = {}
+        history_list: List = []
+        if isinstance(raw_data, dict):
+            raw_stocks = raw_data.get("stocks")
+            if raw_stocks is None and "items" in raw_data:
+                raw_stocks = raw_data.get("items")
+            if isinstance(raw_stocks, dict):
+                for k, v in raw_stocks.items():
+                    if isinstance(v, dict):
+                        stocks_map[str(k)] = v
+            elif isinstance(raw_stocks, list):
+                for item in raw_stocks:
+                    if isinstance(item, dict):
+                        key = str(
+                            item.get("id")
+                            or item.get("name")
+                            or os.path.basename(str(item.get("path", "")))
+                            or ""
+                        ).strip()
+                        if key:
+                            stocks_map[key] = item
+            raw_hist = raw_data.get("history")
+            if isinstance(raw_hist, list):
+                history_list = raw_hist
+        elif isinstance(raw_data, list):
+            for item in raw_data:
+                if isinstance(item, dict):
+                    key = str(
+                        item.get("id")
+                        or item.get("name")
+                        or os.path.basename(str(item.get("path", "")))
+                        or ""
+                    ).strip()
+                    if key:
+                        stocks_map[key] = item
+        return {"stocks": stocks_map, "history": history_list}
+
     def _load_inventory(self) -> Dict:
         """Tải sổ quản lý kho stock từ JSON, nếu chưa có thì khởi tạo."""
         if os.path.exists(self.inventory_file):
             try:
                 with open(self.inventory_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    return self._normalize_inventory_structure(json.load(f))
             except Exception as e:
                 print(f"[StockManager] Lỗi đọc file inventory: {e}")
         return {"stocks": {}, "history": []}
@@ -576,6 +625,7 @@ class StockManager:
     def _save_inventory(self):
         """Lưu trạng thái kho stock xuống đĩa."""
         try:
+            self.inventory = self._normalize_inventory_structure(self.inventory)
             with open(self.inventory_file, "w", encoding="utf-8") as f:
                 json.dump(self.inventory, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -616,7 +666,10 @@ class StockManager:
             key=lambda x: os.path.getmtime(x) if os.path.exists(x) else 0,
             reverse=True,
         )
+        self.inventory = self._normalize_inventory_structure(self.inventory)
         stocks_dict = self.inventory.get("stocks", {})
+        if not isinstance(stocks_dict, dict):
+            stocks_dict = {}
 
         active_filenames = set()
         for filepath in found_files:
@@ -921,6 +974,7 @@ class StockManager:
     def mark_as_used(self, stock_id: str, project_name: str):
         """Đánh dấu file stock sau khi dự án đã sử dụng."""
         mode = self.get_stock_source_mode()
+        self.inventory = self._normalize_inventory_structure(self.inventory)
         stocks_dict = self.inventory.get("stocks", {})
         if stock_id in stocks_dict:
             item = stocks_dict[stock_id]
@@ -962,6 +1016,7 @@ class StockManager:
             )
             return False
 
+        self.inventory = self._normalize_inventory_structure(self.inventory)
         stocks_dict = self.inventory.get("stocks", {})
         item = stocks_dict.get(stock_id)
         if not item:
@@ -1003,6 +1058,7 @@ class StockManager:
     def cleanup_all_used_stocks(self) -> Dict:
         """Dọn dẹp toàn bộ các file stock đã dùng hết lượt trên ổ đĩa (chỉ áp dụng cho file đã khóa 'used')."""
         self.scan_and_sync()
+        self.inventory = self._normalize_inventory_structure(self.inventory)
         stocks_dict = self.inventory.get("stocks", {})
         deleted_files = []
         freed_mb = 0.0
@@ -1041,6 +1097,7 @@ class StockManager:
 
     def reset_usage(self, stock_id: str) -> bool:
         """Đặt lại trạng thái chưa dùng cho 1 file stock cụ thể."""
+        self.inventory = self._normalize_inventory_structure(self.inventory)
         stocks_dict = self.inventory.get("stocks", {})
         if stock_id in stocks_dict:
             stocks_dict[stock_id]["status"] = "available"
@@ -1053,6 +1110,7 @@ class StockManager:
 
     def reset_all_usage(self):
         """Đặt lại lượt dùng của các file vẫn còn nằm trên ổ cứng về trạng thái chưa dùng."""
+        self.inventory = self._normalize_inventory_structure(self.inventory)
         stocks_dict = self.inventory.get("stocks", {})
         for k, v in list(stocks_dict.items()):
             fpath = v.get("path", os.path.join(self.stook_dir, k))
