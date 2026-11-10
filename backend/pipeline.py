@@ -953,7 +953,7 @@ class ProductionPipeline:
                 )
                 proj_dir = base_proj_root / proj_name
                 final_proj_dir = final_base_root / proj_name
-                final_renders_dir = final_proj_dir / "renders"
+                final_renders_dir = final_proj_dir
 
                 use_ssd = bool(getattr(self, "use_ssd_staging", True))
                 ssd_root = Path(
@@ -992,10 +992,12 @@ class ProductionPipeline:
                     if not script_text:
                         for cand_script in (
                             proj_dir / "script_clean.txt",
+                            proj_dir / f"{proj_name}_KICH_BAN.txt",
                             proj_dir / "renders" / f"{proj_name}_KICH_BAN.txt",
                             proj_dir / "script.txt",
+                            final_proj_dir / f"{proj_name}_KICH_BAN.txt",
                             final_proj_dir / "script_clean.txt",
-                            final_renders_dir / f"{proj_name}_KICH_BAN.txt",
+                            final_proj_dir / "renders" / f"{proj_name}_KICH_BAN.txt",
                         ):
                             if cand_script.exists():
                                 try:
@@ -1074,7 +1076,7 @@ class ProductionPipeline:
 
                     log_info(
                         f"🎬 [LUỒNG #{job_num}] Bắt đầu xử lý '{proj_name}' ({len(script_text):,} chữ) với giọng [{preset_id} • {speed_val}x] "
-                        f"| Voice tại Folder Project: {proj_dir / 'assets'} -> Đích MP4 khi xong: {final_renders_dir}",
+                        f"| Voice tại Folder Project: {proj_dir / 'assets'} -> Đích lưu trữ cuối: {final_proj_dir}",
                         category="RENDER",
                         project_id=proj_name,
                     )
@@ -1088,8 +1090,17 @@ class ProductionPipeline:
                     assets_dir = proj_dir / "assets"
                     assets_dir.mkdir(parents=True, exist_ok=True)
                     renders_dir = proj_dir / "renders"
-                    renders_dir.mkdir(parents=True, exist_ok=True)
-                    (proj_dir / "script.txt").write_text(script_text, encoding="utf-8")
+                    if not (proj_dir / "script_clean.txt").exists():
+                        (proj_dir / "script_clean.txt").write_text(
+                            script_text, encoding="utf-8"
+                        )
+                    if (proj_dir / "script.txt").exists() and (
+                        proj_dir / "script_clean.txt"
+                    ).exists():
+                        try:
+                            (proj_dir / "script.txt").unlink()
+                        except Exception:
+                            pass
 
                     # Nếu trước đó có file Voice bị lưu nhầm ở Nơi Chứa Video Cuối (VIDEO XONG) hoặc SSD Staging cũ,
                     # tự động thu hồi 100% về đúng Folder Project (proj_dir / 'assets') và dọn sạch thư mục thừa ở VIDEO XONG!
@@ -1123,12 +1134,15 @@ class ProductionPipeline:
                         final_proj_dir.resolve() != proj_dir.resolve()
                         and final_proj_dir.exists()
                     ):
-                        if not (final_renders_dir / f"{proj_name}_master.mp4").exists():
+                        if not (final_proj_dir / f"{proj_name}_master.mp4").exists() and not (
+                            final_proj_dir / "renders" / f"{proj_name}_master.mp4"
+                        ).exists():
                             try:
-                                if final_renders_dir.exists() and not any(
-                                    final_renders_dir.iterdir()
+                                legacy_fin_ren = final_proj_dir / "renders"
+                                if legacy_fin_ren.exists() and not any(
+                                    legacy_fin_ren.iterdir()
                                 ):
-                                    final_renders_dir.rmdir()
+                                    legacy_fin_ren.rmdir()
                                 if final_proj_dir.exists() and not any(
                                     final_proj_dir.iterdir()
                                 ):
@@ -1487,7 +1501,8 @@ class ProductionPipeline:
                     if proj_name in getattr(self, "paused_for_perf_downscale", set()):
                         raise InterruptedError("PERF_DOWNSCALE_YIELD")
 
-                    final_video = final_renders_dir / f"{proj_name}_master.mp4"
+                    final_proj_dir.mkdir(parents=True, exist_ok=True)
+                    final_video = final_proj_dir / f"{proj_name}_master.mp4"
                     particles_path = str(
                         self.root_dir
                         / "assets"
@@ -1810,16 +1825,22 @@ class ProductionPipeline:
                                 chosen_stock["id"], proj_name
                             )
 
-                    # 5. Xuất file SEO & Kịch bản vào cùng thư mục renders (và đồng bộ sang Nơi Chứa Video Cuối nếu tách riêng)
+                    # 5. Đóng gói 6 file kết quả trực tiếp vào thư mục theo tên Mã (<final_video_dir>/<proj_name>/) — KHÔNG dùng thư mục con renders/
                     timestamps_content = ""
-                    ts_src_path = voice_res.get("timestamps_txt") or str(
-                        assets_dir / "TIMESTAMPS.txt"
+                    ts_src_path = Path(
+                        voice_res.get("timestamps_txt")
+                        or (assets_dir / "TIMESTAMPS.txt")
                     )
-                    if os.path.exists(ts_src_path):
-                        with open(ts_src_path, "r", encoding="utf-8") as tf:
-                            timestamps_content = tf.read()
+                    if ts_src_path.exists():
+                        try:
+                            timestamps_content = ts_src_path.read_text(encoding="utf-8")
+                        except Exception:
+                            timestamps_content = ""
 
-                    seo_file = proj_dir / f"{proj_name}_seo.md"
+                    srt_src_path = Path(
+                        voice_res.get("subtitles_srt") or (assets_dir / "subtitles.srt")
+                    )
+
                     seo_tech_block = (
                         f"# GÓI SEO YOUTUBE & THÔNG SỐ VIDEO: {proj_name}\n\n"
                         f"- 🏷️ Kênh: {channel_name}\n"
@@ -1828,16 +1849,23 @@ class ProductionPipeline:
                         f"- ⏱️ Thời lượng: {voice_res['total_duration'] / 60:.2f} phút\n\n"
                         f"## 📋 Chapters / Timestamps:\n```\n{timestamps_content}```\n"
                     )
-                    seo_file.write_text(seo_tech_block, encoding="utf-8")
 
-                    seo_dest = final_renders_dir / f"{proj_name}_SEO.txt"
-                    script_dest = final_renders_dir / f"{proj_name}_KICH_BAN.txt"
+                    final_proj_dir.mkdir(parents=True, exist_ok=True)
+                    script_dest = final_proj_dir / f"{proj_name}_KICH_BAN.txt"
+                    seo_dest = final_proj_dir / f"{proj_name}_SEO.txt"
+                    thumb_dest = final_proj_dir / f"{proj_name}_THUMBNAIL.png"
+                    srt_dest = final_proj_dir / f"{proj_name}.srt"
+                    ts_dest = final_proj_dir / f"{proj_name}_TIMESTAMPS.txt"
+
                     try:
                         master_seo_src = proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt"
+                        if not master_seo_src.exists():
+                            master_seo_src = proj_dir / f"{proj_name}_SEO.txt"
                         if master_seo_src.exists():
                             full_seo_txt = master_seo_src.read_text(encoding="utf-8")
                             if (
                                 "Chapters / Timestamps" not in full_seo_txt
+                                and "TIMESTAMPS / CAPÍTULOS" not in full_seo_txt
                                 and timestamps_content
                             ):
                                 full_seo_txt += (
@@ -1851,64 +1879,77 @@ class ProductionPipeline:
                         else:
                             full_seo_txt = seo_tech_block
 
-                        for r_target in {renders_dir, final_renders_dir}:
-                            r_target.mkdir(parents=True, exist_ok=True)
-                            (r_target / f"{proj_name}_KICH_BAN.txt").write_text(
-                                script_text, encoding="utf-8"
-                            )
-                            (r_target / f"{proj_name}_SEO.txt").write_text(
-                                full_seo_txt, encoding="utf-8"
-                            )
+                        # 2 : Kịch bản
+                        script_dest.write_text(script_text, encoding="utf-8")
+                        # 3 : SEO
+                        seo_dest.write_text(full_seo_txt, encoding="utf-8")
+                        # 4 : Thumbnail (1 file ảnh Thumbnail chính 16:9 duy nhất)
+                        for th_cand in (
+                            proj_dir / f"{proj_name}_THUMBNAIL.png",
+                            proj_dir / "THUMBNAIL.png",
+                            proj_dir / f"{proj_name}_THUMBNAIL_1.png",
+                            renders_dir / f"{proj_name}_THUMBNAIL.png",
+                            renders_dir / "THUMBNAIL.png",
+                            renders_dir / f"{proj_name}_THUMBNAIL_1.png",
+                            final_proj_dir / "THUMBNAIL.png",
+                            final_proj_dir / f"{proj_name}_THUMBNAIL_1.png",
+                            final_proj_dir / "renders" / "THUMBNAIL.png",
+                            final_proj_dir / "renders" / f"{proj_name}_THUMBNAIL_1.png",
+                        ):
+                            if th_cand.exists() and th_cand.stat().st_size > 2_000:
+                                if th_cand.resolve() != thumb_dest.resolve():
+                                    shutil.copy2(th_cand, thumb_dest)
+                                break
+                        # 5 : SRT
+                        if srt_src_path.exists():
+                            if srt_src_path.resolve() != srt_dest.resolve():
+                                shutil.copy2(srt_src_path, srt_dest)
+                        # 6 : Timestamps
+                        if ts_src_path.exists():
+                            if ts_src_path.resolve() != ts_dest.resolve():
+                                shutil.copy2(ts_src_path, ts_dest)
+                        elif timestamps_content:
+                            ts_dest.write_text(timestamps_content, encoding="utf-8")
 
-                        # Nếu Nơi Chứa Video Cuối tách biệt với Folder Project: sao chép Thumbnail + Nền Xanh + idea_info.json + video_location.json để load được 100% ở cả 2 nơi
+                        # Dọn sạch thư mục con renders/ cũ trong Folder Project (nếu có) để tránh trùng lặp file
+                        if renders_dir.exists() and renders_dir.is_dir():
+                            try:
+                                shutil.rmtree(renders_dir, ignore_errors=True)
+                            except Exception:
+                                pass
+
+                        # Nếu Nơi Chứa Video Cuối tách biệt với Folder Project:
+                        # CHỈ GIỮ ĐÚNG 6 FILE trong <final_video_dir>/<proj_name>/ (1: video, 2: kịch bản, 3: SEO, 4: thumbnail, 5: SRT, 6: timestamps)
+                        # và KHÔNG để trong thư mục con renders/!
                         if final_proj_dir.resolve() != proj_dir.resolve():
-                            for th_f in list(
-                                renders_dir.glob(f"{proj_name}_THUMBNAIL_*.png")
-                            ) + [
-                                renders_dir / "THUMBNAIL.png",
-                                renders_dir / "THUMBNAIL-NENXANH.png",
-                            ]:
-                                if th_f.exists():
-                                    try:
-                                        shutil.copy2(
-                                            th_f, final_renders_dir / th_f.name
-                                        )
-                                    except Exception:
-                                        pass
-                            for meta_fn in (
-                                "idea_info.json",
-                                "script_clean.txt",
-                                "00_TIEU_DE_VA_SEO_YOUTUBE.txt",
-                                "visual_cues.json",
-                                "TIMESTAMPS.txt",
-                            ):
-                                src_mf = proj_dir / meta_fn
-                                if src_mf.exists():
-                                    try:
-                                        shutil.copy2(src_mf, final_proj_dir / meta_fn)
-                                    except Exception:
-                                        pass
-                            sgi_dir = proj_dir / "script_green_images"
-                            if sgi_dir.exists() and sgi_dir.is_dir():
+                            allowed_final_files = {
+                                f"{proj_name}_master.mp4",
+                                f"{proj_name}_KICH_BAN.txt",
+                                f"{proj_name}_SEO.txt",
+                                f"{proj_name}_THUMBNAIL.png",
+                                f"{proj_name}.srt",
+                                f"{proj_name}_TIMESTAMPS.txt",
+                            }
+                            for item_f in list(final_proj_dir.iterdir()):
                                 try:
-                                    shutil.copytree(
-                                        sgi_dir,
-                                        final_proj_dir / "script_green_images",
-                                        dirs_exist_ok=True,
-                                    )
+                                    if item_f.is_dir():
+                                        shutil.rmtree(item_f, ignore_errors=True)
+                                    elif item_f.name not in allowed_final_files:
+                                        item_f.unlink()
                                 except Exception:
                                     pass
+
                             loc_payload = {
                                 "ma_id": proj_name,
                                 "video_mp4_path": str(final_video),
-                                "final_renders_dir": str(final_renders_dir),
+                                "final_renders_dir": str(final_proj_dir),
                                 "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                             }
-                            (renders_dir / "video_location.json").write_text(
+                            (proj_dir / "video_location.json").write_text(
                                 json.dumps(loc_payload, ensure_ascii=False, indent=2),
                                 encoding="utf-8",
                             )
-                            old_local_mp4 = renders_dir / f"{proj_name}_master.mp4"
+                            old_local_mp4 = proj_dir / f"{proj_name}_master.mp4"
                             if (
                                 old_local_mp4.exists()
                                 and old_local_mp4.resolve() != final_video.resolve()
@@ -1919,20 +1960,21 @@ class ProductionPipeline:
                                     pass
                     except Exception as copy_err:
                         log_warn(
-                            f"Lưu ý khi sao chép Kịch bản & SEO sang renders: {copy_err}",
+                            f"Lưu ý khi đóng gói 6 file kết quả vào {final_proj_dir}: {copy_err}",
                             category="RENDER",
                             project_id=proj_name,
                         )
 
                     job_result = {
                         "project_name": proj_name,
-                        "project_dir": str(final_renders_dir),
+                        "project_dir": str(final_proj_dir),
                         "final_video": str(final_video),
                         "master_voice": str(assets_dir / "master_voice.wav"),
-                        "subtitles_srt": str(assets_dir / "subtitles.srt"),
-                        "timestamps_txt": str(assets_dir / "TIMESTAMPS.txt"),
+                        "subtitles_srt": str(srt_dest if srt_dest.exists() else srt_src_path),
+                        "timestamps_txt": str(ts_dest if ts_dest.exists() else ts_src_path),
                         "seo_pack": str(seo_dest),
                         "script_file": str(script_dest),
+                        "thumbnail_file": str(thumb_dest) if thumb_dest.exists() else "",
                         "duration": voice_res["total_duration"],
                         "duration_formatted": f"{int(voice_res['total_duration'] // 60):02d}:{int(voice_res['total_duration'] % 60):02d}",
                         "resolution": resolution,
@@ -1950,7 +1992,7 @@ class ProductionPipeline:
                     self._update_job_card_status(
                         proj_name,
                         "COMPLETED_VIDEO",
-                        f"✅ Đã xuất xong Video MP4 [{preset_id}] ({job_result['duration_formatted']}) tại {final_video}",
+                        f"✅ Đã xuất xong 6 file (Video, Kịch bản, SEO, Thumbnail, SRT, Timestamps) tại {final_proj_dir}",
                         extra={"video_path": str(final_video)},
                     )
                     _update_overall_progress(
@@ -1958,20 +2000,20 @@ class ProductionPipeline:
                         "completed_one",
                     )
                     log_info(
-                        f"🎉 XUẤT VIDEO THÀNH CÔNG 100%: {final_video} (Giọng: {preset_id} {speed_val}x • Thời lượng: {job_result['duration_formatted']})",
+                        f"🎉 XUẤT VIDEO THÀNH CÔNG 100% (Đóng gói gọn 6 file tại {final_proj_dir}): {final_video} (Giọng: {preset_id} {speed_val}x • Thời lượng: {job_result['duration_formatted']})",
                         category="RENDER",
                         project_id=proj_name,
                     )
 
                 except InterruptedError as yield_err:
                     try:
-                        r_dir = proj_dir / "renders"
-                        if r_dir.exists():
-                            for tmp_f in r_dir.glob("*_rendering_tmp.mp4"):
-                                try:
-                                    tmp_f.unlink()
-                                except Exception:
-                                    pass
+                        for clean_d in (final_proj_dir, proj_dir, proj_dir / "renders"):
+                            if clean_d.exists():
+                                for tmp_f in clean_d.glob("*_rendering_tmp.mp4"):
+                                    try:
+                                        tmp_f.unlink()
+                                    except Exception:
+                                        pass
                     except Exception:
                         pass
 
@@ -2004,7 +2046,7 @@ class ProductionPipeline:
                             import backend.renderer as _r_ckpt
 
                             ckpt_info = _r_ckpt.get_saved_render_progress(
-                                str(proj_dir / "renders" / f"{proj_name}_master.mp4")
+                                str(final_proj_dir / f"{proj_name}_master.mp4")
                             )
                             if ckpt_info.get("has_checkpoint"):
                                 ckpt_pct = ckpt_info.get("percent", 0.0)
@@ -2018,28 +2060,28 @@ class ProductionPipeline:
                             progress_map[proj_name] = 100.0
 
                 except Exception as job_err:
-                    # Dọn sạch mọi file MP4 dở dang / lỗi trong thư mục renders để tuyệt đối không bao giờ bị nhận nhầm là thành công
+                    # Dọn sạch mọi file MP4 dở dang / lỗi để tuyệt đối không bao giờ bị nhận nhầm là thành công
                     try:
-                        r_dir = proj_dir / "renders"
-                        if r_dir.exists():
-                            for tmp_f in r_dir.glob("*_rendering_tmp.mp4"):
-                                try:
-                                    tmp_f.unlink()
-                                except Exception:
-                                    pass
-                            cand_mp4 = r_dir / f"{proj_name}_master.mp4"
-                            if cand_mp4.exists():
-                                import backend.sync_checker as _sc_clean
+                        for clean_d in (final_proj_dir, proj_dir, proj_dir / "renders"):
+                            if clean_d.exists():
+                                for tmp_f in clean_d.glob("*_rendering_tmp.mp4"):
+                                    try:
+                                        tmp_f.unlink()
+                                    except Exception:
+                                        pass
+                                cand_mp4 = clean_d / f"{proj_name}_master.mp4"
+                                if cand_mp4.exists():
+                                    import backend.sync_checker as _sc_clean
 
-                                chk = _sc_clean.validate_completed_mp4_file(
-                                    cand_mp4,
-                                    master_wav_path=proj_dir
-                                    / "assets"
-                                    / "master_voice.wav",
-                                    script_char_count=len(script_text),
-                                )
-                                if not chk.get("valid"):
-                                    cand_mp4.unlink()
+                                    chk = _sc_clean.validate_completed_mp4_file(
+                                        cand_mp4,
+                                        master_wav_path=proj_dir
+                                        / "assets"
+                                        / "master_voice.wav",
+                                        script_char_count=len(script_text),
+                                    )
+                                    if not chk.get("valid"):
+                                        cand_mp4.unlink()
                     except Exception:
                         pass
 
@@ -2056,7 +2098,7 @@ class ProductionPipeline:
                         import backend.renderer as _r_ckpt
 
                         ckpt_info = _r_ckpt.get_saved_render_progress(
-                            str(proj_dir / "renders" / f"{proj_name}_master.mp4")
+                            str(final_proj_dir / f"{proj_name}_master.mp4")
                         )
                         if ckpt_info.get("has_checkpoint"):
                             ckpt_pct = ckpt_info.get("percent", 0.0)

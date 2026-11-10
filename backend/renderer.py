@@ -1279,18 +1279,13 @@ def ensure_project_script_green_images(
             part_paths.append(part_file)
 
     if part_paths:
-        for gs_target in (
-            proj_dir / "THUMBNAIL-NENXANH.png",
-            renders_dir / "THUMBNAIL-NENXANH.png",
-            renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
-            proj_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
-        ):
-            if need_rebuild or not _is_green_plate_clean_and_large(gs_target):
-                try:
-                    gs_target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(part_paths[0], gs_target)
-                except Exception:
-                    pass
+        gs_target = proj_dir / "THUMBNAIL-NENXANH.png"
+        if need_rebuild or not _is_green_plate_clean_and_large(gs_target):
+            try:
+                gs_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(part_paths[0], gs_target)
+            except Exception:
+                pass
 
     return part_paths
 
@@ -1446,6 +1441,7 @@ def build_7part_timestamps_and_inject_seo(
     # Tự động chèn TIMESTAMPS.txt vào các file SEO trong dự án
     seo_candidates = [
         proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt",
+        proj_dir / f"{proj_dir.name}_SEO.txt",
         proj_dir / "PMX_SEO_PACK.md",
         proj_dir / "SEO.txt",
         proj_dir / "renders" / f"{proj_dir.name}_SEO.txt",

@@ -1,8 +1,8 @@
 {
-  "version": "1.0.30",
-  "build_number": 146,
-  "released_at": "2026-11-10 10:48:13",
+  "version": "1.0.31",
+  "build_number": 147,
+  "released_at": "2026-11-10 14:43:00",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.30 (Build #146): Nâng cấp trọn bộ 5-Skill ADAS & Engine lên PADRE MX V4.0 (Originality Signature 5 trường + Bộ nhớ chống trùng lặp nội bộ PADRE_MX_PROJECT_MEMORY_V4.json, Creative DNA V4 + Story Blueprint V4 8-12 cảnh/Part, Continuity Ledger V4, Kiểm định 2 vòng Pass Zone Freeze + QA_FINAL_V4.json), giữ nguyên 100% cơ chế tạo THUMBNAIL-NENXANH.png khổ dọc 9:16 bằng ChatGPT từ ảnh tham chiếu."
+  "changelog": "V1.0.31 (Build #147): Tối ưu hóa lưu trữ đầu ra Render cuối — Bỏ hoàn toàn thư mục con renders/, đặt trực tiếp 6 file chuẩn ({ma_id}_master.mp4, {ma_id}_KICH_BAN.txt, {ma_id}_SEO.txt, {ma_id}_THUMBNAIL.png, {ma_id}.srt, {ma_id}_TIMESTAMPS.txt) ngay trong thư mục theo tên Mã ({final_video_dir}/{ma_id}/) và xóa triệt để các bản lưu trùng lặp."
 }

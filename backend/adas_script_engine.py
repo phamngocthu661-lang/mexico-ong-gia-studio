@@ -4611,9 +4611,6 @@ class ADASScriptEngine:
                 return
             f_root = Path(f_dir).resolve()
             p_root = Path(p_dir).resolve()
-            if f_root == p_root or not f_root.exists():
-                return
-
             ignore_names = {
                 "renders",
                 "assets",
@@ -4622,6 +4619,59 @@ class ADASScriptEngine:
                 "ssd_render_staging",
                 "__pycache__",
             }
+
+            # Dọn dẹp các bản lưu trùng lặp và folder con renders/ bên trong Folder Project (p_root)
+            if p_root.exists():
+                for p_sub in list(p_root.iterdir()):
+                    if (
+                        not p_sub.is_dir()
+                        or p_sub.name.lower() in ignore_names
+                        or p_sub.name.startswith(".")
+                        or p_sub.name.startswith("_")
+                    ):
+                        continue
+                    mid = p_sub.name.strip()
+                    p_renders = p_sub / "renders"
+                    if p_renders.exists() and p_renders.is_dir():
+                        try:
+                            for fn_up in (
+                                f"{mid}_master.mp4",
+                                f"{mid}_KICH_BAN.txt",
+                                f"{mid}_SEO.txt",
+                                f"{mid}_THUMBNAIL.png",
+                                f"{mid}.srt",
+                                f"{mid}_TIMESTAMPS.txt",
+                                "THUMBNAIL.png",
+                                "THUMBNAIL-NENXANH.png",
+                            ):
+                                r_f = p_renders / fn_up
+                                d_f = p_sub / fn_up
+                                if r_f.exists() and not d_f.exists():
+                                    shutil.copy2(r_f, d_f)
+                            shutil.rmtree(p_renders, ignore_errors=True)
+                        except Exception:
+                            pass
+                    # Xóa các bản ảnh trùng lặp nếu đã có file chuẩn THUMBNAIL.png / THUMBNAIL-NENXANH.png
+                    if (p_sub / "THUMBNAIL.png").exists():
+                        for dup_th in (
+                            p_sub / f"{mid}_THUMBNAIL_1.png",
+                            p_sub / "CHAR_REFERENCE_CROP.png",
+                        ):
+                            if dup_th.exists():
+                                try:
+                                    dup_th.unlink()
+                                except Exception:
+                                    pass
+                    if (p_sub / "THUMBNAIL-NENXANH.png").exists():
+                        dup_gr = p_sub / f"{mid}_THUMBNAIL_NENXANH.png"
+                        if dup_gr.exists():
+                            try:
+                                dup_gr.unlink()
+                            except Exception:
+                                pass
+
+            if f_root == p_root or not f_root.exists():
+                return
             for sub in list(f_root.iterdir()):
                 if (
                     not sub.is_dir()
@@ -4674,14 +4724,111 @@ class ADASScriptEngine:
                         except Exception:
                             pass
 
-                # Nếu trong thư mục con ở VIDEO XONG chưa có file Video MP4 hoàn thiện thì xóa thư mục rỗng ở VIDEO XONG
+                # Nếu trong thư mục con ở VIDEO XONG có renders/ hoặc các file trùng lặp -> Gom gọn đúng 6 file trực tiếp vào <final_video_dir>/<mid>/
                 mp4_in_renders = sub / "renders" / f"{mid}_master.mp4"
                 mp4_direct = sub / f"{mid}_master.mp4"
-                has_finished_mp4 = (
+                if (
                     mp4_in_renders.exists()
                     and mp4_in_renders.stat().st_size > 1_000_000
-                ) or (mp4_direct.exists() and mp4_direct.stat().st_size > 1_000_000)
-                if not has_finished_mp4 and target_proj.exists():
+                    and not mp4_direct.exists()
+                ):
+                    try:
+                        shutil.move(str(mp4_in_renders), str(mp4_direct))
+                    except Exception:
+                        pass
+
+                has_finished_mp4 = (
+                    mp4_direct.exists() and mp4_direct.stat().st_size > 1_000_000
+                ) or (
+                    mp4_in_renders.exists()
+                    and mp4_in_renders.stat().st_size > 1_000_000
+                )
+                if has_finished_mp4:
+                    try:
+                        # 2 : Kịch bản
+                        kb_dst = sub / f"{mid}_KICH_BAN.txt"
+                        if not kb_dst.exists():
+                            for kb_src in (
+                                sub / "renders" / f"{mid}_KICH_BAN.txt",
+                                sub / "script_clean.txt",
+                                target_proj / "script_clean.txt",
+                                target_proj / f"{mid}_KICH_BAN.txt",
+                            ):
+                                if kb_src.exists():
+                                    shutil.copy2(kb_src, kb_dst)
+                                    break
+                        # 3 : SEO
+                        seo_dst = sub / f"{mid}_SEO.txt"
+                        if not seo_dst.exists():
+                            for seo_src in (
+                                sub / "renders" / f"{mid}_SEO.txt",
+                                sub / "00_TIEU_DE_VA_SEO_YOUTUBE.txt",
+                                target_proj / "00_TIEU_DE_VA_SEO_YOUTUBE.txt",
+                                target_proj / f"{mid}_SEO.txt",
+                            ):
+                                if seo_src.exists():
+                                    shutil.copy2(seo_src, seo_dst)
+                                    break
+                        # 4 : Thumbnail
+                        th_dst = sub / f"{mid}_THUMBNAIL.png"
+                        if not th_dst.exists():
+                            for th_src in (
+                                sub / "THUMBNAIL.png",
+                                sub / f"{mid}_THUMBNAIL_1.png",
+                                sub / "renders" / f"{mid}_THUMBNAIL.png",
+                                sub / "renders" / "THUMBNAIL.png",
+                                sub / "renders" / f"{mid}_THUMBNAIL_1.png",
+                                target_proj / "THUMBNAIL.png",
+                                target_proj / f"{mid}_THUMBNAIL.png",
+                            ):
+                                if th_src.exists() and th_src.stat().st_size > 2_000:
+                                    shutil.copy2(th_src, th_dst)
+                                    break
+                        # 5 : SRT
+                        srt_dst = sub / f"{mid}.srt"
+                        if not srt_dst.exists():
+                            for srt_src in (
+                                sub / "subtitles.srt",
+                                sub / "renders" / f"{mid}.srt",
+                                sub / "renders" / "subtitles.srt",
+                                target_proj / "assets" / "subtitles.srt",
+                            ):
+                                if srt_src.exists():
+                                    shutil.copy2(srt_src, srt_dst)
+                                    break
+                        # 6 : Timestamps
+                        ts_dst = sub / f"{mid}_TIMESTAMPS.txt"
+                        if not ts_dst.exists():
+                            for ts_src in (
+                                sub / "TIMESTAMPS.txt",
+                                sub / "renders" / f"{mid}_TIMESTAMPS.txt",
+                                sub / "renders" / "TIMESTAMPS.txt",
+                                target_proj / "assets" / "TIMESTAMPS.txt",
+                                target_proj / "TIMESTAMPS.txt",
+                            ):
+                                if ts_src.exists():
+                                    shutil.copy2(ts_src, ts_dst)
+                                    break
+
+                        allowed_6 = {
+                            f"{mid}_master.mp4",
+                            f"{mid}_KICH_BAN.txt",
+                            f"{mid}_SEO.txt",
+                            f"{mid}_THUMBNAIL.png",
+                            f"{mid}.srt",
+                            f"{mid}_TIMESTAMPS.txt",
+                        }
+                        for it_f in list(sub.iterdir()):
+                            try:
+                                if it_f.is_dir():
+                                    shutil.rmtree(it_f, ignore_errors=True)
+                                elif it_f.name not in allowed_6:
+                                    it_f.unlink()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                elif not has_finished_mp4 and target_proj.exists():
                     try:
                         shutil.rmtree(sub, ignore_errors=True)
                     except Exception:
@@ -4917,10 +5064,10 @@ class ADASScriptEngine:
     def resolve_project_mp4_path(self, ma_id: str) -> Optional[Path]:
         """
         Tìm chính xác đường dẫn file `{ma_id}_master.mp4` dù file nằm ở:
-        1. `final_video_dir/{ma_id}/renders/{ma_id}_master.mp4`
-        2. `final_video_dir/{ma_id}/{ma_id}_master.mp4` hoặc `final_video_dir/{ma_id}_master.mp4`
-        3. `projects_dir/{ma_id}/renders/{ma_id}_master.mp4`
-        4. Đường dẫn được ghi trong `projects_dir/{ma_id}/renders/video_location.json`
+        1. `final_video_dir/{ma_id}/{ma_id}_master.mp4` (Cấu trúc chuẩn 6 file trực tiếp trong folder Mã)
+        2. `final_video_dir/{ma_id}/renders/{ma_id}_master.mp4` (Tương thích ngược)
+        3. `projects_dir/{ma_id}/{ma_id}_master.mp4` hoặc `projects_dir/{ma_id}/renders/{ma_id}_master.mp4`
+        4. Đường dẫn được ghi trong `projects_dir/{ma_id}/video_location.json`
         """
         candidates: List[Path] = []
         f_dir = getattr(self, "final_video_dir", None)
@@ -4928,28 +5075,31 @@ class ADASScriptEngine:
             f_path = Path(f_dir)
             candidates.extend(
                 [
-                    f_path / ma_id / "renders" / f"{ma_id}_master.mp4",
                     f_path / ma_id / f"{ma_id}_master.mp4",
-                    f_path / "renders" / f"{ma_id}_master.mp4",
+                    f_path / ma_id / "renders" / f"{ma_id}_master.mp4",
                     f_path / f"{ma_id}_master.mp4",
+                    f_path / "renders" / f"{ma_id}_master.mp4",
                 ]
             )
         p_dir = self.projects_dir / ma_id
         candidates.extend(
             [
-                p_dir / "renders" / f"{ma_id}_master.mp4",
                 p_dir / f"{ma_id}_master.mp4",
+                p_dir / "renders" / f"{ma_id}_master.mp4",
             ]
         )
-        loc_file = p_dir / "renders" / "video_location.json"
-        if loc_file.exists():
-            try:
-                loc_data = json.loads(loc_file.read_text(encoding="utf-8"))
-                vp_str = str(loc_data.get("video_mp4_path") or "").strip()
-                if vp_str:
-                    candidates.insert(0, Path(vp_str))
-            except Exception:
-                pass
+        for loc_file in (
+            p_dir / "video_location.json",
+            p_dir / "renders" / "video_location.json",
+        ):
+            if loc_file.exists():
+                try:
+                    loc_data = json.loads(loc_file.read_text(encoding="utf-8"))
+                    vp_str = str(loc_data.get("video_mp4_path") or "").strip()
+                    if vp_str:
+                        candidates.insert(0, Path(vp_str))
+                except Exception:
+                    pass
 
         seen: set[str] = set()
         for c in candidates:
@@ -5687,25 +5837,24 @@ class ADASScriptEngine:
 
         renders_dir = proj_dir / "renders"
         final_renders_dir = final_proj_dir / "renders"
-        target_thumb = renders_dir / f"{ma_id}_THUMBNAIL_1.png"
-        target_thumb_std = renders_dir / "THUMBNAIL.png"
-        target_green = renders_dir / "THUMBNAIL-NENXANH.png"
-        target_green_id = renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png"
+        target_thumb_std = proj_dir / "THUMBNAIL.png"
+        target_green = proj_dir / "THUMBNAIL-NENXANH.png"
         found_thumb: Optional[Path] = None
 
         thumb_candidates = [
-            target_thumb,
             target_thumb_std,
-            proj_dir / "THUMBNAIL.png",
-            proj_dir / f"{ma_id}_THUMBNAIL_1.png",
-            renders_dir / f"{ma_id}_THUMBNAIL.png",
             proj_dir / f"{ma_id}_THUMBNAIL.png",
-            renders_dir / f"{ma_id}.png",
+            proj_dir / f"{ma_id}_THUMBNAIL_1.png",
+            final_proj_dir / f"{ma_id}_THUMBNAIL.png",
+            final_proj_dir / "THUMBNAIL.png",
+            final_proj_dir / f"{ma_id}_THUMBNAIL_1.png",
+            renders_dir / f"{ma_id}_THUMBNAIL_1.png",
+            renders_dir / "THUMBNAIL.png",
+            renders_dir / f"{ma_id}_THUMBNAIL.png",
             proj_dir / f"{ma_id}.png",
+            renders_dir / f"{ma_id}.png",
             final_renders_dir / f"{ma_id}_THUMBNAIL_1.png",
             final_renders_dir / "THUMBNAIL.png",
-            final_proj_dir / f"{ma_id}_THUMBNAIL_1.png",
-            final_proj_dir / "THUMBNAIL.png",
         ]
         for tc in thumb_candidates:
             if tc.exists() and tc.stat().st_size > 10_000:
@@ -5713,13 +5862,13 @@ class ADASScriptEngine:
                 break
 
         if found_thumb is None:
-            for scan_dir in (renders_dir, proj_dir, final_renders_dir, final_proj_dir):
+            for scan_dir in (proj_dir, final_proj_dir, renders_dir, final_renders_dir):
                 if not scan_dir.exists():
                     continue
                 for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
                     for img_f in sorted(scan_dir.glob(ext)):
                         up_img = img_f.name.upper()
-                        if "NENXANH" in up_img or "GREEN" in up_img:
+                        if "NENXANH" in up_img or "GREEN" in up_img or "CROP" in up_img:
                             continue
                         if img_f.stat().st_size > 10_000:
                             found_thumb = img_f
@@ -5729,16 +5878,11 @@ class ADASScriptEngine:
                 if found_thumb:
                     break
 
-        if found_thumb is not None and proj_dir.exists():
+        if found_thumb is not None and (self.projects_dir / ma_id).exists():
             try:
-                renders_dir.mkdir(parents=True, exist_ok=True)
-                if found_thumb.resolve() != target_thumb.resolve():
-                    shutil.copy2(found_thumb, target_thumb)
                 if not target_thumb_std.exists():
                     shutil.copy2(found_thumb, target_thumb_std)
-                if not (proj_dir / "THUMBNAIL.png").exists():
-                    shutil.copy2(found_thumb, proj_dir / "THUMBNAIL.png")
-                found_thumb = target_thumb
+                found_thumb = target_thumb_std
             except Exception:
                 pass
 
@@ -5751,9 +5895,9 @@ class ADASScriptEngine:
 
                 for g_cand in (
                     target_green,
-                    target_green_id,
-                    proj_dir / "THUMBNAIL-NENXANH.png",
                     proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                    renders_dir / "THUMBNAIL-NENXANH.png",
+                    renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                     final_renders_dir / "THUMBNAIL-NENXANH.png",
                     final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                     final_proj_dir / "THUMBNAIL-NENXANH.png",
@@ -5767,9 +5911,9 @@ class ADASScriptEngine:
                 valid_green: Optional[Path] = None
                 for g_cand in (
                     target_green,
-                    target_green_id,
-                    proj_dir / "THUMBNAIL-NENXANH.png",
                     proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                    renders_dir / "THUMBNAIL-NENXANH.png",
+                    renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                     final_renders_dir / "THUMBNAIL-NENXANH.png",
                     final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                     final_proj_dir / "THUMBNAIL-NENXANH.png",
@@ -5781,26 +5925,22 @@ class ADASScriptEngine:
                 if valid_green is not None:
                     if not target_green.exists():
                         shutil.copy2(valid_green, target_green)
-                    if not target_green_id.exists():
-                        shutil.copy2(valid_green, target_green_id)
-                    if not (proj_dir / "THUMBNAIL-NENXANH.png").exists():
-                        shutil.copy2(valid_green, proj_dir / "THUMBNAIL-NENXANH.png")
                     part1_chk = proj_dir / "script_green_images" / "green_part_01.png"
                     if not part1_chk.exists():
                         ensure_project_script_green_images(
-                            proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
+                            proj_dir=proj_dir, renders_dir=proj_dir, proj_name=ma_id
                         )
             except Exception:
                 pass
 
         master_seo = proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt"
-        render_seo = renders_dir / f"{ma_id}_SEO.txt"
         seo_candidates = [
             master_seo,
-            render_seo,
-            proj_dir / "PMX_SEO_PACK.md",
             proj_dir / f"{ma_id}_SEO.txt",
+            final_proj_dir / f"{ma_id}_SEO.txt",
+            proj_dir / "PMX_SEO_PACK.md",
             proj_dir / "step6_seo_pack.txt",
+            renders_dir / f"{ma_id}_SEO.txt",
             final_renders_dir / f"{ma_id}_SEO.txt",
             final_proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt",
         ]
@@ -5810,14 +5950,11 @@ class ADASScriptEngine:
                 found_seo = sc
                 break
 
-        if found_seo is not None and proj_dir.exists():
+        if found_seo is not None and (self.projects_dir / ma_id).exists():
             try:
                 seo_txt = found_seo.read_text(encoding="utf-8", errors="ignore")
                 if not master_seo.exists():
                     master_seo.write_text(seo_txt, encoding="utf-8")
-                if not render_seo.exists():
-                    renders_dir.mkdir(parents=True, exist_ok=True)
-                    render_seo.write_text(seo_txt, encoding="utf-8")
             except Exception:
                 pass
 
@@ -5856,7 +5993,7 @@ class ADASScriptEngine:
 
         # Dọn các file tạm _rendering_tmp.mp4 bị bỏ lại nếu dự án hiện không đang render
         if not is_actively_rendering:
-            for r_clean in (p_dir / "renders", final_p_dir / "renders"):
+            for r_clean in (p_dir, final_p_dir, p_dir / "renders", final_p_dir / "renders"):
                 if r_clean.exists():
                     for tmp_mp4 in r_clean.glob("*_rendering_tmp.mp4"):
                         try:
@@ -8307,12 +8444,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             ensure_project_script_green_images,
         )
 
-        renders_dir.mkdir(parents=True, exist_ok=True)
         proj_dir.mkdir(parents=True, exist_ok=True)
-
-        ref_crop_path = renders_dir / "CHAR_REFERENCE_CROP.png"
         ref_b64 = self._extract_right_character_reference_b64(
-            thumb_1080p_bytes, save_path=ref_crop_path
+            thumb_1080p_bytes, save_path=None
         )
 
         green_9_16_prompt = (
@@ -8372,18 +8506,14 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         plate_9_16_bytes = compose_chatgpt_9_16_green_portrait_to_plate(
                             raw_green_bytes, part_index=1
                         )
-                        for g_out in (
-                            renders_dir / "THUMBNAIL-NENXANH.png",
-                            renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                            proj_dir / "THUMBNAIL-NENXANH.png",
-                        ):
-                            g_out.parent.mkdir(parents=True, exist_ok=True)
-                            g_out.write_bytes(plate_9_16_bytes)
-                            _write_green_plate_stamp(g_out)
+                        g_out = proj_dir / "THUMBNAIL-NENXANH.png"
+                        g_out.parent.mkdir(parents=True, exist_ok=True)
+                        g_out.write_bytes(plate_9_16_bytes)
+                        _write_green_plate_stamp(g_out)
                         try:
                             ensure_project_script_green_images(
                                 proj_dir=proj_dir,
-                                renders_dir=renders_dir,
+                                renders_dir=proj_dir,
                                 proj_name=ma_id,
                                 force_regenerate=True,
                             )
@@ -8559,27 +8689,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         """
         import base64
 
-        renders_dir.mkdir(parents=True, exist_ok=True)
         proj_dir.mkdir(parents=True, exist_ok=True)
         prompts_list = self._extract_three_thumbnail_prompts(
             step6_out, step2_out, locked_title, idea
         )
         saved_paths: List[Path] = []
 
-        target_file = renders_dir / f"{ma_id}_THUMBNAIL_1.png"
-        target_std_file = renders_dir / "THUMBNAIL.png"
-        proj_std_file = proj_dir / "THUMBNAIL.png"
-        green_file = renders_dir / "THUMBNAIL-NENXANH.png"
-        green_id_file = renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png"
-        proj_green_file = proj_dir / "THUMBNAIL-NENXANH.png"
+        target_file = proj_dir / "THUMBNAIL.png"
+        green_file = proj_dir / "THUMBNAIL-NENXANH.png"
 
         def _save_matched_pair(
             thumb_1080p_bytes: bytes,
             chatgpt_green_9_16_bytes: Optional[bytes] = None,
         ) -> List[Path]:
             target_file.write_bytes(thumb_1080p_bytes)
-            target_std_file.write_bytes(thumb_1080p_bytes)
-            proj_std_file.write_bytes(thumb_1080p_bytes)
             out_list = [target_file]
             try:
                 from backend.renderer import (
@@ -8603,7 +8726,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         ma_id=ma_id,
                         thumb_1080p_bytes=thumb_1080p_bytes,
                         proj_dir=proj_dir,
-                        renders_dir=renders_dir,
+                        renders_dir=proj_dir,
                         idea=idea,
                         open_fresh_tab_first=True,
                     )
@@ -8612,14 +8735,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     val_pair = self._validate_thumbnail_pair_bytes(
                         thumb_1080p_bytes, green_bytes
                     )
-                    for g_out in (green_file, green_id_file, proj_green_file):
-                        g_out.write_bytes(green_bytes)
-                        _write_green_plate_stamp(g_out)
+                    green_file.write_bytes(green_bytes)
+                    _write_green_plate_stamp(green_file)
                     out_list.append(green_file)
                     try:
                         ensure_project_script_green_images(
                             proj_dir=proj_dir,
-                            renders_dir=renders_dir,
+                            renders_dir=proj_dir,
                             proj_name=ma_id,
                             force_regenerate=True,
                         )
@@ -8805,12 +8927,24 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         proj_dir = self.projects_dir / ma_id
         proj_dir.mkdir(parents=True, exist_ok=True)
         renders_dir = proj_dir / "renders"
-        renders_dir.mkdir(parents=True, exist_ok=True)
 
-        target_thumb = renders_dir / f"{ma_id}_THUMBNAIL_1.png"
-        if not target_thumb.exists() and (renders_dir / "THUMBNAIL.png").exists():
-            target_thumb = renders_dir / "THUMBNAIL.png"
-        target_green = renders_dir / "THUMBNAIL-NENXANH.png"
+        target_thumb = proj_dir / "THUMBNAIL.png"
+        if not target_thumb.exists():
+            for th_cand in (
+                proj_dir / f"{ma_id}_THUMBNAIL.png",
+                proj_dir / f"{ma_id}_THUMBNAIL_1.png",
+                renders_dir / "THUMBNAIL.png",
+                renders_dir / f"{ma_id}_THUMBNAIL_1.png",
+            ):
+                if th_cand.exists() and th_cand.stat().st_size > 20000:
+                    shutil.copy2(th_cand, target_thumb)
+                    break
+        target_green = proj_dir / "THUMBNAIL-NENXANH.png"
+        if not target_green.exists() and (renders_dir / "THUMBNAIL-NENXANH.png").exists():
+            try:
+                shutil.copy2(renders_dir / "THUMBNAIL-NENXANH.png", target_green)
+            except Exception:
+                pass
         if target_thumb.exists() and target_thumb.stat().st_size > 20000:
             if not _is_green_plate_clean_and_large(target_green):
                 session_gr = None
@@ -8823,7 +8957,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         ma_id=ma_id,
                         thumb_1080p_bytes=target_thumb.read_bytes(),
                         proj_dir=proj_dir,
-                        renders_dir=renders_dir,
+                        renders_dir=proj_dir,
                         open_fresh_tab_first=True,
                     )
                 except Exception as e_gr_failover:
@@ -9287,7 +9421,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         proj_dir = self.projects_dir / ma_id
         proj_dir.mkdir(parents=True, exist_ok=True)
         renders_dir = proj_dir / "renders"
-        renders_dir.mkdir(parents=True, exist_ok=True)
 
         # Nếu người dùng bấm nút "🔁 Viết Lại" (force_rewrite_script=True) -> Dọn sạch các file kịch bản cũ để viết mới hoàn toàn từ Step 2
         if force_rewrite_script:
@@ -9301,6 +9434,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 "step5_audit_report.txt",
                 "seo_publish_pack.txt",
                 "00_TIEU_DE_VA_SEO_YOUTUBE.txt",
+                f"{ma_id}_KICH_BAN.txt",
+                f"{ma_id}_SEO.txt",
             ):
                 old_fp = proj_dir / old_fn
                 if old_fp.exists():
@@ -9308,20 +9443,21 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         old_fp.unlink()
                     except Exception:
                         pass
-            for old_ren in (
-                renders_dir / f"{ma_id}_KICH_BAN.txt",
-                renders_dir / f"{ma_id}_SEO.txt",
-            ):
-                if old_ren.exists():
+            if renders_dir.exists():
+                for old_ren in (
+                    renders_dir / f"{ma_id}_KICH_BAN.txt",
+                    renders_dir / f"{ma_id}_SEO.txt",
+                ):
+                    if old_ren.exists():
+                        try:
+                            old_ren.unlink()
+                        except Exception:
+                            pass
+                for old_th in renders_dir.glob(f"{ma_id}_THUMBNAIL_*.png"):
                     try:
-                        old_ren.unlink()
+                        old_th.unlink()
                     except Exception:
                         pass
-            for old_th in renders_dir.glob(f"{ma_id}_THUMBNAIL_*.png"):
-                try:
-                    old_th.unlink()
-                except Exception:
-                    pass
             self._update_idea_record(
                 ma_id,
                 has_script=False,
@@ -9393,17 +9529,21 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             else:
                 master_seo_content = master_seo_file.read_text(encoding="utf-8")
 
-            (renders_dir / f"{ma_id}_SEO.txt").write_text(
-                master_seo_content, encoding="utf-8"
-            )
-            (renders_dir / f"{ma_id}_KICH_BAN.txt").write_text(
-                existing_script_text, encoding="utf-8"
-            )
             thumb_files = [
                 str(p)
-                for p in sorted(renders_dir.glob(f"{ma_id}_THUMBNAIL_*.png"))
-                if p.stat().st_size > 20000
+                for p in (
+                    proj_dir / "THUMBNAIL.png",
+                    proj_dir / f"{ma_id}_THUMBNAIL.png",
+                    proj_dir / f"{ma_id}_THUMBNAIL_1.png",
+                )
+                if p.exists() and p.stat().st_size > 20000
             ]
+            if not thumb_files and renders_dir.exists():
+                thumb_files = [
+                    str(p)
+                    for p in sorted(renders_dir.glob("*THUMBNAIL*.png"))
+                    if "NENXANH" not in p.name.upper() and p.stat().st_size > 20000
+                ]
 
             # BẮT BUỘC MỌI KỊCH BẢN PHẢI CÓ THUMBNAIL: Nếu dự án đã có kịch bản nhưng chưa có Thumbnail -> Tự động tạo bù (kèm đổi nick nếu limit/lỗi)!
             if len(thumb_files) == 0 and not self.should_stop:
@@ -10213,14 +10353,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
             master_seo_file.write_text(master_seo_content, encoding="utf-8")
 
-            # Lưu đúng 1 file Kịch bản sạch cho TTS/Sub và 1 file SEO vào cùng thư mục chứa Video (renders)
-            (renders_dir / f"{ma_id}_SEO.txt").write_text(
-                master_seo_content, encoding="utf-8"
-            )
-            (renders_dir / f"{ma_id}_KICH_BAN.txt").write_text(
-                full_clean_script, encoding="utf-8"
-            )
-
             # --- Vẫn trên cùng New Chat #4: Vẽ Thumbnail 80/20 + Ảnh nền xanh ---
             if not chat4_seo_thumb_opened:
                 session.start_fresh_chat("NEW_CHAT_4_SKILL_05_SEO_AND_THUMB")
@@ -10236,7 +10368,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step6_out=step6_out,
                     idea=idea,
                     proj_dir=proj_dir,
-                    renders_dir=renders_dir,
+                    renders_dir=proj_dir,
                     reuse_current_chat=True,
                 )
             except Exception as e_thumb:
@@ -10424,8 +10556,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 continue
 
             proj_dir = self.projects_dir / mid
-            renders_dir = proj_dir / "renders"
-            renders_dir.mkdir(parents=True, exist_ok=True)
+            proj_dir.mkdir(parents=True, exist_ok=True)
             has_valid_mp4, _, _ = self.has_valid_video_mp4_on_disk(
                 mid, sc_chars=sc_chars, auto_delete_corrupted=True
             )
@@ -10450,13 +10581,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     mid, locked_title, sc_chars, idea, step2_out
                 )
                 master_seo_file.write_text(seo_text, encoding="utf-8")
-
-            seo_ren = renders_dir / f"{mid}_SEO.txt"
-            kb_ren = renders_dir / f"{mid}_KICH_BAN.txt"
-            if not seo_ren.exists():
-                seo_ren.write_text(seo_text, encoding="utf-8")
-            if not kb_ren.exists():
-                kb_ren.write_text(sc_text, encoding="utf-8")
 
             if mid in ideas_map:
                 ideas_map[mid]["has_script"] = True
@@ -11144,10 +11268,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         mp4_path = self.resolve_project_mp4_path(ma_id)
         if mp4_path and mp4_path.exists():
             target_open_dir = mp4_path.parent
-        elif (final_proj_dir / "renders").exists():
-            target_open_dir = final_proj_dir / "renders"
-        elif renders_dir.exists():
-            target_open_dir = renders_dir
+        elif final_proj_dir.exists() and any(final_proj_dir.iterdir()):
+            target_open_dir = final_proj_dir
         else:
             target_open_dir = proj_dir
 
@@ -11157,14 +11279,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         for scan_d in (
             proj_dir,
-            renders_dir,
             final_proj_dir,
+            renders_dir,
             final_proj_dir / "renders",
         ):
             if not scan_d.exists():
                 continue
             if main_thumb_path is None:
                 for cand_m in (
+                    scan_d / f"{ma_id}_THUMBNAIL.png",
                     scan_d / "THUMBNAIL.png",
                     scan_d / f"{ma_id}_THUMBNAIL_1.png",
                 ):
@@ -11401,7 +11524,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 proj_dir = self.projects_dir / ma_id
                 proj_dir.mkdir(parents=True, exist_ok=True)
                 renders_dir = proj_dir / "renders"
-                renders_dir.mkdir(parents=True, exist_ok=True)
 
                 from backend.renderer import _is_green_plate_clean_and_large
 
@@ -11409,8 +11531,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     (
                         p
                         for p in (
-                            renders_dir / "THUMBNAIL.png",
                             proj_dir / "THUMBNAIL.png",
+                            proj_dir / f"{ma_id}_THUMBNAIL.png",
+                            renders_dir / "THUMBNAIL.png",
                             renders_dir / f"{ma_id}_THUMBNAIL_1.png",
                         )
                         if p.exists() and p.stat().st_size > 10_000
@@ -11421,8 +11544,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     (
                         p
                         for p in (
-                            renders_dir / "THUMBNAIL-NENXANH.png",
                             proj_dir / "THUMBNAIL-NENXANH.png",
+                            renders_dir / "THUMBNAIL-NENXANH.png",
                         )
                         if _is_green_plate_clean_and_large(p)
                     ),
@@ -11445,7 +11568,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         ma_id=ma_id,
                         thumb_1080p_bytes=existing_main.read_bytes(),
                         proj_dir=proj_dir,
-                        renders_dir=renders_dir,
+                        renders_dir=proj_dir,
                         idea=idea,
                         open_fresh_tab_first=True,
                     )
@@ -11462,7 +11585,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         status="completed",
                         current_step="Hoàn tất vẽ THUMBNAIL-NENXANH.png khổ dọc 9:16 bằng ChatGPT",
                         progress=100.0,
-                        message=f"[{ma_id}] 🎉 Đã tạo xong THUMBNAIL-NENXANH.png (Khổ dọc 9:16 ChatGPT) tại {renders_dir}!",
+                        message=f"[{ma_id}] 🎉 Đã tạo xong THUMBNAIL-NENXANH.png (Khổ dọc 9:16 ChatGPT) tại {proj_dir}!",
                     )
                     completed_ok = True
                     return
@@ -11472,12 +11595,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     self._get_unique_random_father_visual_profile(
                         ma_id=ma_id, idea=idea, force_new_random=True
                     )
-                    for old_t in list(renders_dir.glob(f"{ma_id}_THUMBNAIL*.png")) + [
-                        renders_dir / "THUMBNAIL.png",
-                        renders_dir / "THUMBNAIL-NENXANH.png",
+                    old_candidates = [
                         proj_dir / "THUMBNAIL.png",
+                        proj_dir / f"{ma_id}_THUMBNAIL.png",
                         proj_dir / "THUMBNAIL-NENXANH.png",
-                    ]:
+                    ]
+                    if renders_dir.exists():
+                        old_candidates.extend(
+                            list(renders_dir.glob(f"{ma_id}_THUMBNAIL*.png"))
+                            + [
+                                renders_dir / "THUMBNAIL.png",
+                                renders_dir / "THUMBNAIL-NENXANH.png",
+                            ]
+                        )
+                    for old_t in old_candidates:
                         if old_t.exists():
                             try:
                                 old_t.unlink()
@@ -11520,17 +11651,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step6_out=step6_out,
                     idea=idea,
                     proj_dir=proj_dir,
-                    renders_dir=renders_dir,
+                    renders_dir=proj_dir,
                 )
                 self._update_idea_record(
                     ma_id,
-                    current_step=f"✅ Đã tạo xong {len(paths)}/1 Thumbnail trong thư mục Video",
+                    current_step=f"✅ Đã tạo xong {len(paths)}/1 Thumbnail trong thư mục Dự án",
                 )
                 self._emit(
                     status="completed",
                     current_step="Hoàn tất Thumbnail",
                     progress=100.0,
-                    message=f"[{ma_id}] 🎉 Đã tạo, đánh giá QA và tải về {len(paths)}/1 Thumbnail tại {renders_dir}!",
+                    message=f"[{ma_id}] 🎉 Đã tạo, đánh giá QA và tải về {len(paths)}/1 Thumbnail tại {proj_dir}!",
                 )
                 completed_ok = True
             except Exception as e:

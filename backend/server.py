@@ -752,6 +752,8 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
         script_path = proj_dir / "script_clean.txt"
         if not script_path.exists():
+            script_path = proj_dir / f"{ma_id}_KICH_BAN.txt"
+        if not script_path.exists():
             script_path = renders_dir / f"{ma_id}_KICH_BAN.txt"
         if not script_path.exists():
             script_path = proj_dir / "script.txt"
@@ -763,7 +765,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         script_text = script_path.read_text(encoding="utf-8")
         sentences = split_japanese_script(script_text)
 
-        video_path = renders_dir / f"{ma_id}_master.mp4"
+        video_path = adas_engine.resolve_project_mp4_path(ma_id) or (proj_dir / f"{ma_id}_master.mp4")
         wav_path = assets_dir / "master_voice.wav"
         srt_path = assets_dir / "subtitles.srt"
         sentences_dir = assets_dir / "sentences"
@@ -1699,12 +1701,23 @@ except Exception:
         if proj_root and proj_root.exists():
             for d in proj_root.iterdir():
                 if d.is_dir():
-                    renders = d / "renders"
                     final_mp4 = None
-                    if renders.exists():
-                        mp4s = list(renders.glob("*.mp4"))
-                        if mp4s:
-                            final_mp4 = str(mp4s[0])
+                    resolved_mp4 = adas_engine.resolve_project_mp4_path(d.name)
+                    if resolved_mp4 and resolved_mp4.exists():
+                        final_mp4 = str(resolved_mp4)
+                    else:
+                        direct_mp4s = [
+                            p for p in d.glob("*.mp4")
+                            if not p.name.endswith("_rendering_tmp.mp4")
+                        ]
+                        if direct_mp4s:
+                            final_mp4 = str(direct_mp4s[0])
+                        else:
+                            renders = d / "renders"
+                            if renders.exists():
+                                mp4s = list(renders.glob("*.mp4"))
+                                if mp4s:
+                                    final_mp4 = str(mp4s[0])
                     projects.append(
                         {
                             "name": d.name,
@@ -1732,15 +1745,23 @@ except Exception:
             if os.path.isfile(p):
                 target_cmd = f'explorer.exe /select,"{p}"'
             elif os.path.isdir(p):
-                renders_dir = os.path.join(p, "renders")
-                if os.path.isdir(renders_dir):
-                    mp4s = [
-                        os.path.join(renders_dir, f)
-                        for f in os.listdir(renders_dir)
-                        if f.lower().endswith(".mp4")
-                    ]
-                    if mp4s:
-                        target_cmd = f'explorer.exe /select,"{mp4s[0]}"'
+                direct_mp4s = [
+                    os.path.join(p, f)
+                    for f in os.listdir(p)
+                    if f.lower().endswith(".mp4") and not f.lower().endswith("_rendering_tmp.mp4")
+                ]
+                if direct_mp4s:
+                    target_cmd = f'explorer.exe /select,"{direct_mp4s[0]}"'
+                else:
+                    renders_dir = os.path.join(p, "renders")
+                    if os.path.isdir(renders_dir):
+                        mp4s = [
+                            os.path.join(renders_dir, f)
+                            for f in os.listdir(renders_dir)
+                            if f.lower().endswith(".mp4")
+                        ]
+                        if mp4s:
+                            target_cmd = f'explorer.exe /select,"{mp4s[0]}"'
             try:
                 subprocess.Popen(target_cmd)
             except Exception:
