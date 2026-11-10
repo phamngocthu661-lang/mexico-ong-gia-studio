@@ -189,6 +189,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     class SaveIdeaInputRequest(BaseModel):
         raw_text: str
         custom_id: Optional[str] = None
+        use_original_title: bool = False
 
     class DeleteIdeaRequest(BaseModel):
         ma_id: str
@@ -205,6 +206,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         ai_provider: Optional[str] = "chatgpt_web"
         force_rewrite_script: bool = False
         max_retries: int = 3
+        use_original_title: Optional[bool] = None
 
     class RenderOnlyRequest(BaseModel):
         ma_ids: Optional[list[str]] = None
@@ -569,12 +571,22 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
                 detail="Vui lòng dán nội dung Tiêu đề Nhật nháp & Tóm tắt!",
             )
         saved_list = adas_engine.add_or_update_ideas_bulk_from_raw(
-            req.raw_text, custom_id=req.custom_id
+            req.raw_text,
+            custom_id=req.custom_id,
+            use_original_title=bool(req.use_original_title),
         )
         first_idea = saved_list[0]
-        step2_prompt = build_step2_prompt_from_idea(
-            first_idea, adas_engine.get_step2_template()
-        )
+        if req.use_original_title:
+            step2_prompt = adas_engine._build_step3_prompt(
+                first_idea.get("ma_id", "1"),
+                first_idea.get("locked_title") or first_idea.get("draft_title_ja", ""),
+                step2_context="",
+                in_same_chat=False,
+            )
+        else:
+            step2_prompt = build_step2_prompt_from_idea(
+                first_idea, adas_engine.get_step2_template()
+            )
         return {
             "success": True,
             "idea": first_idea,
@@ -594,9 +606,20 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             else next_preview_id
         )
         parsed = parse_idea_input_block(req.raw_text, custom_id=eff_id)
-        step2_prompt = build_step2_prompt_from_idea(
-            parsed, adas_engine.get_step2_template()
-        )
+        parsed["use_original_title"] = bool(req.use_original_title)
+        if req.use_original_title:
+            orig_t = parsed.get("draft_title_ja") or ""
+            parsed["locked_title"] = orig_t
+            step2_prompt = adas_engine._build_step3_prompt(
+                eff_id,
+                orig_t,
+                step2_context="",
+                in_same_chat=False,
+            )
+        else:
+            step2_prompt = build_step2_prompt_from_idea(
+                parsed, adas_engine.get_step2_template()
+            )
         return {
             "parsed": parsed,
             "step2_prompt": step2_prompt,
@@ -688,6 +711,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             ai_provider=req.ai_provider or "chatgpt_web",
             force_rewrite_script=req.force_rewrite_script,
             max_retries=max(1, min(5, req.max_retries)),
+            use_original_title=req.use_original_title,
         )
         if not started:
             raise HTTPException(

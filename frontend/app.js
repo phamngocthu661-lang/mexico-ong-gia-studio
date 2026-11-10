@@ -2287,6 +2287,35 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   let currentAdasFilter = "all";
+  let currentAdasTitleMode = localStorage.getItem("adas_title_mode") === "original" ? "original" : "rewrite";
+
+  function applyAdasTitleModeUI(mode) {
+    currentAdasTitleMode = mode === "original" ? "original" : "rewrite";
+    try {
+      localStorage.setItem("adas_title_mode", currentAdasTitleMode);
+    } catch (e) {}
+    const statusLbl = document.getElementById("adas-title-mode-status-label");
+    if (statusLbl) {
+      statusLbl.innerText = currentAdasTitleMode === "original"
+        ? "Đang chọn: 📌 Dùng Tiêu Đề Gốc (Vào Thẳng Skill 02)"
+        : "Đang chọn: 🔄 Chạy Như Cũ (Qua Skill 01)";
+    }
+    document.querySelectorAll(".adas-title-mode-card").forEach((card) => {
+      const m = card.getAttribute("data-title-mode");
+      const isAct = m === currentAdasTitleMode;
+      const dot = card.querySelector(".title-mode-dot");
+      const titleDiv = card.querySelector("div:first-child");
+      if (isAct) {
+        card.className = "adas-title-mode-card active p-2 rounded-lg bg-primary-container/15 border-2 border-primary-container text-left transition-all";
+        if (dot) dot.className = "title-mode-dot w-2 h-2 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]";
+        if (titleDiv) titleDiv.className = "text-xs font-bold text-primary flex items-center justify-between";
+      } else {
+        card.className = "adas-title-mode-card p-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all";
+        if (dot) dot.className = "title-mode-dot w-2 h-2 rounded-full bg-surface-container-highest";
+        if (titleDiv) titleDiv.className = "text-xs font-bold text-on-surface flex items-center justify-between";
+      }
+    });
+  }
   let adasVisibleLimit = 25;
 
   function renderSavedIdeasList(ideas) {
@@ -2439,6 +2468,9 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="adas-idea-card px-2.5 py-1.5 rounded bg-surface-container-high border border-outline-variant/25 hover:border-secondary-container/40 transition-all flex items-center justify-between gap-2" style="display:flex;" title="${safeTooltip}">
           <div class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
             <span class="px-1.5 py-0.5 rounded bg-secondary-container/15 text-secondary-container font-mono font-bold text-[10.5px] border border-secondary-container/30 shrink-0">#${maId}</span>
+            ${it.use_original_title
+              ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono font-bold text-[9.5px] border border-amber-400/40 shrink-0" title="Chế độ Tiêu Đề Gốc: Bỏ qua Skill 01, tạo thẳng Giàn ý Skill 02 từ tiêu đề gốc">📌 Gốc</span>`
+              : `<span class="px-1.5 py-0.5 rounded bg-primary-container/10 text-primary-container/90 font-mono text-[9.5px] border border-primary-container/25 shrink-0" title="Chế độ Viết Lại Tiêu Đề: Qua Skill 01 tạo 5 tiêu đề mới trước khi lập Giàn ý">🔄 Skill 1</span>`}
             <span class="text-[11.5px] text-on-surface font-medium truncate flex-1">${fullTitle}</span>
           </div>
           <div class="flex items-center gap-1 shrink-0">
@@ -2757,7 +2789,8 @@ document.addEventListener("DOMContentLoaded", () => {
           video_settings: getCurrentVideoSettings(),
           ai_provider: chosenProvider,
           force_rewrite_script: !!forceRewriteScript,
-          max_retries: 3
+          max_retries: 3,
+          use_original_title: currentAdasTitleMode === "original"
         })
       });
       const data = await res.json();
@@ -3339,6 +3372,22 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
+    // 4b. Khởi tạo 2 nút chọn Chế Độ Xử Lý Tiêu Đề (1. Chạy Như Cũ Qua Skill 01 | 2. Dùng Tiêu Đề Gốc Vào Thẳng Skill 02)
+    applyAdasTitleModeUI(currentAdasTitleMode);
+    document.querySelectorAll(".adas-title-mode-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        const m = card.getAttribute("data-title-mode") || "rewrite";
+        applyAdasTitleModeUI(m);
+        appendInstantLogToUI(
+          m === "original"
+            ? "📌 Đã chọn chế độ: DÙNG TIÊU ĐỀ GỐC (Bỏ qua Skill 01 • Giữ nguyên tiêu đề gốc tạo thẳng Giàn ý 7 Phần ở Skill 02)."
+            : "🔄 Đã chọn chế độ: CHẠY NHƯ CŨ (Dùng Skill 01 viết lại 5 tiêu đề mới & chọn LOCKED_TITLE trước khi lập Giàn ý).",
+          "SCRIPT",
+          "INFO"
+        );
+      });
+    });
+
     // 5. Nút Lưu Tiêu Đề & Thông Tin Vào Kho (Mỗi dòng 1 tiêu đề — Mã tự động theo STT)
     const saveIdeaBtn = document.getElementById("btn-adas-save-idea");
     if (saveIdeaBtn && rawInputEl) {
@@ -3351,7 +3400,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const res = await fetch("/api/adas/ideas/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: raw, custom_id: null })
+          body: JSON.stringify({
+            raw_text: raw,
+            custom_id: null,
+            use_original_title: currentAdasTitleMode === "original"
+          })
         });
         const data = await res.json();
         if (res.ok && data.success) {
@@ -3382,7 +3435,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const res = await fetch("/api/adas/ideas/preview-prompt", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: raw, custom_id: "1" })
+          body: JSON.stringify({
+            raw_text: raw,
+            custom_id: "1",
+            use_original_title: currentAdasTitleMode === "original"
+          })
         });
         if (res.ok) {
           const data = await res.json();
@@ -3416,7 +3473,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const res = await fetch("/api/adas/ideas/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: raw, custom_id: null })
+          body: JSON.stringify({
+            raw_text: raw,
+            custom_id: null,
+            use_original_title: currentAdasTitleMode === "original"
+          })
         });
         const data = await res.json();
         if (res.ok && data.success && data.idea) {
@@ -3443,7 +3504,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const res = await fetch("/api/adas/ideas/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: raw, custom_id: null })
+          body: JSON.stringify({
+            raw_text: raw,
+            custom_id: null,
+            use_original_title: currentAdasTitleMode === "original"
+          })
         });
         const data = await res.json();
         if (res.ok && data.success && data.idea) {

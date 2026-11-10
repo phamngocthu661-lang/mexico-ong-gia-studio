@@ -6435,6 +6435,10 @@ class ADASScriptEngine:
                     changed = True
                     item_changed = True
 
+                if it.get("use_original_title") and it.get("draft_title_ja") and it.get("locked_title") != it.get("draft_title_ja"):
+                    it["locked_title"] = it["draft_title_ja"]
+                    changed = True
+                    item_changed = True
                 step2_f = p_dir / "step2_title_thumbnail.txt"
                 if not it.get("locked_title") and step2_f.exists():
                     try:
@@ -6992,7 +6996,10 @@ class ADASScriptEngine:
             self.save_ideas_list([parsed])
 
     def add_or_update_ideas_bulk_from_raw(
-        self, raw_text: str, custom_id: Optional[str] = None
+        self,
+        raw_text: str,
+        custom_id: Optional[str] = None,
+        use_original_title: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Phân tích danh sách tiêu đề người dùng dán (MỖI TIÊU ĐỀ 1 DÒNG),
@@ -7028,6 +7035,12 @@ class ADASScriptEngine:
             next_num += 1
 
             parsed = parse_idea_input_block(block_str, custom_id=assigned_id)
+            parsed["use_original_title"] = bool(use_original_title)
+            if use_original_title and parsed.get("draft_title_ja"):
+                parsed["locked_title"] = parsed["draft_title_ja"]
+                parsed["current_step"] = (
+                    "📌 Đã khóa Tiêu đề gốc (Bỏ qua Skill 01) — Sẵn sàng tạo Giàn ý (Skill 02)"
+                )
             mid_cur = parsed["ma_id"]
             existing_ids.add(mid_cur)
             ever_used_ids.add(mid_cur)
@@ -7073,10 +7086,31 @@ class ADASScriptEngine:
             (proj_dir / "idea_info.json").write_text(
                 json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-            (proj_dir / "step2_prompt_ready.txt").write_text(
-                build_step2_prompt_from_idea(parsed, self.get_step2_template()),
-                encoding="utf-8",
-            )
+            if use_original_title and parsed.get("draft_title_ja"):
+                orig_t_val = parsed["draft_title_ja"].strip()
+                direct_s2_txt = (
+                    "================================================================================\n"
+                    "📌 CHẾ ĐỘ SỬ DỤNG TIÊU ĐỀ GỐC (BỎ QUA SKILL 01 — KHÓA TRỰC TIẾP TIÊU ĐỀ GỐC)\n"
+                    "================================================================================\n"
+                    f"LOCKED_TITLE: {orig_t_val}\n"
+                    f"CURRENT_FINAL_TITLE: {orig_t_val}\n"
+                    f"USE_ORIGINAL_TITLE: YES\n"
+                    f"STEP3_HANDOFF: Tạo trực tiếp Giàn ý 7 Phần (Skill 02) từ Tiêu đề gốc đã khóa.\n"
+                )
+                (proj_dir / "step2_title_thumbnail.txt").write_text(
+                    direct_s2_txt, encoding="utf-8"
+                )
+                (proj_dir / "step2_prompt_ready.txt").write_text(
+                    self._build_step3_prompt(
+                        mid_cur, orig_t_val, step2_context="", in_same_chat=False
+                    ),
+                    encoding="utf-8",
+                )
+            else:
+                (proj_dir / "step2_prompt_ready.txt").write_text(
+                    build_step2_prompt_from_idea(parsed, self.get_step2_template()),
+                    encoding="utf-8",
+                )
             saved_items.append(parsed)
 
         # Lưu ngay mốc mã lớn nhất vào bộ đếm bền vững để không bao giờ bị trùng lặp
@@ -7099,10 +7133,15 @@ class ADASScriptEngine:
         return saved_items
 
     def add_or_update_idea_from_raw(
-        self, raw_text: str, custom_id: Optional[str] = None
+        self,
+        raw_text: str,
+        custom_id: Optional[str] = None,
+        use_original_title: bool = False,
     ) -> Dict[str, Any]:
         """Phân tích khối văn bản người dùng dán vào và lưu vào danh sách."""
-        items = self.add_or_update_ideas_bulk_from_raw(raw_text, custom_id=custom_id)
+        items = self.add_or_update_ideas_bulk_from_raw(
+            raw_text, custom_id=custom_id, use_original_title=use_original_title
+        )
         return (
             items[0] if items else parse_idea_input_block(raw_text, custom_id=custom_id)
         )
@@ -7756,8 +7795,17 @@ class ADASScriptEngine:
                 else ""
             )
         )
-        return f"""[NEW CHAT #1 — TIẾP TỤC CHẠY SKILL 02 NGAY TRÊN CÙNG ĐOẠN CHAT VỚI SKILL 01]
-Chạy STEP 2 (OUTLINE 7 PHẦN & STORY BLUEPRINT V4.0 — `padre-mx-outline-writer` V4.0.0) cho mã {ma_id} theo đúng tiêu đề đã khóa từ STEP 1 ở trên.
+        header_intro = (
+            f"[NEW CHAT #1 — TIẾP TỤC CHẠY SKILL 02 NGAY TRÊN CÙNG ĐOẠN CHAT VỚI SKILL 01]\n"
+            f"Chạy STEP 2 (OUTLINE 7 PHẦN & STORY BLUEPRINT V4.0 — `padre-mx-outline-writer` V4.0.0) cho mã {ma_id} theo đúng tiêu đề đã khóa từ STEP 1 ở trên."
+            if in_same_chat
+            else (
+                f"[NEW CHAT #1 — CHẠY TRỰC TIẾP SKILL 02 (GIÀN Ý 7 PHẦN) TỪ TIÊU ĐỀ GỐC ĐÃ KHÓA (BỎ QUA SKILL 01)]\n"
+                f"Chạy trực tiếp STEP 2 (OUTLINE 7 PHẦN & STORY BLUEPRINT V4.0 — `padre-mx-outline-writer` V4.0.0) cho mã {ma_id} từ TIÊU ĐỀ GỐC ĐÃ KHÓA dưới đây.\n"
+                f"QUY TẮC BẮT BUỘC: Giữ nguyên 100% tiêu đề gốc này làm CURRENT_FINAL_TITLE / LOCKED_TITLE xuyên suốt Giàn ý 7 Phần, Kịch bản và SEO, tuyệt đối không viết lại hay thay đổi tiêu đề!"
+            )
+        )
+        return f"""{header_intro}
 CURRENT_FINAL_TITLE: {locked_title}{ctx_block}{skill_block}{dna_block}
 
 YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` — 7 PARTS `[PART 1]`..`[PART 7]` • `STORY_BLUEPRINT_V4`):
@@ -9385,6 +9433,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         force_rewrite_script: bool = False,
         ai_provider: str = "chatgpt_web",
         exclude_accs: Optional[set] = None,
+        use_original_title: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Chạy quy trình cho 1 Mã ý tưởng:
@@ -9654,88 +9703,127 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 )
 
             # ------------------------------------------------------------------
-            # NEW CHAT #1: CHẠY SKILL 01 (TIÊU ĐỀ) VÀ SKILL 02 (GIÀN Ý 7 PHẦN) TRÊN CÙNG 1 ĐOẠN CHAT
+            # NEW CHAT #1: CHẠY SKILL 01 (TIÊU ĐỀ) HOẶC DÙNG TRỰC TIẾP TIÊU ĐỀ GỐC -> SKILL 02 (GIÀN Ý 7 PHẦN)
             # ------------------------------------------------------------------
+            should_use_orig_title = (
+                bool(use_original_title)
+                if use_original_title is not None
+                else bool(idea.get("use_original_title", False))
+            )
+            if use_original_title is not None and bool(idea.get("use_original_title", False)) != should_use_orig_title:
+                idea["use_original_title"] = should_use_orig_title
+                self._update_idea_record(ma_id, use_original_title=should_use_orig_title)
+
             step2_file = proj_dir / "step2_title_thumbnail.txt"
-            step2_valid = False
-            if (
-                step2_file.exists()
-                and step2_file.stat().st_size > 2500
-                and not force_rewrite_script
-            ):
-                try:
-                    s2_probe = step2_file.read_text(encoding="utf-8", errors="ignore")
-                    if any(
-                        k in s2_probe.upper()
-                        for k in (
-                            "LOCKED_TITLE",
-                            "TITLE MATRIX",
-                            "THUMBNAIL",
-                            "STEP 2",
-                            "STEP3_HANDOFF",
-                        )
-                    ):
-                        step2_out = s2_probe
-                        step2_valid = True
-                    else:
-                        step2_file.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            elif step2_file.exists() and step2_file.stat().st_size <= 2500:
-                try:
-                    step2_file.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
             ran_skill01_in_chat1 = False
-            if step2_valid:
-                self._emit(
-                    current_step="New Chat #1 — Skill 01: Tiêu đề & Thumbnail",
-                    progress=16.0,
-                    message=f"[{ma_id}] ♻️ Khôi phục kết quả Skill 01 có sẵn ({len(step2_out):,} ký tự)...",
-                )
-            else:
-                # open_session_tab() ở trên đã mở sẵn New Chat #1 cho Skill 01 & Skill 02
-                self._update_idea_record(
-                    ma_id,
-                    current_step="New Chat #1 (Skill 01): Khóa Tiêu đề & 6 dòng chữ Thumbnail",
-                )
-                self._emit(
-                    current_step="New Chat #1 — Skill 01: Tiêu đề & Thumbnail",
-                    progress=10.0,
-                    message=f"[{ma_id}] 💬 [New Chat #1 — Skill 01] Đang tạo 5 Tiêu đề es-MX + Khóa LOCKED_TITLE + 6 dòng chữ Thumbnail...",
-                )
-                step2_prompt = build_step2_prompt_from_idea(
-                    idea, self.get_step2_template()
-                )
-                (proj_dir / "step2_prompt_sent.txt").write_text(
-                    step2_prompt, encoding="utf-8"
-                )
 
-                step2_out = session.send_prompt_and_wait(
-                    step2_prompt,
-                    step_label="STEP_2",
-                    timeout_sec=600,
-                    progress_cb=lambda st, ch: self._emit(
-                        message=f"[{ma_id}] [New Chat #1 — Skill 01] Đang phản hồi ({ch:,} ký tự)..."
-                    ),
-                    should_stop_cb=lambda: self.should_stop,
+            if should_use_orig_title:
+                orig_title_clean = (
+                    idea.get("draft_title_ja")
+                    or idea.get("locked_title")
+                    or f"Dự án Mexico #{ma_id}"
+                ).strip()
+                locked_title = orig_title_clean
+                step2_out = (
+                    "================================================================================\n"
+                    "📌 CHẾ ĐỘ SỬ DỤNG TIÊU ĐỀ GỐC (BỎ QUA SKILL 01 — KHÓA TRỰC TIẾP TIÊU ĐỀ GỐC)\n"
+                    "================================================================================\n"
+                    f"LOCKED_TITLE: {locked_title}\n"
+                    f"CURRENT_FINAL_TITLE: {locked_title}\n"
+                    f"USE_ORIGINAL_TITLE: YES\n"
+                    f"STEP3_HANDOFF: Tạo trực tiếp Giàn ý 7 Phần (Skill 02) từ Tiêu đề gốc đã khóa.\n"
                 )
                 step2_file.write_text(step2_out, encoding="utf-8")
-                ran_skill01_in_chat1 = True
+                self._update_idea_record(
+                    ma_id,
+                    locked_title=locked_title,
+                    use_original_title=True,
+                    current_step="📌 Đã khóa Tiêu đề gốc (Bỏ qua Skill 01) -> Chạy thẳng Skill 02 (Giàn ý 7 Phần)",
+                )
+                self._emit(
+                    current_step="New Chat #1 — Bỏ qua Skill 01 (Dùng Tiêu đề gốc) -> Vào thẳng Skill 02",
+                    progress=20.0,
+                    message=f"[{ma_id}] 📌 Chế độ TIÊU ĐỀ GỐC: Bỏ qua Skill 01, khóa trực tiếp tiêu đề gốc «{locked_title[:65]}...» và chuyển thẳng vào tạo Giàn ý 7 Phần (Skill 02)!",
+                )
+            else:
+                step2_valid = False
+                if (
+                    step2_file.exists()
+                    and step2_file.stat().st_size > 2500
+                    and not force_rewrite_script
+                ):
+                    try:
+                        s2_probe = step2_file.read_text(encoding="utf-8", errors="ignore")
+                        if "USE_ORIGINAL_TITLE: YES" not in s2_probe and any(
+                            k in s2_probe.upper()
+                            for k in (
+                                "LOCKED_TITLE",
+                                "TITLE MATRIX",
+                                "THUMBNAIL",
+                                "STEP 2",
+                                "STEP3_HANDOFF",
+                            )
+                        ):
+                            step2_out = s2_probe
+                            step2_valid = True
+                        else:
+                            step2_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                elif step2_file.exists() and step2_file.stat().st_size <= 2500:
+                    try:
+                        step2_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
-            locked_title = extract_locked_title_from_step2(
-                step2_out, fallback_title=idea.get("draft_title_ja", "")
-            )
-            self._update_idea_record(
-                ma_id,
-                locked_title=locked_title,
-                current_step="New Chat #1: Xong Skill 01 -> Tiếp tục chạy Skill 02 (Giàn ý 7 Phần)",
-            )
-            self._emit(
-                progress=20.0,
-                message=f"[{ma_id}] ✅ Skill 01 xong! LOCKED_TITLE: {locked_title[:55]}...",
-            )
+                if step2_valid:
+                    self._emit(
+                        current_step="New Chat #1 — Skill 01: Tiêu đề & Thumbnail",
+                        progress=16.0,
+                        message=f"[{ma_id}] ♻️ Khôi phục kết quả Skill 01 có sẵn ({len(step2_out):,} ký tự)...",
+                    )
+                else:
+                    # open_session_tab() ở trên đã mở sẵn New Chat #1 cho Skill 01 & Skill 02
+                    self._update_idea_record(
+                        ma_id,
+                        current_step="New Chat #1 (Skill 01): Khóa Tiêu đề & 6 dòng chữ Thumbnail",
+                    )
+                    self._emit(
+                        current_step="New Chat #1 — Skill 01: Tiêu đề & Thumbnail",
+                        progress=10.0,
+                        message=f"[{ma_id}] 💬 [New Chat #1 — Skill 01] Đang tạo 5 Tiêu đề es-MX + Khóa LOCKED_TITLE + 6 dòng chữ Thumbnail...",
+                    )
+                    step2_prompt = build_step2_prompt_from_idea(
+                        idea, self.get_step2_template()
+                    )
+                    (proj_dir / "step2_prompt_sent.txt").write_text(
+                        step2_prompt, encoding="utf-8"
+                    )
+
+                    step2_out = session.send_prompt_and_wait(
+                        step2_prompt,
+                        step_label="STEP_2",
+                        timeout_sec=600,
+                        progress_cb=lambda st, ch: self._emit(
+                            message=f"[{ma_id}] [New Chat #1 — Skill 01] Đang phản hồi ({ch:,} ký tự)..."
+                        ),
+                        should_stop_cb=lambda: self.should_stop,
+                    )
+                    step2_file.write_text(step2_out, encoding="utf-8")
+                    ran_skill01_in_chat1 = True
+
+                locked_title = extract_locked_title_from_step2(
+                    step2_out, fallback_title=idea.get("draft_title_ja", "")
+                )
+                self._update_idea_record(
+                    ma_id,
+                    locked_title=locked_title,
+                    current_step="New Chat #1: Xong Skill 01 -> Tiếp tục chạy Skill 02 (Giàn ý 7 Phần)",
+                )
+                self._emit(
+                    progress=20.0,
+                    message=f"[{ma_id}] ✅ Skill 01 xong! LOCKED_TITLE: {locked_title[:55]}...",
+                )
 
             # --- Vẫn trên New Chat #1: Chạy tiếp Skill 02 (Giàn ý 7 Phần) ---
             step3_file = proj_dir / "step3_architecture.txt"
@@ -9804,6 +9892,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     step2_context=step2_out,
                     in_same_chat=ran_skill01_in_chat1,
                 )
+                if should_use_orig_title:
+                    try:
+                        (proj_dir / "step2_prompt_sent.txt").write_text(
+                            step3_prompt, encoding="utf-8"
+                        )
+                    except Exception:
+                        pass
                 step3_out = session.send_prompt_and_wait(
                     step3_prompt,
                     step_label="STEP_3",
@@ -10669,6 +10764,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         ai_provider: str = "chatgpt_web",
         force_rewrite_script: bool = False,
         max_retries: int = 3,
+        use_original_title: Optional[bool] = None,
     ) -> bool:
         """
         KIẾN TRÚC LUỒNG ĐÔI SONG SONG (STREAMING PRODUCER–CONSUMER PIPELINE):
@@ -10746,6 +10842,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             defer_video_handoff=True,
                             force_rewrite_script=False,
                             ai_provider=ai_provider,
+                            use_original_title=use_original_title,
                         )
                     except Exception as e_fast:
                         log_error(
@@ -10947,6 +11044,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         use_force_rw,  # Làm lại từ đầu (Step 2) khi đổi sang nick khác do nick cũ bị Limit
                                         ai_provider,
                                         exclude_accs=set(failed_accs_for_mid),
+                                        use_original_title=use_original_title,
                                     )
                                     has_sc_ok, _, _ = self.has_valid_script_on_disk(
                                         mid_item

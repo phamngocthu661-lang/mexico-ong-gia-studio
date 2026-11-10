@@ -326,7 +326,30 @@
                 <span class="font-label-sm text-[10px] text-secondary font-bold uppercase">MỖI DÒNG = 1 TIÊU ĐỀ KỊCH BẢN ĐỘC LẬP</span>
                 <span class="font-label-sm text-[10px] text-primary-container font-mono">Tự động bỏ qua Mã đầu dòng • Mã gán theo STT (1, 2, 3...)</span>
               </div>
-              <textarea class="w-full bg-surface-container-lowest rounded p-2.5 font-label-md text-xs text-on-surface placeholder:text-outline-variant focus:outline-none focus:ring-1 focus:ring-primary-container border border-surface-container-high resize-y leading-relaxed" id="adas-raw-input" placeholder="Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo&#10;Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable&#10;Mis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso" rows="7"></textarea>
+              <textarea class="w-full bg-surface-container-lowest rounded p-2.5 font-label-md text-xs text-on-surface placeholder:text-outline-variant focus:outline-none focus:ring-1 focus:ring-primary-container border border-surface-container-high resize-y leading-relaxed" id="adas-raw-input" placeholder="Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo&#10;Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable&#10;Mis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso" rows="6"></textarea>
+            </div>
+            <!-- CHỌN CHẾ ĐỘ XỬ LÝ TIÊU ĐỀ: 1. CHẠY NHƯ CŨ (QUA SKILL 01) HOẶC 2. DÙNG TIÊU ĐỀ GỐC (VÀO THẲNG SKILL 02) -->
+            <div class="flex flex-col gap-1.5 p-2.5 rounded-lg bg-surface-container-low border border-secondary/30" id="adas-title-mode-box">
+              <div class="flex items-center justify-between text-[11px]">
+                <span class="font-bold text-secondary uppercase tracking-wide">🎯 Chọn Chế Độ Xử Lý Tiêu Đề:</span>
+                <span class="font-mono text-[10px] text-primary-container font-semibold" id="adas-title-mode-status-label">Đang chọn: 🔄 Chạy Như Cũ (Qua Skill 01)</span>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button class="adas-title-mode-card active p-2 rounded-lg bg-primary-container/15 border-2 border-primary-container text-left transition-all" data-title-mode="rewrite" id="btn-title-mode-rewrite" type="button">
+                  <div class="text-xs font-bold text-primary flex items-center justify-between">
+                    <span>🔄 1. Chạy Như Cũ (Skill 01)</span>
+                    <span class="title-mode-dot w-2 h-2 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]"></span>
+                  </div>
+                  <div class="text-[10px] text-on-surface-variant mt-0.5">Dùng Skill 01 viết lại 5 tiêu đề mới, chấm CTR &amp; chọn LOCKED_TITLE rồi lập Giàn ý</div>
+                </button>
+                <button class="adas-title-mode-card p-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all" data-title-mode="original" id="btn-title-mode-original" type="button">
+                  <div class="text-xs font-bold text-on-surface flex items-center justify-between">
+                    <span>📌 2. Dùng Tiêu Đề Gốc (Bỏ Skill 1)</span>
+                    <span class="title-mode-dot w-2 h-2 rounded-full bg-surface-container-highest"></span>
+                  </div>
+                  <div class="text-[10px] text-on-surface-variant mt-0.5">Giữ nguyên 100% tiêu đề gốc • Tạo thẳng Giàn ý 7 Phần (Skill 02), Kịch bản &amp; SEO</div>
+                </button>
+              </div>
             </div>
             <!-- Param Matrix -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-2 bg-surface-container-low p-2.5 rounded border border-surface-container">
