@@ -1,0 +1,676 @@
+{
+  "schema": "PADRE_MX_STORY_BLUEPRINT_V4",
+  "locked_title": "REPLACE_WITH_EXACT_LOCKED_TITLE",
+  "primary_dna": "REPLACE_WITH_ONE_DNA",
+  "secondary_dna": [
+    "REPLACE_SECONDARY_DNA"
+  ],
+  "story_mode": "REPLACE_WITH_ONE_MODE",
+  "hook_pattern": "REPLACE_WITH_HOOK",
+  "central_promise": "REPLACE_WITH_SPECIFIC_CONFLICT_PROMISE",
+  "emotional_axis": "REPLACE_WITH_CHARACTER_EMOTIONAL_CHANGE",
+  "original_angle": "REPLACE_WITH_DISTINCT_NEW_MECHANISM",
+  "originality_signature": {
+    "central_injustice": "REPLACE_WITH_SPECIFIC CENTRAL_INJUSTICE",
+    "leverage": "REPLACE_WITH_SPECIFIC LEVERAGE",
+    "evidence_mechanism": "REPLACE_WITH_SPECIFIC EVIDENCE_MECHANISM",
+    "antagonist_cost": "REPLACE_WITH_SPECIFIC ANTAGONIST_COST",
+    "earned_payoff": "REPLACE_WITH_SPECIFIC EARNED_PAYOFF"
+  },
+  "narrative_spine": {
+    "initial_situation": "REPLACE_WITH_CAUSAL_INITIAL_SITUATION",
+    "central_question": "REPLACE_WITH_CAUSAL_CENTRAL_QUESTION",
+    "investigation_path": "REPLACE_WITH_CAUSAL_INVESTIGATION_PATH",
+    "core_answer": "REPLACE_WITH_CAUSAL_CORE_ANSWER",
+    "transformed_perspective": "REPLACE_WITH_CAUSAL_TRANSFORMED_PERSPECTIVE"
+  },
+  "parts": [
+    {
+      "part": 1,
+      "objective": "REPLACE_WITH_PART_OBJECTIVE",
+      "new_action": "REPLACE_WITH_NEW_ACTION",
+      "new_evidence": "REPLACE_WITH_NEW_EVIDENCE",
+      "consequence": "REPLACE_WITH_CAUSAL_CONSEQUENCE",
+      "entry_from_previous": "REPLACE_WITH_PART_ENTRY_BRIDGE",
+      "exit_to_next": "REPLACE_WITH_CAUSAL_EXIT",
+      "character_cost": "REPLACE_WITH_CHARACTER_COST",
+      "retention_beats": [
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_QUESTION",
+          "new_value": "REPLACE_WITH_NEW_MEANINGFUL_INFORMATION"
+        },
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_CHOICE",
+          "new_value": "REPLACE_WITH_NEW_CONSEQUENCE"
+        }
+      ],
+      "scenes": [
+        {
+          "scene_id": "P01_S01",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P01_S02",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P01_S03",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P01_S04",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P01_S05",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P01_S06",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P01_S07",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P01_S08",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        }
+      ]
+    },
+    {
+      "part": 2,
+      "objective": "REPLACE_WITH_PART_OBJECTIVE",
+      "new_action": "REPLACE_WITH_NEW_ACTION",
+      "new_evidence": "REPLACE_WITH_NEW_EVIDENCE",
+      "consequence": "REPLACE_WITH_CAUSAL_CONSEQUENCE",
+      "entry_from_previous": "REPLACE_WITH_PART_ENTRY_BRIDGE",
+      "exit_to_next": "REPLACE_WITH_CAUSAL_EXIT",
+      "character_cost": "REPLACE_WITH_CHARACTER_COST",
+      "retention_beats": [
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_QUESTION",
+          "new_value": "REPLACE_WITH_NEW_MEANINGFUL_INFORMATION"
+        },
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_CHOICE",
+          "new_value": "REPLACE_WITH_NEW_CONSEQUENCE"
+        }
+      ],
+      "scenes": [
+        {
+          "scene_id": "P02_S01",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P02_S02",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P02_S03",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P02_S04",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P02_S05",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P02_S06",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P02_S07",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P02_S08",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        }
+      ]
+    },
+    {
+      "part": 3,
+      "objective": "REPLACE_WITH_PART_OBJECTIVE",
+      "new_action": "REPLACE_WITH_NEW_ACTION",
+      "new_evidence": "REPLACE_WITH_NEW_EVIDENCE",
+      "consequence": "REPLACE_WITH_CAUSAL_CONSEQUENCE",
+      "entry_from_previous": "REPLACE_WITH_PART_ENTRY_BRIDGE",
+      "exit_to_next": "REPLACE_WITH_CAUSAL_EXIT",
+      "character_cost": "REPLACE_WITH_CHARACTER_COST",
+      "retention_beats": [
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_QUESTION",
+          "new_value": "REPLACE_WITH_NEW_MEANINGFUL_INFORMATION"
+        },
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_CHOICE",
+          "new_value": "REPLACE_WITH_NEW_CONSEQUENCE"
+        }
+      ],
+      "scenes": [
+        {
+          "scene_id": "P03_S01",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P03_S02",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P03_S03",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P03_S04",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P03_S05",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P03_S06",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P03_S07",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P03_S08",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        }
+      ]
+    },
+    {
+      "part": 4,
+      "objective": "REPLACE_WITH_PART_OBJECTIVE",
+      "new_action": "REPLACE_WITH_NEW_ACTION",
+      "new_evidence": "REPLACE_WITH_NEW_EVIDENCE",
+      "consequence": "REPLACE_WITH_CAUSAL_CONSEQUENCE",
+      "entry_from_previous": "REPLACE_WITH_PART_ENTRY_BRIDGE",
+      "exit_to_next": "REPLACE_WITH_CAUSAL_EXIT",
+      "character_cost": "REPLACE_WITH_CHARACTER_COST",
+      "retention_beats": [
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_QUESTION",
+          "new_value": "REPLACE_WITH_NEW_MEANINGFUL_INFORMATION"
+        },
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_CHOICE",
+          "new_value": "REPLACE_WITH_NEW_CONSEQUENCE"
+        }
+      ],
+      "scenes": [
+        {
+          "scene_id": "P04_S01",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P04_S02",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P04_S03",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P04_S04",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P04_S05",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P04_S06",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P04_S07",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P04_S08",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        }
+      ]
+    },
+    {
+      "part": 5,
+      "objective": "REPLACE_WITH_PART_OBJECTIVE",
+      "new_action": "REPLACE_WITH_NEW_ACTION",
+      "new_evidence": "REPLACE_WITH_NEW_EVIDENCE",
+      "consequence": "REPLACE_WITH_CAUSAL_CONSEQUENCE",
+      "entry_from_previous": "REPLACE_WITH_PART_ENTRY_BRIDGE",
+      "exit_to_next": "REPLACE_WITH_CAUSAL_EXIT",
+      "character_cost": "REPLACE_WITH_CHARACTER_COST",
+      "retention_beats": [
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_QUESTION",
+          "new_value": "REPLACE_WITH_NEW_MEANINGFUL_INFORMATION"
+        },
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_CHOICE",
+          "new_value": "REPLACE_WITH_NEW_CONSEQUENCE"
+        }
+      ],
+      "scenes": [
+        {
+          "scene_id": "P05_S01",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P05_S02",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P05_S03",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P05_S04",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P05_S05",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P05_S06",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P05_S07",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P05_S08",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        }
+      ]
+    },
+    {
+      "part": 6,
+      "objective": "REPLACE_WITH_PART_OBJECTIVE",
+      "new_action": "REPLACE_WITH_NEW_ACTION",
+      "new_evidence": "REPLACE_WITH_NEW_EVIDENCE",
+      "consequence": "REPLACE_WITH_CAUSAL_CONSEQUENCE",
+      "entry_from_previous": "REPLACE_WITH_PART_ENTRY_BRIDGE",
+      "exit_to_next": "REPLACE_WITH_CAUSAL_EXIT",
+      "character_cost": "REPLACE_WITH_CHARACTER_COST",
+      "retention_beats": [
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_QUESTION",
+          "new_value": "REPLACE_WITH_NEW_MEANINGFUL_INFORMATION"
+        },
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_CHOICE",
+          "new_value": "REPLACE_WITH_NEW_CONSEQUENCE"
+        }
+      ],
+      "scenes": [
+        {
+          "scene_id": "P06_S01",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P06_S02",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P06_S03",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P06_S04",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P06_S05",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P06_S06",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P06_S07",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P06_S08",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        }
+      ]
+    },
+    {
+      "part": 7,
+      "objective": "REPLACE_WITH_PART_OBJECTIVE",
+      "new_action": "REPLACE_WITH_NEW_ACTION",
+      "new_evidence": "REPLACE_WITH_NEW_EVIDENCE",
+      "consequence": "REPLACE_WITH_CAUSAL_CONSEQUENCE",
+      "entry_from_previous": "REPLACE_WITH_PART_ENTRY_BRIDGE",
+      "exit_to_next": "REPLACE_WITH_CAUSAL_EXIT",
+      "character_cost": "REPLACE_WITH_CHARACTER_COST",
+      "retention_beats": [
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_QUESTION",
+          "new_value": "REPLACE_WITH_NEW_MEANINGFUL_INFORMATION"
+        },
+        {
+          "trigger": "REPLACE_WITH_EVIDENCE_OR_CHOICE",
+          "new_value": "REPLACE_WITH_NEW_CONSEQUENCE"
+        }
+      ],
+      "scenes": [
+        {
+          "scene_id": "P07_S01",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P07_S02",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P07_S03",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P07_S04",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P07_S05",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P07_S06",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P07_S07",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        },
+        {
+          "scene_id": "P07_S08",
+          "location": "REPLACE_WITH_LOCATION",
+          "time": "REPLACE_WITH_DATE_OR_TIME",
+          "objective": "REPLACE_WITH_SCENE_GOAL",
+          "action": "REPLACE_WITH_VISIBLE_CHARACTER_ACTION",
+          "consequence": "REPLACE_WITH_CAUSAL_RESULT"
+        }
+      ]
+    }
+  ],
+  "setup_payoff_map": [
+    {
+      "seed_part": 1,
+      "payoff_part": 4,
+      "seed": "REPLACE_WITH_SEED",
+      "payoff": "REPLACE_WITH_PAYOFF",
+      "causal_link": "REPLACE_WITH_CAUSAL_LINK"
+    },
+    {
+      "seed_part": 2,
+      "payoff_part": 6,
+      "seed": "REPLACE_WITH_SEED",
+      "payoff": "REPLACE_WITH_PAYOFF",
+      "causal_link": "REPLACE_WITH_CAUSAL_LINK"
+    },
+    {
+      "seed_part": 3,
+      "payoff_part": 7,
+      "seed": "REPLACE_WITH_SEED",
+      "payoff": "REPLACE_WITH_PAYOFF",
+      "causal_link": "REPLACE_WITH_CAUSAL_LINK"
+    }
+  ],
+  "character_knowledge_matrix": [
+    {
+      "character": "REPLACE",
+      "knows": "REPLACE",
+      "since_part": 1
+    }
+  ],
+  "evidence_provenance": [
+    {
+      "evidence_id": "REPLACE",
+      "owner": "REPLACE",
+      "access_basis": "REPLACE",
+      "first_seen_part": 1
+    }
+  ],
+  "timeline_constraints": [
+    {
+      "event": "REPLACE",
+      "date": "REPLACE",
+      "relationship": "REPLACE"
+    }
+  ]
+}

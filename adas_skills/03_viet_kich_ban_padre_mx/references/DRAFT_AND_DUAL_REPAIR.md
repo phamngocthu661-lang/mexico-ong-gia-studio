@@ -1,4 +1,4 @@
-# PADRE MX V3 — Draft A/B/C and two separate authorized repair phases
+# PADRE MX V4 — Draft A/B/C and two separate authorized repair phases
 
 STEP3 drafting A/B/C is **not** a repair. It preserves a 7-Part plot with full length and mechanically verified source. Never silently lower 70–80k target.
 

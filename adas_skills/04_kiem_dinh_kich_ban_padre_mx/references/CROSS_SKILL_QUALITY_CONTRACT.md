@@ -1,7 +1,7 @@
-# PADRE MX V3.0 — SHARED CROSS-SKILL CONTRACT (NORMATIVE)
+# PADRE MX V4.0 — SHARED CROSS-SKILL CONTRACT (NORMATIVE)
 
 ## Identity and ownership
-5 independent installable SKILLs control 6 production steps: Title STEP1, Outline STEP2, Writer STEP3 and STEP5, QA STEP4, SEO STEP6. Do not invoke unrequested operations or blend with other genre pipelines. Source of truth: this V3 contract, current controller and owning SKILL. V1.2 single-repair docs and old QA frozen artifacts are incompatible; never re-label them as V3 evidence.
+5 independent installable SKILLs control 6 production steps: Title STEP1, Outline STEP2, Writer STEP3 and STEP5, QA STEP4, SEO STEP6. Do not invoke unrequested operations or blend with other genre pipelines. Source of truth: this V4 contract, current controller and owning SKILL. V1.2 single-repair docs and old QA frozen artifacts are incompatible; never re-label them as V4 evidence.
 
 | Command | Owner | Obligations |
 |---|---|---|
@@ -13,7 +13,7 @@
 | STEP4 ROUND2 | QA | **100% holistic audit** of first revised script: verify logic regressions, hook, plot, retention, voice, tension, character agency, emotional payoff, spelling, grammar, TTS, reality, length. Label zones PASS / NEEDS_IMPROVEMENT / FAIL / BLOCKED, freeze passed quotations. |
 | STEP5 REPAIR2 | Writer | Fix **all verified FAIL and NEEDS_IMPROVEMENT** items, including any remaining/new logic flaws, while leaving PASS spans byte-exact wherever possible. |
 | FINAL VERIFY | QA | After repair2, verify lineage, coverage outcomes, exact final file integrity, protected PASS spans, no P0/P1, and publish verdict. Not a third audit/repair. |
-| STEP6 | SEO | Only exact V3 FINAL PASS; create metadata and exactly two rendered 16:9 PNGs. |
+| STEP6 | SEO | Only exact V4 FINAL PASS; create metadata and exactly two rendered 16:9 PNGs. |
 
 ## Fixed hard gates
 - `CURRENT_FINAL_TITLE` exact es-MX text <=100 Unicode codepoints; `title_sha12 = sha256(title UTF-8)[:12]`.
@@ -37,16 +37,28 @@ Every audit: inspect each of seven parts and all byte ranges; record coverage `t
 ## Round 2 100-point rubric and hard requirements
 Logic causality 25; dialogue/continuity 15; character/knowledge/motivation 15; story hook/architecture/retention 15; twist/payoff 10; emotional authenticity 10; es-MX/TTS 5; ending 5. Target score >=95 with ZERO confirmed P0/P1, zero unresolved actionable issues and exact file/provenance PASS. An average score cannot excuse a logic contradiction.
 
-## Files and provenance (V3 only)
-Auditor + writer each ship `scripts/pmx_v3_pipeline.py` for self-contained command-line validation. Strict original-to-repaired SHA and UTF-8 half-open byte ranges, heading protection, on-disk no-overwrite, immutable untouched bytes and `REPAIR_1_LOCK`/`REPAIR_2_LOCK`. Reviewer must use actual script anchors, not memorized paraphrases; `--user-approved` is only an assertion, not cryptographic identity verification.
+## Files and provenance (V4 only)
+Auditor + writer each ship `scripts/pmx_v4_pipeline.py` for self-contained command-line validation. Strict original-to-repaired SHA and UTF-8 half-open byte ranges, heading protection, on-disk no-overwrite, immutable untouched bytes and `REPAIR_1_LOCK`/`REPAIR_2_LOCK`. Reviewer must use actual script anchors, not memorized paraphrases; `--user-approved` is only an assertion, not cryptographic identity verification.
 
-Main artifacts: `AUDIT_R1_FROZEN.json`, `REPAIR1_CONTRACT.json`, `SCRIPT_REVISED_R1.txt`, `REPAIR1_PROOF.json`, `AUDIT_R2_FROZEN.json`, `REPAIR2_CONTRACT.json`, `SCRIPT_FINAL_R2.txt`, `REPAIR2_PROOF.json`, `QA_FINAL_V3.json`. Audit/repair commands are in the owning SKILL and examples.
+Main artifacts: `AUDIT_R1_FROZEN.json`, `REPAIR1_CONTRACT.json`, `SCRIPT_REVISED_R1.txt`, `REPAIR1_PROOF.json`, `AUDIT_R2_FROZEN.json`, `REPAIR2_CONTRACT.json`, `SCRIPT_FINAL_R2.txt`, `REPAIR2_PROOF.json`, `QA_FINAL_V4.json`. Audit/repair commands are in the owning SKILL and examples.
 
 ## Mexico voice, narrative ethics and truth
 Fictional first-person older Mexican father, es-MX for adult Mexican audience. Events follow earned causal evidence, humane consequences, no legal or medical shortcuts, no crime-as-instruction. Verify niche legal specifics with reliable sources before making firm claims. Source samples provide structural cues only; do not copy names, lines or specific plots. Do not represent fiction as independently verified true history.
 
 ## SEO truth and 80/20 assets
-STEP6 requires `PADRE_MX_QA_FINAL_V3` status `PASS_PUBLISH_READY` with exact hash of the published source, score >=95 and lineage to both frozen audits, plus proof of the final repair if used. No SEO claims from an unapproved draft. EXACTLY two final RGB 16:9 PNGs `THUMBNAIL.png` and `THUMBNAIL-NENXANH.png`, same identical subject cutout, same pixel position. Final text occupies about 78–82% LEFT; male protagonist is 18–22% RIGHT. Green-screen file has uniform RGB(0,255,0) under the same right-side cutout. Deliver real files, not only prompts.
+STEP6 requires `PADRE_MX_QA_FINAL_V4` status `PASS_PUBLISH_READY` with exact hash of the published source, score >=95 and lineage to both frozen audits, plus proof of the final repair if used. No SEO claims from an unapproved draft. EXACTLY two final RGB 16:9 PNGs `THUMBNAIL.png` and `THUMBNAIL-NENXANH.png`, same identical subject cutout, same pixel position. Final text occupies about 78–82% LEFT; male protagonist is 18–22% RIGHT. Green-screen file has uniform RGB(0,255,0) under the same right-side cutout. Deliver real files, not only prompts.
 
 ## Authority
-Actual user command and explicit permissions > this shared contract > `PADRE_MX_STEP_CONTROLLER_V3.md` > owning SKILL > references. In conflicts, preserve hard gates and do not fabricate artifact state. Report unavailable tools/errors transparently. No blanket statement that software can prove literary quality.
+Actual user command and explicit permissions > this shared contract > `PADRE_MX_STEP_CONTROLLER_V4.md` > owning SKILL > references. In conflicts, preserve hard gates and do not fabricate artifact state. Report unavailable tools/errors transparently. No blanket statement that software can prove literary quality.
+
+
+## V4 mandatory orchestration addendum — NO CHANNEL AUDIT / NO MARKET RESEARCH
+- Never require channel crawling, current market data, competitor scraping, vidIQ, analytics, or live keyword demand. Existing supplied 71-title corpus may only serve as an offline creative/duplication reference, not as current market research.
+- STEP1 performs local novelty check against stored project memory `PADRE_MX_PROJECT_MEMORY_V4.json` (if available) and optional existing corpus. Duplicate content is evaluated by **title AND central injustice, leverage, evidence, antagonist cost and earned payoff**, not names alone. Tool produces warnings, not a guarantee of semantic originality.
+- STEP2 creates a standalone `STORY_BLUEPRINT_V4.json` with Creative DNA (primary, 1–2 secondary), story mode, hook strategy, narrative spine, 7-part microbeats, setups/payoffs, character-knowledge map, evidence provenance and time constraints. Verify it with local `padre_v4_planning.py blueprint`. Lock blueprint bytes at STEP2 and pass its unmodified path to STEP3, STEP4 and STEP6.
+- STEP3 maintains independent immutable `LEDGER_INIT.json -> LEDGER_A.json -> LEDGER_B.json -> LEDGER_C.json`, each checkpoint citing source-exact quotes from real persisted A/B/C segments and recording knowledge/evidence deltas, scene value and loops. No changing the blueprint or retroactively editing locked checkpoint files.
+- STEP4 V4 obtains deterministic 7-Part `RANGE_PLAN_V4.json` from `pmx_v4_pipeline.py range-plan`. Every audit round provides `range_evidence` with exact quote, SHA of each planned window, >=3 audited dimensions, and reviewer note per range. `coverage.total_ranges` must equal the real generated windows. This is source anchoring only and cannot prove actual cognitive reading.
+- STEP4/5 V4 still uses exactly TWO audits and at most TWO source-preserving targeted repairs, with `--blueprint STORY_BLUEPRINT_V4.json` supplied to ALL audit, repair and final commands. V4 frozen artifacts are not interchangeable with V3, and no migration by relabeling.
+- Final QA V4 has corrected protected-span counts. PASS overrides must be actually authorized in Round2 patch proof, not merely declared after edits. Score and human judgments are not algorithmic proof of quality.
+- STEP6 additionally requires --blueprint and uses stronger mechanical thumbnail QA (80% left chroma, aligned 20% portrait width, interior pixel equality across the two delivered images). Still requires independent visual inspection; no OCR or semantic identity guarantee.
+- Project Memory may be updated ONLY after final V4 QA passes, by `padre_v4_planning.py register`, with exact blueprint/title/outline/script QA hashes; offline, no external data. Never automatically append unverified candidates.

@@ -1,0 +1,15 @@
+{
+  "part_updates": [
+    {
+      "part": 1,
+      "source_quote": "EXACT_VERBATIM_18_CHAR_PLUS_FROM_THIS_PART",
+      "continuity_bridge": "EXPLAIN_ACTUAL_CAUSAL_PART_CONNECTION",
+      "new_value": "EXPLAIN_ACTUAL_NEW_EVIDENCE_OR_DECISION",
+      "character_change": "EXPLAIN_NEW_CHARACTER_STATE_OR_COST",
+      "knowledge_delta": [],
+      "evidence_delta": [],
+      "open_loops": [],
+      "closed_loops": []
+    }
+  ]
+}

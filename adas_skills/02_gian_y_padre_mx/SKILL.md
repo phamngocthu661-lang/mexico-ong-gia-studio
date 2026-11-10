@@ -1,6 +1,6 @@
 ---
 name: padre-mx-outline-writer
-version: 3.0.0
+version: 4.0.0
 description: "Step2 only. Generate a 7-Part forensic Mexican Spanish father-betrayal outline, continuity canon, and earned legal/emotional payoff from the locked title."
 ---
 # PADRE MX — 7 PART OUTLINE / CANON ENGINE (STEP2 ONLY)
@@ -38,5 +38,15 @@ Ensure each Part has (a) a new family cost, (b) an independent, visible action o
 ## V1.2 outline-to-writer length plan
 Build 7 distinct, nonredundant Parts that can honestly sustain 70,000–80,000 characters, not the 35k–40k half-length observed in some drafts. Lock separate per-stage targets: A (Parts 1–2) 20,000–24,000; B (Parts 3–5) 30,000–35,000; C (Parts 6–7) 20,000–25,000 characters. Each individual Part >=8,500 characters. Preferred total 74k–78k. Add scene objectives and turning points; never pad with repetitive retrospection.
 
-## V3.0 downstream consistency
-Later STEP4/STEP5 use TWO frozen audits and TWO targeted repairs: Round1 logic then Round2 holistic quality. The locked title/7-Part outline must remain stable across both. No editor may silently revise this skill output to hide audit defects. Read V3 shared contract rather than legacy single-repair rules.
+## V4.0 downstream consistency
+Later STEP4/STEP5 use TWO frozen audits and TWO targeted repairs: Round1 logic then Round2 holistic quality. The locked title/7-Part outline must remain stable across both. No editor may silently revise this skill output to hide audit defects. Read V4 shared contract rather than legacy single-repair rules.
+
+
+## V4 STEP2 — Mandatory Story Blueprint & Creative Selector
+Read `references/PADRE_MX_CREATIVE_DNA_V4.md` and build `STORY_BLUEPRINT_V4.json` following `references/STORY_BLUEPRINT_V4_TEMPLATE.json`. Choose one Primary DNA, 1–2 Secondary DNA, one Story Mode, one Hook Pattern and a seven-Part escalation path. Compare candidate twist/evidence against known local project signatures; do not rely on the title alone.
+Each Part must carry eight–twelve distinct scenes, two or more genuine retention beats (new action/proof/consequence), explicit entry/exit causality and a change in character cost. Plan at least three setup→payoff pairs with payoff after seed. Record character knowledge, evidence provenance and time constraints as separate structured lists. A generic slogan is NOT a retention beat.
+After saving true `CURRENT_FINAL_OUTLINE.txt` and the Blueprint, run:
+```
+python scripts/padre_v4_planning.py blueprint --blueprint STORY_BLUEPRINT_V4.json --title "LOCKED_TITLE" --outline CURRENT_FINAL_OUTLINE.txt --memory PADRE_MX_PROJECT_MEMORY_V4.json
+```
+Skip --memory on first project. If FAIL, correct the blueprint BEFORE Step3. A structurally passing blueprint is NOT automatically a good story: evaluate plausibility. Freeze file hash as a new mandatory identity gate. No channel audit or market intelligence.

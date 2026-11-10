@@ -1,13 +1,16 @@
-PADRE MX V3.0 — HOÀN CHỈNH 5 SKILL, 2 VÒNG KIỂM ĐỊNH, TỐI ĐA 2 LẦN SỬA
+PADRE MX 5 SKILLS V4.0 — 2026-11-09
+UPGRADE: TWO AUDITS / MAX TWO REPAIRS + LOCAL STORY INTELLIGENCE (NO CHANNEL AUDIT / NO MARKET RESEARCH)
 
-CÀI ĐẶT:
-1. Vào 01_INSTALL_5_SKILLS/ và cài cả 5 file ZIP ở đó (mỗi ZIP là một SKILL riêng).
-2. Dán hướng dẫn trong 02_CONTROLLER_AND_GUIDES/PADRE_MX_PROJECT_INSTRUCTIONS_COPY_PASTE.md vào Project.
-3. Đọc 02_CONTROLLER_AND_GUIDES/PADRE_MX_STEP_CONTROLLER_V3.md để gọi các bước.
+1. Open folder 01_INSTALL_5_SKILLS and install each of the five .zip files separately.
+2. Copy 02_CONTROLLER_AND_GUIDES/PADRE_MX_PROJECT_INSTRUCTIONS_COPY_PASTE.md into your PADRE MX ChatGPT Project instructions.
+3. Read PADRE_MX_STEP_CONTROLLER_V4.md and V4_QUICK_START_AND_COMMANDS.md for exact commands, workflow and required files.
+4. Keep a separate PADRE_MX_PROJECT_MEMORY_V4.json locally across successful projects, initialized from PROJECT_MEMORY_V4_EMPTY.json. Do NOT scrape channels or require vidIQ.
+5. V4 starts with an immutable STORY_BLUEPRINT_V4.json, Continuity Ledger, audit range evidence, and verified two-image PNGs. All are checked against actual files.
+6. Existing V3 QA/repair artifacts are NOT V4. Use original V3 tool for in-flight projects or migrate safely with freshly checked V4 prerequisites.
 
-QUY TRÌNH: STEP1 TITLE → STEP2 OUTLINE → STEP3 DRAFT (A/B/C) → STEP4 ROUND1 LOGIC AUDIT → STEP5 REPAIR1 LOGIC → STEP4 ROUND2 FULL QUALITY AUDIT → STEP5 REPAIR2 SELECTIVE QUALITY → FINAL VERIFY → STEP6 SEO + 2 THUMBNAILS.
+Package directory:
+  01_INSTALL_5_SKILLS/                5 independently installable ZIP skills
+  02_CONTROLLER_AND_GUIDES/          Controller, project instructions, commands, changelog, tests, blank memory/template
+  SHA256_MANIFEST.txt                checksum of the five inner ZIPs
 
-Kịch bản: tổng 70.000–80.000 Unicode ký tự thân bài; 7 PART; A=20–24k, B=30–35k, C=20–25k; mỗi PART ≥8.500.
-Thumbnails: 2 ảnh cuối, THUMBNAIL.png và THUMBNAIL-NENXANH.png, chữ trái ~80%, nhân vật phải ~20%, nền xanh #00FF00, hình người cùng cutout.
-Mẫu ảnh trong SEO SKILL chỉ là tham chiếu layout. Giữ nguyên toàn bộ nội dung tốt, KHÔNG sửa những PASS zones chỉ vì sở thích.
-Các scripts đã được cập nhật và smoke-tested trên dữ liệu tổng hợp (không phải audit thực tế của một kịch bản người dùng).
+Not included by explicit request: Channel Audit, market research, live competitor analysis, vidIQ mandatory research.

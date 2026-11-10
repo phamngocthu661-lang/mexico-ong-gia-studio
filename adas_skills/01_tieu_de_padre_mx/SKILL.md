@@ -1,6 +1,6 @@
 ---
 name: padre-mx-title-rewriter
-version: 3.0.0
+version: 4.0.0
 description: "Step1 only. Create exactly five high-CTR Mexican Spanish titles for elderly-father family betrayal / earned justice, grounded in supplied benchmark, lock one primary title <=100 Unicode characters."
 ---
 # PADRE MX — TITLE & TOPIC PLANNER (STEP1 ONLY)
@@ -31,5 +31,9 @@ Judge clickability by visible personal loss, specific offender choice, irreversi
 ## V1.2 production promise
 Title must sustain a complete 70,000–80,000-character story across 7 Parts; do not lower character count to match shorter drafts.
 
-## V3.0 downstream consistency
-Later STEP4/STEP5 use TWO frozen audits and TWO targeted repairs: Round1 logic then Round2 holistic quality. The locked title/7-Part outline must remain stable across both. No editor may silently revise this skill output to hide audit defects. Read V3 shared contract rather than legacy single-repair rules.
+## V4.0 downstream consistency
+Later STEP4/STEP5 use TWO frozen audits and TWO targeted repairs: Round1 logic then Round2 holistic quality. The locked title/7-Part outline must remain stable across both. No editor may silently revise this skill output to hide audit defects. Read V4 shared contract rather than legacy single-repair rules.
+
+
+## V4 STEP1 — Offline originality gate (NOT channel audit)
+Use `scripts/padre_v4_planning.py dedup --candidate CANDIDATE.json --memory PADRE_MX_PROJECT_MEMORY_V4.json --corpus references/CHANNEL_CORPUS_71.json` for each proposed winner. `CANDIDATE.json` must contain title and `originality_signature:{central_injustice,leverage,evidence_mechanism,antagonist_cost,earned_payoff}`. Local memory is optional on the first project. Treat `BLOCK` as a rejection/re-design; treat `REVIEW` as a requirement to explain substantial originality. Corpus is a user-supplied historical reference, NOT fresh market data. Output chosen original signature for Step2; do not perform channel or market research.

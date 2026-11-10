@@ -1,8 +1,8 @@
 {
-  "version": "1.0.29",
-  "build_number": 145,
-  "released_at": "2026-11-10 09:49:33",
+  "version": "1.0.30",
+  "build_number": 146,
+  "released_at": "2026-11-10 10:48:13",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.29 (Build #145): Khi xóa tiêu đề chỉ xóa thư mục bên Folder Project (projects_dir), giữ nguyên 100% thư mục và video bên Folder Xuất Ra Video (final_video_dir)"
+  "changelog": "V1.0.30 (Build #146): Nâng cấp trọn bộ 5-Skill ADAS & Engine lên PADRE MX V4.0 (Originality Signature 5 trường + Bộ nhớ chống trùng lặp nội bộ PADRE_MX_PROJECT_MEMORY_V4.json, Creative DNA V4 + Story Blueprint V4 8-12 cảnh/Part, Continuity Ledger V4, Kiểm định 2 vòng Pass Zone Freeze + QA_FINAL_V4.json), giữ nguyên 100% cơ chế tạo THUMBNAIL-NENXANH.png khổ dọc 9:16 bằng ChatGPT từ ảnh tham chiếu."
 }

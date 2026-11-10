@@ -1,3 +1,2 @@
-3.0.0
-SOURCE: PADRE MX V1.2.1 HOTFIX (retained content and 80/20 thumbnail layout)
-INTEGRATION: two full audits; two controlled repairs; final verification.
+PADRE MX 5 SKILLS 4.0.0 — 2026-11-09
+V4: local originality, story blueprint, continuity ledger, range-attested dual QA, stronger green-screen pixel QA.

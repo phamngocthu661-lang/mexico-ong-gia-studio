@@ -1,6 +1,6 @@
 ---
 name: padre-mx-script-writer
-version: 3.0.0
+version: 4.0.0
 description: "PADRE MX STEP3 full seven-Part es-MX draft in A/B/C with 70k–80k verified characters; STEP5 executes maximum two QA-authorized source-anchored targeted repairs (R1 logic, R2 holistic), protecting all passed prose."
 ---
 # PADRE MX — 3-STAGE SCRIPT WRITER + TWO CONTROLLED REPAIRS
@@ -29,7 +29,7 @@ Only start if user authorized STEP5 REPAIR1 and auditor produced `AUDIT_R1_FROZE
 
 Fix conversation turns, missing intermediary action, object provenance, time/space continuity, evidence rights, contradicting ages/money, motivative and causality breakdowns. Fix ROOT CAUSE and dependent paragraphs; do not change good material, do not invent new story canon. If an issue is blocked without source, explicitly report BLOCKED, do not pretend solved. Write `REPAIR1_REPLACEMENTS.json`, one zone entry per contract, plus a full `REPAIR1_CHANGELOG.md` mapping ID → exact replacement and downstream tests.
 ```
-python scripts/pmx_v3_pipeline.py repair --round 1 --script FULL_SCRIPT.txt --audit AUDIT_R1_FROZEN.json --contract REPAIR1_CONTRACT.json --replacements REPAIR1_REPLACEMENTS.json --title "LOCKED_TITLE" --outline-file FINAL_OUTLINE.txt --user-approved --out SCRIPT_REVISED_R1.txt --proof REPAIR1_PROOF.json
+python scripts/pmx_v4_pipeline.py repair --round 1 --script FULL_SCRIPT.txt --audit AUDIT_R1_FROZEN.json --contract REPAIR1_CONTRACT.json --replacements REPAIR1_REPLACEMENTS.json --title "LOCKED_TITLE" --outline-file FINAL_OUTLINE.txt --user-approved --out SCRIPT_REVISED_R1.txt --proof REPAIR1_PROOF.json
 ```
 The tool verifies heading/length, SHA, exact untouched bytes, exact zones, and an on-disk one-use repair lock. It does **not** validate literary repairs; independent STEP4 ROUND2 must review the entire revised source.
 
@@ -38,9 +38,24 @@ Only after independently frozen `AUDIT_R2_FROZEN.json` and `REPAIR2_CONTRACT.jso
 
 **PASS ZONE FREEZE:** Keep passages marked PASS absolutely unchanged unless strictly necessary to repair a causally dependent confirmed issue. In exceptional cases auditor must provide `pass_dependency_override_ids` and >=35-character reason in zone spec, then writer must document why no smaller edit resolves the issue. The automated contract prevents all other intersections with protected PASS quotes. No subjective rewrite of strong prose; no replacing entire Parts when a narrow fix suffices; no delete-to-hide-error or padding.
 ```
-python scripts/pmx_v3_pipeline.py repair --round 2 --script SCRIPT_REVISED_R1.txt --audit AUDIT_R2_FROZEN.json --contract REPAIR2_CONTRACT.json --replacements REPAIR2_REPLACEMENTS.json --title "LOCKED_TITLE" --outline-file FINAL_OUTLINE.txt --user-approved --out SCRIPT_FINAL_R2.txt --proof REPAIR2_PROOF.json
+python scripts/pmx_v4_pipeline.py repair --round 2 --script SCRIPT_REVISED_R1.txt --audit AUDIT_R2_FROZEN.json --contract REPAIR2_CONTRACT.json --replacements REPAIR2_REPLACEMENTS.json --title "LOCKED_TITLE" --outline-file FINAL_OUTLINE.txt --user-approved --out SCRIPT_FINAL_R2.txt --proof REPAIR2_PROOF.json
 ```
 After real REPAIR2, stop edits. Recommend QA FINAL VERIFY, not another rewrite. If no confirmed issue in either audit, skip that repair permanently: unused allowance cannot be spent later as REPAIR3. Do not overwrite any baseline, frozen review, proof, or output.
 
 ## Non-negotiable editorial principles
 Preserve unbroken story voice and locked facts, exact key title promise, strong scene lines, foreshadowing and payoffs. For each changed zone check previous two and next two scenes, character knowledge, timestamps, grammar agreement, and real social/legal permissions. Compute counts on actual files. Writer cannot self-issue quality scores or PASS_PUBLISH_READY. If tooling unavailable, do not claim a verified file exists. No legacy ONE_REPAIR scripts or V1 SHA proofs accepted.
+
+
+## V4 STEP3 — Narrative continuity checkpoints (required)
+Read the exact locked `STORY_BLUEPRINT_V4.json`; never alter its SHA. Before A, create the bound ledger:
+```
+python scripts/padre_v4_ledger.py create --blueprint STORY_BLUEPRINT_V4.json --outline CURRENT_FINAL_OUTLINE.txt --out LEDGER_INIT.json
+```
+After each actual persisted stage, prepare `LEDGER_STAGE_A_REPORT.json` / B / C containing one `part_updates` entry per Part: `{part,source_quote,continuity_bridge,new_value,character_change,knowledge_delta:[],evidence_delta:[],open_loops:[],closed_loops:[]}`. The source quote must occur verbatim in that Part. Then run:
+```
+python scripts/padre_v4_ledger.py checkpoint --ledger LEDGER_INIT.json --segment STAGE_A.txt --stage A --report LEDGER_STAGE_A_REPORT.json --out LEDGER_A.json
+python scripts/padre_v4_ledger.py checkpoint --ledger LEDGER_A.json --segment STAGE_B.txt --stage B --report LEDGER_STAGE_B_REPORT.json --out LEDGER_B.json
+python scripts/padre_v4_ledger.py checkpoint --ledger LEDGER_B.json --segment STAGE_C.txt --stage C --report LEDGER_STAGE_C_REPORT.json --out LEDGER_C.json
+```
+Use actual segment filenames. Do not claim ledger assures truth; it binds the editor's stated character knowledge/evidence and open/closed loops to real source texts. Preserve original stage-count and A/B/C manifest validation.
+For both REPAIR commands, the V4 pipeline *requires* `--blueprint STORY_BLUEPRINT_V4.json` in addition to original arguments; all Round1/2 source and contract hashes remain immutable.

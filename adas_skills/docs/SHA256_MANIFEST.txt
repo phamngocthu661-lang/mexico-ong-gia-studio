@@ -1,5 +1,7 @@
-ad269265afb7dcfb8447a39140e4c66acc10bb19895d7018db8d2397b8f001b2  01_INSTALL_5_SKILLS/01_tieu-de-padre-mx_V3.0.zip  (23223 bytes)
-67540cff9d907a3f80480a9734ae7737762d9c8739602bbac6aeab1059ba5703  01_INSTALL_5_SKILLS/02_dan-y-padre-mx_V3.0.zip  (23215 bytes)
-f8f9050559dcc5e90109d0ba2e9ca59a736653fd0d958076093fc951fecc93ef  01_INSTALL_5_SKILLS/03_viet-kich-ban-padre-mx_V3.0.zip  (43718 bytes)
-03b9a9b6361636c42c271d5115f3e3151c1f5c70ef19e16ca0ac5266e9f09670  01_INSTALL_5_SKILLS/04_kiem-dinh-kich-ban-padre-mx_V3.0.zip  (45957 bytes)
-cf3eb1ca3f4b2293a878d88a2cf78b361623e8c8b594f2505fa09ba8de76524f  01_INSTALL_5_SKILLS/05_seo-thumbnail-padre-mx_V3.0.zip  (2352723 bytes)
+PADRE MX V4.0 SHA256 MANIFEST — SHA256 of five independently installable inner archives
+
+70a6a50444e5972647a82a318d80dfed716a1330036dafbbc4bc17786d33c492  01_INSTALL_5_SKILLS/01_tieu-de-padre-mx_V4.0.zip
+62e5652be2944c00acf4f8e7b0e6bdf1d359839280f0a748b115181a58e1d78b  01_INSTALL_5_SKILLS/02_dan-y-padre-mx_V4.0.zip
+a0d47aa076a066c84676b205d7ee23d8dd1a93c3de787f701f3bc1fbcb4a7ed2  01_INSTALL_5_SKILLS/03_viet-kich-ban-padre-mx_V4.0.zip
+1050196533ef2562b34e946c8240fd88a8d13394b5a09d495c7b7c90b4720cde  01_INSTALL_5_SKILLS/04_kiem-dinh-kich-ban-padre-mx_V4.0.zip
+d6588f6e1e6d15cb7e482393967557681172c546933e168c5ce7069b4bd206d8  01_INSTALL_5_SKILLS/05_seo-thumbnail-padre-mx_V4.0.zip
