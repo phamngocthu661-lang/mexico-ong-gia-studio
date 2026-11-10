@@ -4866,10 +4866,13 @@ class ADASScriptEngine:
                 pass
         return None
 
-    def _list_all_existing_project_ids_on_disk(self) -> Dict[str, Path]:
+    def _list_all_existing_project_ids_on_disk(
+        self, include_final_video_dir: bool = False
+    ) -> Dict[str, Path]:
         """
-        Quét đồng thời cả `projects_dir` (Folder Project) và `final_video_dir` (Nơi Chứa Video Cuối)
-        để trả về bảng ánh xạ `{ma_id: project_dir}` giúp ứng dụng luôn load được 100% dự án và MP4!
+        Quét thư mục `projects_dir` (Folder Project) để trả về bảng ánh xạ `{ma_id: project_dir}`.
+        Khi `include_final_video_dir=True` (dùng cho bộ đếm STT không trùng mã), quét thêm cả `final_video_dir`
+        ở chế độ chỉ đọc (tuyệt đối không xóa bất kỳ thư mục/file nào bên folder xuất ra video).
         """
         found: Dict[str, Path] = {}
         ignore_names = {
@@ -4885,31 +4888,28 @@ class ADASScriptEngine:
             nm = d.name.strip()
             return (0, int(nm)) if nm.isdigit() else (1, nm.lower())
 
-        f_dir = getattr(self, "final_video_dir", None)
-        if f_dir and Path(f_dir).exists():
-            try:
-                f_path = Path(f_dir)
-                if f_path.resolve() != self.projects_dir.resolve():
-                    for d in sorted(f_path.iterdir(), key=_natural_dir_sort_key):
-                        if d.is_dir():
-                            nm = d.name.strip()
-                            if (d / ".deleted_by_user").exists():
-                                self._mark_ids_deleted([nm])
-                                self._force_rmtree_path(d)
-                                continue
-                            if (
-                                nm
-                                and not nm.startswith(".")
-                                and not nm.startswith("_")
-                                and nm.lower() not in ignore_names
-                            ):
-                                found[nm] = d
-                        elif d.is_file() and d.name.endswith("_master.mp4"):
-                            mid_mp4 = d.name[: -len("_master.mp4")].strip()
-                            if mid_mp4 and mid_mp4 not in found:
-                                found[mid_mp4] = f_path
-            except Exception:
-                pass
+        if include_final_video_dir:
+            f_dir = getattr(self, "final_video_dir", None)
+            if f_dir and Path(f_dir).exists():
+                try:
+                    f_path = Path(f_dir)
+                    if f_path.resolve() != self.projects_dir.resolve():
+                        for d in sorted(f_path.iterdir(), key=_natural_dir_sort_key):
+                            if d.is_dir():
+                                nm = d.name.strip()
+                                if (
+                                    nm
+                                    and not nm.startswith(".")
+                                    and not nm.startswith("_")
+                                    and nm.lower() not in ignore_names
+                                ):
+                                    found[nm] = d
+                            elif d.is_file() and d.name.endswith("_master.mp4"):
+                                mid_mp4 = d.name[: -len("_master.mp4")].strip()
+                                if mid_mp4 and mid_mp4 not in found:
+                                    found[mid_mp4] = f_path
+                except Exception:
+                    pass
 
         if self.projects_dir.exists():
             try:
@@ -5020,7 +5020,9 @@ class ADASScriptEngine:
                 if s.isdigit() and int(s) > max_id:
                     max_id = int(s)
 
-        for sx in self._list_all_existing_project_ids_on_disk().keys():
+        for sx in self._list_all_existing_project_ids_on_disk(
+            include_final_video_dir=True
+        ).keys():
             s = str(sx).strip()
             if s:
                 used_ids.add(s)
@@ -5096,8 +5098,9 @@ class ADASScriptEngine:
 
     def _force_delete_project_folder_and_files(self, ma_id: str) -> List[str]:
         """
-        Xóa sạch 100% thư mục dự án của mã tiêu đề (`projects/{ma_id}`) cùng toàn bộ các file/thư mục liên quan
-        (kịch bản, câu thoại TTS, ảnh thumbnail, ảnh nền xanh, bộ đệm render, thư mục xuất video...).
+        Khi xóa tiêu đề: CHỈ xóa thư mục dự án bên trong `projects_dir` (`projects/{ma_id}`)
+        và thư mục render tạm (`ssd_staging_dir/{ma_id}`).
+        TUYỆT ĐỐI KHÔNG XÓA bất kỳ thư mục hay file video nào bên trong `final_video_dir` (folder xuất ra video).
         """
         target = str(ma_id or "").strip()
         reserved_names = {
@@ -5119,56 +5122,62 @@ class ADASScriptEngine:
         if target.lower() in reserved_names:
             return []
 
-        candidates: List[Path] = []
-        try:
-            mp4_resolved = self.resolve_project_mp4_path(target)
-            if mp4_resolved is not None:
-                candidates.append(mp4_resolved)
-                if (
-                    mp4_resolved.parent.name.lower() == "renders"
-                    and mp4_resolved.parent.parent.name == target
-                ):
-                    candidates.append(mp4_resolved.parent.parent)
-                elif mp4_resolved.parent.name == target:
-                    candidates.append(mp4_resolved.parent)
-        except Exception:
-            pass
-
-        if getattr(self, "projects_dir", None):
-            p_root = Path(self.projects_dir)
-            candidates.extend(
-                [
-                    p_root / target,
-                    p_root / "ssd_render_staging" / target,
-                    p_root / "renders" / f"{target}_master.mp4",
-                    p_root / "renders" / f"_{target}_master_resume_cache",
-                    p_root / f"{target}_master.mp4",
-                ]
-            )
-
         f_dir = getattr(self, "final_video_dir", None)
+        f_root_resolved: Optional[Path] = None
         if f_dir:
-            f_root = Path(f_dir)
+            try:
+                f_root_resolved = Path(f_dir).resolve()
+            except Exception:
+                f_root_resolved = Path(f_dir)
+
+        p_root_resolved: Optional[Path] = None
+        if getattr(self, "projects_dir", None):
+            try:
+                p_root_resolved = Path(self.projects_dir).resolve()
+            except Exception:
+                p_root_resolved = Path(self.projects_dir)
+
+        is_separate_final_dir = bool(
+            f_root_resolved and p_root_resolved and f_root_resolved != p_root_resolved
+        )
+
+        candidates: List[Path] = []
+        if p_root_resolved is not None:
             candidates.extend(
                 [
-                    f_root / target,
-                    f_root / "ssd_render_staging" / target,
-                    f_root / "renders" / f"{target}_master.mp4",
-                    f_root / "renders" / f"_{target}_master_resume_cache",
-                    f_root / f"{target}_master.mp4",
+                    p_root_resolved / target,
+                    p_root_resolved / "ssd_render_staging" / target,
                 ]
             )
+
+        ssd_dir = getattr(self, "ssd_staging_dir", None)
+        if ssd_dir:
+            try:
+                ssd_root = Path(ssd_dir).resolve()
+                if not (f_root_resolved and ssd_root == f_root_resolved):
+                    candidates.append(ssd_root / target)
+            except Exception:
+                pass
 
         deleted_paths: List[str] = []
         seen: set[str] = set()
         for cand in candidates:
             try:
-                c_str = str(cand.resolve()) if cand.exists() else str(cand)
+                c_res = cand.resolve() if cand.exists() else cand
+                c_str = str(c_res)
             except Exception:
+                c_res = cand
                 c_str = str(cand)
             if c_str in seen:
                 continue
             seen.add(c_str)
+            # Chốt chặn an toàn: Nếu đường dẫn nằm trong thư mục xuất video riêng (final_video_dir) -> BỎ QUA, KHÔNG XÓA!
+            if is_separate_final_dir and f_root_resolved is not None:
+                try:
+                    c_res.relative_to(f_root_resolved)
+                    continue
+                except Exception:
+                    pass
             if cand.exists():
                 if self._force_rmtree_path(cand):
                     deleted_paths.append(str(cand))
