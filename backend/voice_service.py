@@ -324,9 +324,11 @@ def build_capcut_karaoke_box_ass(
     center_x = int(opts.get("centerX", round(width * 0.372)))
     center_y = int(opts.get("centerY", round(height * 0.875)))
     max_words_per_line = int(
-        opts.get("maxWordsPerLine") or opts.get("max_words_per_line") or 5
+        opts.get("maxWordsPerLine") or opts.get("max_words_per_line") or 10
     )
-    max_chars_per_line = int(opts.get("maxCharsPerLine") or 26)
+    max_chars_per_line = int(opts.get("maxCharsPerLine") or 52)
+    if max_chars_per_line < max_words_per_line * 5:
+        max_chars_per_line = max_words_per_line * 5 + 2
 
     text_color_bgr = hex_to_ass_bgr(opts.get("textColor", "#FFFF00"), "00FFFF")
     box_color_bgr = hex_to_ass_bgr(opts.get("boxColor", "#7C00FF"), "FF007C")
@@ -335,6 +337,7 @@ def build_capcut_karaoke_box_ass(
     phrases: List[List[Dict[str, Any]]] = []
     cur: List[Dict[str, Any]] = []
     cur_chars = 0
+    comma_word_threshold = max(6, (max_words_per_line * 3) // 5)
 
     for idx, item in enumerate(word_timings or []):
         w = str(item.get("word", "")).strip()
@@ -349,7 +352,10 @@ def build_capcut_karaoke_box_ass(
             or next_chars > max_chars_per_line
             or gap_from_prev > 0.45
             or bool(prev and prev.get("hasPause"))
-            or (bool(prev and prev.get("hasComma")) and len(cur) >= 3)
+            or (
+                bool(prev and prev.get("hasComma"))
+                and (len(cur) >= comma_word_threshold or cur_chars >= 28)
+            )
         )
         if should_split:
             phrases.append(cur)
@@ -404,13 +410,13 @@ def build_capcut_karaoke_box_ass(
     pad_y = max(8, round(font_size * 0.125) + 1)
     corner_r = max(10, round(font_size * 0.18) + 1)
 
-    # Chiều cao thực tế của chữ in hoa (Cap Height) và tâm dọc thực tế khi libass vẽ với \an5
+    # Chiều cao thực tế của chữ in hoa (Cap Height) và khoảng cách dòng khi câu dài tự xuống 2 dòng
     cap_height = float(font_size) * LIBASS_UPPERCASE_CAP_HEIGHT_RATIO
-    glyph_center_y = (
-        float(center_y) + float(font_size) * LIBASS_UPPERCASE_CENTER_Y_OFFSET_RATIO
-    )
-    box_top = glyph_center_y - (cap_height / 2.0) - pad_y
-    box_bottom = glyph_center_y + (cap_height / 2.0) + pad_y
+    single_box_h = cap_height + (pad_y * 2.0)
+    line_step_y = single_box_h + max(10.0, float(font_size) * 0.16)
+    max_single_line_words = max(4, min(6, (max_words_per_line + 1) // 2))
+    max_single_line_chars = max(24, max_chars_per_line // 2)
+    max_single_line_px = float(opts.get("boxWidth") or round(width * 0.72)) * 0.94
 
     for p_idx, phrase in enumerate(phrases):
         if not phrase:
@@ -428,42 +434,98 @@ def build_capcut_karaoke_box_ass(
             measure_capcut_word_metrics(w["upper"], font_size) for w in phrase
         ]
         total_w = sum(m[0] for m in word_metrics) + space_w * max(0, len(phrase) - 1)
-        cursor_x = float(center_x) - (total_w / 2.0)
+        phrase_chars = sum(len(w["upper"]) for w in phrase) + max(0, len(phrase) - 1)
+
+        # Nếu đoạn sub dài (> 5 từ hoặc > 26 ký tự hoặc vượt chiều ngang 1 dòng) -> Tự động chia thành 2 dòng cân đối
+        if len(phrase) >= 2 and (
+            len(phrase) > max_single_line_words
+            or phrase_chars > max_single_line_chars
+            or total_w > max_single_line_px
+        ):
+            best_k = max(1, len(phrase) // 2)
+            best_score = float("inf")
+            for k in range(1, len(phrase)):
+                w1 = sum(m[0] for m in word_metrics[:k]) + space_w * max(0, k - 1)
+                w2 = sum(m[0] for m in word_metrics[k:]) + space_w * max(
+                    0, len(phrase) - k - 1
+                )
+                score = abs(w1 - w2)
+                if phrase[k - 1].get("hasComma"):
+                    score *= 0.65
+                if max(w1, w2) > max_single_line_px * 1.08:
+                    score += (max(w1, w2) - max_single_line_px) * 2.0
+                if score < best_score:
+                    best_score = score
+                    best_k = k
+            lines_data = [
+                (phrase[:best_k], word_metrics[:best_k]),
+                (phrase[best_k:], word_metrics[best_k:]),
+            ]
+            cy_top = float(center_y) - (line_step_y / 2.0)
+            cy_bot = float(center_y) + (line_step_y / 2.0)
+            bottom_limit = float(height) - 16.0 - (single_box_h / 2.0)
+            if cy_bot > bottom_limit:
+                shift_up = cy_bot - bottom_limit
+                cy_top -= shift_up
+                cy_bot -= shift_up
+            line_cys = [int(round(cy_top)), int(round(cy_bot))]
+        else:
+            lines_data = [(phrase, word_metrics)]
+            line_cys = [int(round(center_y))]
 
         p_start_str = format_ass_time(p_start)
         p_end_str = format_ass_time(p_end)
 
-        for w_idx, w in enumerate(phrase):
-            adv_w, ink_w, ink_offset_x = word_metrics[w_idx]
-            word_cx = cursor_x + (adv_w / 2.0)
-            word_cx_int = int(round(word_cx))
-
-            # Layer 1 (Trên hộp màu): Đặt từng từ độc lập bằng \an5\pos(word_cx, center_y)
-            # -> Đảm bảo libass căn tâm chữ của chính từ đó tại đúng word_cx, triệt tiêu 100% sai số cộng dồn!
-            clean_word = escape_ass_text(w["upper"])
-            events.append(
-                f"Dialogue: 1,{p_start_str},{p_end_str},CapCutText,,0,0,0,,"
-                f"{{\\an5\\pos({word_cx_int},{center_y})}}{clean_word}"
+        global_w_idx = 0
+        for (line_words, line_metrics), line_cy in zip(lines_data, line_cys):
+            line_glyph_cy = (
+                float(line_cy)
+                + float(font_size) * LIBASS_UPPERCASE_CENTER_Y_OFFSET_RATIO
             )
-
-            # Layer 0 (Dưới chữ): Hộp màu Karaoke có tâm trùng khít 100% với tâm mực chữ của từ đang đọc
-            w_start = w["start"]
-            next_word = phrase[w_idx + 1] if w_idx + 1 < len(phrase) else None
-            w_end = max(w_start + 0.04, next_word["start"] if next_word else p_end)
-
-            visual_word_cx = float(word_cx_int) + ink_offset_x
-            box_l = visual_word_cx - (ink_w / 2.0) - pad_x
-            box_r = visual_word_cx + (ink_w / 2.0) + pad_x
-            rect_path = build_ass_rounded_rect_path(
-                box_l, box_top, box_r, box_bottom, corner_r
+            line_box_top = line_glyph_cy - (cap_height / 2.0) - pad_y
+            line_box_bottom = line_glyph_cy + (cap_height / 2.0) + pad_y
+            line_total_w = sum(m[0] for m in line_metrics) + space_w * max(
+                0, len(line_words) - 1
             )
+            cursor_x = float(center_x) - (line_total_w / 2.0)
 
-            events.append(
-                f"Dialogue: 0,{format_ass_time(w_start)},{format_ass_time(w_end)},CapCutBox,,0,0,0,,"
-                f"{{\\an7\\pos(0,0)\\1c&H{box_color_bgr}&\\3c&H{box_color_bgr}&\\bord0\\shad0\\p1}}{rect_path}{{\\p0}}"
-            )
+            for lw_idx, w in enumerate(line_words):
+                adv_w, ink_w, ink_offset_x = line_metrics[lw_idx]
+                word_cx = cursor_x + (adv_w / 2.0)
+                word_cx_int = int(round(word_cx))
 
-            cursor_x += adv_w + space_w
+                # Layer 1 (Trên hộp màu): Đặt từng từ độc lập bằng \an5\pos(word_cx, line_cy)
+                clean_word = escape_ass_text(w["upper"])
+                events.append(
+                    f"Dialogue: 1,{p_start_str},{p_end_str},CapCutText,,0,0,0,,"
+                    f"{{\\an5\\pos({word_cx_int},{line_cy})}}{clean_word}"
+                )
+
+                # Layer 0 (Dưới chữ): Hộp màu Karaoke nhảy tuần tự từ Dòng 1 xuống Dòng 2
+                w_start = w["start"]
+                next_word = (
+                    phrase[global_w_idx + 1]
+                    if global_w_idx + 1 < len(phrase)
+                    else None
+                )
+                w_end = max(
+                    w_start + 0.04, next_word["start"] if next_word else p_end
+                )
+
+                visual_word_cx = float(word_cx_int) + ink_offset_x
+                box_l = visual_word_cx - (ink_w / 2.0) - pad_x
+                box_r = visual_word_cx + (ink_w / 2.0) + pad_x
+                rect_path = build_ass_rounded_rect_path(
+                    box_l, line_box_top, box_r, line_box_bottom, corner_r
+                )
+
+                events.append(
+                    f"Dialogue: 0,{format_ass_time(w_start)},{format_ass_time(w_end)},CapCutBox,,0,0,0,,"
+                    f"{{\\an7\\pos(0,0)\\1c&H{box_color_bgr}&\\3c&H{box_color_bgr}&\\bord0\\shad0\\p1}}{rect_path}{{\\p0}}"
+                )
+
+                cursor_x += adv_w + space_w
+                global_w_idx += 1
 
     return header + "\n" + "\n".join(events) + "\n"
 
@@ -1557,7 +1619,7 @@ def strip_leaked_titles_and_metadata(raw_text: str):
 
 
 _ES_ABBREV_RE = _re_mod.compile(
-    r"\b(?:Sr|Sra|Srta|Dr|Dra|Lic|Ing|Arq|Prof|Profa|Gral|Cnel|Cap|Tte|Av|Col|Fracc|Blvd|No|Núm|Art|Inc|Corp|Tel|C\.P|Uds|Ud)\.$",
+    r"\b(?:Sr|Sra|Srta|Dr|Dra|Lic|Ing|Arq|Prof|Profa|Gral|Cnel|Cap|Tte|Av|Col|Fracc|Blvd|No|Núm|Art|Inc|Corp|Tel|C\.P|Uds|Ud|Mr|Mrs|Ms|Jr|St|Gen|Sgt|Lt|Maj|Capt|Rev|Gov|Sen|Rep|Dept|Mt|Ft|Ave|Rd|Ln|Ct|Co|Ltd|vs|etc|U\.S|U\.K)\.$",
     _re_mod.IGNORECASE,
 )
 

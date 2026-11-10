@@ -1073,8 +1073,8 @@
                   </div>
                 </div>
                 <div class="flex items-center gap-1.5 text-[10.5px] font-mono text-on-surface-variant shrink-0">
-                  <span>Số từ/dòng:</span>
-                  <input class="w-12 h-7 px-1 text-center rounded bg-surface-container-low text-primary font-mono text-xs font-bold border border-surface-container-high focus:outline-none" id="karaoke-maxwords-input" max="12" min="2" step="1" title="Số từ tối đa trên 1 dòng phụ đề Karaoke" type="number" value="5"/>
+                  <span>Số từ/đoạn (Tự xuống 2 dòng):</span>
+                  <input class="w-12 h-7 px-1 text-center rounded bg-surface-container-low text-primary font-mono text-xs font-bold border border-surface-container-high focus:outline-none" id="karaoke-maxwords-input" max="20" min="2" step="1" title="Số từ tối đa trên 1 đoạn phụ đề Karaoke (Mặc định 10 từ • Dài tự động xuống 2 dòng)" type="number" value="10"/>
                 </div>
               </div>
             </div>
@@ -1144,7 +1144,7 @@
                   <span class="px-1 py-0.1 rounded bg-amber-400 text-black font-mono text-[8px] font-extrabold">LỚP #1 • SUB KARAOKE</span>
                   <span class="text-[8px] font-mono text-amber-200" id="preview-karaoke-pos-tag">Cỡ chữ: 64px (Chính giữa khung)</span>
                 </div>
-                <div class="w-full h-full flex items-center justify-center gap-x-2 font-extrabold uppercase tracking-normal whitespace-nowrap pointer-events-none leading-none" id="preview-karaoke-words" style="font-family: Arial, sans-serif; font-size: 20px; color: #FFFF00; text-shadow: -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 4px rgba(0,0,0,0.95);">
+                <div class="w-full h-full flex flex-col items-center justify-center gap-y-1 font-extrabold uppercase tracking-normal whitespace-nowrap pointer-events-none leading-none" id="preview-karaoke-words" style="font-family: Arial, sans-serif; font-size: 20px; color: #FFFF00; text-shadow: -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 4px rgba(0,0,0,0.95);">
                   <span>CENA</span>
                   <span class="inline-flex items-center justify-center px-2 py-1 rounded-md bg-[#7C00FF] text-[#FFFF00] shadow-[0_0_10px_rgba(124,0,255,0.65)] leading-none" id="preview-karaoke-active-box">FAMILIAR</span>
                   <span>SIN</span>
@@ -1910,6 +1910,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=20261110_v149"></script>
+  <script src="app.js?v=20261110_v150"></script>
 </body>
 </html>

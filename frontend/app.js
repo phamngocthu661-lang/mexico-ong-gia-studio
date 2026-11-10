@@ -5334,7 +5334,7 @@ document.addEventListener("DOMContentLoaded", () => {
       canvas_width: 1920,
       canvas_height: 1080,
       stock_darken: { brightness: -0.12, contrast: 1.05, saturation: 0.92 },
-      subtitle_karaoke: { enabled: true, x: 70, y: 910, width: 1340, height: 110, fontSize: 52, font_size: 52, maxWordsPerLine: 5, max_words_per_line: 5 },
+      subtitle_karaoke: { enabled: true, x: 70, y: 910, width: 1340, height: 110, fontSize: 52, font_size: 52, maxWordsPerLine: 10, max_words_per_line: 10, maxCharsPerLine: 52 },
       script_character_green: { enabled: true, x: 1410, y: 300, width: 490, height: 780, opacity: 0.90, snapBottom: true, locked_bottom: true },
       green_video_layers: [
         { id: "layer_nen_den", name: "NÈN DEN.jpg", file: "NÈN DEN.jpg", enabled: true, x: 0, y: 830, width: 1920, height: 250, opacity: 0.78, zIndex: 10, chromaKey: false, keyColor: "#00FF00" },
@@ -5355,7 +5355,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const sBg = raw.stock_darken || raw.stock_background || layoutState.stock_darken || {};
 
       const fs = Math.max(20, Math.min(110, Math.round(Number(sSub.fontSize ?? sSub.font_size ?? 52))));
-      const mw = Math.max(2, Math.min(12, Math.round(Number(sSub.maxWordsPerLine ?? sSub.max_words_per_line ?? 5))));
+      const mw = Math.max(2, Math.min(20, Math.round(Number(sSub.maxWordsPerLine ?? sSub.max_words_per_line ?? 10))));
       const subW = Math.max(260, Math.min(1880, Math.round(Number(sSub.width ?? 1340))));
       const subH = Math.max(60, Math.min(380, Math.round(Number(sSub.height ?? 110))));
       const subX = Math.max(0, Math.min(1920 - subW, Math.round(Number(sSub.x ?? (sSub.centerX ? sSub.centerX - subW / 2 : 70)))));
@@ -5424,17 +5424,17 @@ document.addEventListener("DOMContentLoaded", () => {
     let selectedTarget = { type: "karaoke_sub" };
     const mediaElementsMap = new Map();
 
-    // 1. Hiệu ứng chạy chữ Karaoke (CapCut Word-by-Word Box) ở Lớp #1 Cao Nhất — Đồng bộ 1:1 với .ASS Renderer
+    // 1. Hiệu ứng chạy chữ Karaoke (CapCut Word-by-Word Box 1–2 dòng) ở Lớp #1 Cao Nhất — Đồng bộ 1:1 với .ASS Renderer
     const sampleKaraokeLines = [
+      ["MI", "HIJO", "Y", "MI", "NUERA", "ME", "ECHARON", "DE", "LA", "CASA"],
+      ["PERO", "EL", "NOTARIO", "LEYÓ", "LA", "CLÁUSULA", "DE", "DONACIÓN", "REVOCABLE"],
       ["CENA", "FAMILIAR", "SIN", "SABER", "NADA"],
-      ["VEINTE", "MIL", "EUROS", "EN", "LA"],
-      ["MI", "YERNO", "ME", "PIDIÓ", "TODO"],
     ];
     let kLineIdx = 0;
     let kWordIdx = 0;
     setInterval(() => {
       if (!karaokeWordsEl) return;
-      const maxW = Math.max(2, Math.min(12, Number(layoutState.subtitle_karaoke?.maxWordsPerLine || 5)));
+      const maxW = Math.max(2, Math.min(20, Number(layoutState.subtitle_karaoke?.maxWordsPerLine || 10)));
       const fs = Math.max(20, Math.min(110, Math.round(Number(layoutState.subtitle_karaoke?.fontSize ?? 78))));
       const pWidth = (previewContainer && previewContainer.clientWidth > 100) ? previewContainer.clientWidth : 780;
       const previewScale = pWidth / 1920;
@@ -5443,13 +5443,29 @@ document.addEventListener("DOMContentLoaded", () => {
       const rad = Math.max(4, Math.round(fs * 0.18 * previewScale));
       const fullWords = sampleKaraokeLines[kLineIdx % sampleKaraokeLines.length];
       const words = fullWords.slice(0, maxW);
-      karaokeWordsEl.innerHTML = words
-        .map((w, idx) => {
-          const u = String(w).toUpperCase();
-          if (idx === kWordIdx % words.length) {
-            return `<span class="inline-flex items-center justify-center bg-[#7C00FF] text-[#FFFF00] shadow-[0_0_10px_rgba(124,0,255,0.65)] leading-none" id="preview-karaoke-active-box" style="padding: ${padY}px ${padX}px; border-radius: ${rad}px;">${u}</span>`;
-          }
-          return `<span class="inline-flex items-center justify-center leading-none" style="color: #FFFF00;">${u}</span>`;
+      const totalChars = words.join(" ").length;
+      const maxSingleWords = Math.max(4, Math.min(6, Math.ceil(maxW / 2)));
+      let linesArr = [words];
+      if (words.length > maxSingleWords || totalChars > 26) {
+        const splitAt = Math.ceil(words.length / 2);
+        linesArr = [words.slice(0, splitAt), words.slice(splitAt)];
+      }
+      let gIdx = 0;
+      const activeIdx = kWordIdx % words.length;
+      karaokeWordsEl.innerHTML = linesArr
+        .map((lineWords) => {
+          const rowSpans = lineWords
+            .map((w) => {
+              const u = String(w).toUpperCase();
+              const isAct = gIdx === activeIdx;
+              gIdx++;
+              if (isAct) {
+                return `<span class="inline-flex items-center justify-center bg-[#7C00FF] text-[#FFFF00] shadow-[0_0_10px_rgba(124,0,255,0.65)] leading-none" id="preview-karaoke-active-box" style="padding: ${padY}px ${padX}px; border-radius: ${rad}px;">${u}</span>`;
+              }
+              return `<span class="inline-flex items-center justify-center leading-none" style="color: #FFFF00;">${u}</span>`;
+            })
+            .join("");
+          return `<div class="flex items-center justify-center gap-x-2 leading-none">${rowSpans}</div>`;
         })
         .join("");
       kWordIdx++;
@@ -5632,7 +5648,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ks.x = Math.max(0, Math.min(1920 - ks.width, Number(ks.x !== undefined ? ks.x : 30)));
       ks.y = Math.max(0, Math.min(1080 - ks.height, Number(ks.y !== undefined ? ks.y : 906)));
       const fs = Math.max(20, Math.min(110, Math.round(Number(ks.fontSize ?? ks.font_size ?? 64))));
-      const mw = Math.max(2, Math.min(12, Math.round(Number(ks.maxWordsPerLine ?? ks.max_words_per_line ?? 5))));
+      const mw = Math.max(2, Math.min(20, Math.round(Number(ks.maxWordsPerLine ?? ks.max_words_per_line ?? 10))));
       ks.fontSize = fs;
       ks.font_size = fs;
       ks.maxWordsPerLine = mw;
@@ -5751,7 +5767,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (karaokeMaxwordsInput) {
       karaokeMaxwordsInput.addEventListener("input", () => {
-        const mw = Math.max(2, Math.min(12, parseInt(karaokeMaxwordsInput.value, 10) || 5));
+        const mw = Math.max(2, Math.min(20, parseInt(karaokeMaxwordsInput.value, 10) || 10));
         layoutState.subtitle_karaoke = layoutState.subtitle_karaoke || {};
         layoutState.subtitle_karaoke.maxWordsPerLine = mw;
         layoutState.subtitle_karaoke.max_words_per_line = mw;

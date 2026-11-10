@@ -2034,9 +2034,9 @@ def get_default_video_layout_config(root_dir: Optional[Path] = None) -> Dict[str
             "textColor": "#FFFF00",
             "boxColor": "#7C00FF",
             "outlineColor": "#000000",
-            "maxWordsPerLine": 5,
-            "max_words_per_line": 5,
-            "maxCharsPerLine": 26,
+            "maxWordsPerLine": 10,
+            "max_words_per_line": 10,
+            "maxCharsPerLine": 52,
             "zIndex": 1000,
         },
     }
@@ -2056,9 +2056,11 @@ def _normalize_karaoke_subtitle_cfg(sub_cfg: Dict[str, Any]) -> Dict[str, Any]:
     mw_raw = (
         sub_cfg.get("maxWordsPerLine")
         if sub_cfg.get("maxWordsPerLine") is not None
-        else sub_cfg.get("max_words_per_line", 5)
+        else sub_cfg.get("max_words_per_line", 10)
     )
-    mw = max(2, min(12, int(mw_raw or 5)))
+    mw = max(2, min(20, int(mw_raw or 10)))
+    mc_raw = int(sub_cfg.get("maxCharsPerLine") or 52)
+    sub_cfg["maxCharsPerLine"] = max(52, mc_raw, mw * 5 + 2)
     sub_cfg["x"] = x
     sub_cfg["y"] = y
     sub_cfg["width"] = w
@@ -2896,8 +2898,9 @@ def render_drama_nhat_video(
         "textColor": sub_cfg.get("textColor", "#FFFF00"),
         "boxColor": sub_cfg.get("boxColor", "#7C00FF"),
         "outlineColor": sub_cfg.get("outlineColor", "#000000"),
-        "maxWordsPerLine": int(sub_cfg.get("maxWordsPerLine", 5)),
-        "maxCharsPerLine": int(sub_cfg.get("maxCharsPerLine", 26)),
+        "boxWidth": int(round(float(sub_cfg.get("width", 1360)) * (target_w / 1920.0))),
+        "maxWordsPerLine": int(sub_cfg.get("maxWordsPerLine", 10)),
+        "maxCharsPerLine": int(sub_cfg.get("maxCharsPerLine", 52)),
     }
     generated_ass = generate_karaoke_ass_from_srt(
         srt_path=subtitle_path,

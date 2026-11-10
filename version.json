@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.33",
-  "build_number": 149,
-  "released_at": "2026-11-10 22:01:20",
+  "version": "V1.0.34",
+  "build_number": 150,
+  "released_at": "2026-11-10 23:03:03",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.33 (Build #149): Sửa triệt để lỗi không chọn được mục Dùng Tiêu Đề Gốc trên giao diện (sửa lỗi TDZ initApp trong frontend/app.js, gắn trực tiếp window.selectAdasTitleMode trong index.html, chống cache app.js và đồng bộ tức thì các mã chờ trong Kho Dự Án)."
+  "changelog": "V1.0.34 (Build #150): Tăng gấp đôi độ dài 1 đoạn phụ đề Karaoke (10 từ / 52 ký tự) và tự động chia thành 2 dòng cân đối khi câu dài (hỗ trợ cả Tây Ban Nha & Tiếng Anh)."
 }
