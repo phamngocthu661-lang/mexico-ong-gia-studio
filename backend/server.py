@@ -191,6 +191,10 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         custom_id: Optional[str] = None
         use_original_title: bool = False
 
+    class SetIdeaTitleModeRequest(BaseModel):
+        use_original_title: bool = False
+        ma_ids: Optional[list[str]] = None
+
     class DeleteIdeaRequest(BaseModel):
         ma_id: str
 
@@ -623,6 +627,18 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         return {
             "parsed": parsed,
             "step2_prompt": step2_prompt,
+        }
+
+    @app.post("/api/adas/ideas/set-title-mode")
+    def api_adas_set_title_mode(req: SetIdeaTitleModeRequest):
+        ideas = adas_engine.set_ideas_title_mode(
+            use_original_title=bool(req.use_original_title),
+            ma_ids=req.ma_ids,
+        )
+        return {
+            "success": True,
+            "use_original_title": bool(req.use_original_title),
+            "ideas": ideas,
         }
 
     @app.post("/api/adas/ideas/delete")
@@ -1930,11 +1946,32 @@ except Exception:
         index_html_path = frontend_dir / "index.html"
         if index_html_path.exists():
 
+            no_cache_headers = {
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+
             @app.get("/", include_in_schema=False)
+            @app.get("/index.html", include_in_schema=False)
             async def serve_root_index():
                 return FileResponse(
-                    str(index_html_path), media_type="text/html; charset=utf-8"
+                    str(index_html_path),
+                    media_type="text/html; charset=utf-8",
+                    headers=no_cache_headers,
                 )
+
+            app_js_path = frontend_dir / "app.js"
+            if app_js_path.exists():
+
+                @app.get("/app.js", include_in_schema=False)
+                @app.get("/static/app.js", include_in_schema=False)
+                async def serve_app_js():
+                    return FileResponse(
+                        str(app_js_path),
+                        media_type="application/javascript; charset=utf-8",
+                        headers=no_cache_headers,
+                    )
 
         app.mount(
             "/static",

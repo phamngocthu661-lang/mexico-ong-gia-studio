@@ -7146,6 +7146,126 @@ class ADASScriptEngine:
             items[0] if items else parse_idea_input_block(raw_text, custom_id=custom_id)
         )
 
+    def set_ideas_title_mode(
+        self,
+        use_original_title: bool,
+        ma_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Chuyển đổi chế độ xử lý tiêu đề (`use_original_title = True` dùng tiêu đề gốc vào thẳng Skill 02,
+        hoặc `False` chạy như cũ qua Skill 01) cho các mã cụ thể hoặc toàn bộ các mã chưa xong kịch bản.
+        """
+        target_set = (
+            {str(x).strip() for x in ma_ids if str(x).strip()}
+            if ma_ids is not None
+            else None
+        )
+        with self.ideas_io_lock:
+            ideas = self.load_saved_ideas()
+            updated_ids: List[str] = []
+            for it in ideas:
+                mid = str(it.get("ma_id", "")).strip()
+                if not mid:
+                    continue
+                if target_set is not None:
+                    if mid not in target_set:
+                        continue
+                else:
+                    if it.get("has_script") or it.get("status") in (
+                        "SCRIPT_DONE",
+                        "COMPLETED_VIDEO",
+                    ):
+                        continue
+
+                it["use_original_title"] = bool(use_original_title)
+                orig_t_val = (
+                    it.get("draft_title_ja")
+                    or it.get("locked_title")
+                    or it.get("summary_vi")
+                    or ""
+                ).strip()
+                proj_dir = self.projects_dir / mid
+                proj_dir.mkdir(parents=True, exist_ok=True)
+
+                if use_original_title:
+                    if orig_t_val:
+                        it["locked_title"] = orig_t_val
+                    if not it.get("has_script"):
+                        it["current_step"] = (
+                            "📌 Đã khóa Tiêu đề gốc (Bỏ qua Skill 01) — Sẵn sàng tạo Giàn ý (Skill 02)"
+                        )
+                    if orig_t_val:
+                        direct_s2_txt = (
+                            "================================================================================\n"
+                            "📌 CHẾ ĐỘ SỬ DỤNG TIÊU ĐỀ GỐC (BỎ QUA SKILL 01 — KHÓA TRỰC TIẾP TIÊU ĐỀ GỐC)\n"
+                            "================================================================================\n"
+                            f"LOCKED_TITLE: {orig_t_val}\n"
+                            f"CURRENT_FINAL_TITLE: {orig_t_val}\n"
+                            f"USE_ORIGINAL_TITLE: YES\n"
+                            f"STEP3_HANDOFF: Tạo trực tiếp Giàn ý 7 Phần (Skill 02) từ Tiêu đề gốc đã khóa.\n"
+                        )
+                        try:
+                            (proj_dir / "step2_title_thumbnail.txt").write_text(
+                                direct_s2_txt, encoding="utf-8"
+                            )
+                            (proj_dir / "step2_prompt_ready.txt").write_text(
+                                self._build_step3_prompt(
+                                    mid,
+                                    orig_t_val,
+                                    step2_context="",
+                                    in_same_chat=False,
+                                ),
+                                encoding="utf-8",
+                            )
+                        except Exception:
+                            pass
+                else:
+                    if not it.get("has_script"):
+                        if it.get("locked_title") == it.get("draft_title_ja"):
+                            it["locked_title"] = ""
+                        it["current_step"] = (
+                            "🔄 Chế độ Chạy Như Cũ (Qua Skill 01 viết lại 5 tiêu đề mới)"
+                        )
+                        s2_f = proj_dir / "step2_title_thumbnail.txt"
+                        if s2_f.exists():
+                            try:
+                                s2_c = s2_f.read_text(encoding="utf-8", errors="ignore")
+                                if "USE_ORIGINAL_TITLE: YES" in s2_c:
+                                    s2_f.unlink()
+                            except Exception:
+                                pass
+                        try:
+                            (proj_dir / "step2_prompt_ready.txt").write_text(
+                                build_step2_prompt_from_idea(
+                                    it, self.get_step2_template()
+                                ),
+                                encoding="utf-8",
+                            )
+                        except Exception:
+                            pass
+
+                try:
+                    (proj_dir / "idea_info.json").write_text(
+                        json.dumps(it, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+                updated_ids.append(mid)
+
+            if updated_ids:
+                self.save_ideas_list(ideas)
+                mode_str = (
+                    "📌 DÙNG TIÊU ĐỀ GỐC (Vào thẳng Skill 02)"
+                    if use_original_title
+                    else "🔄 CHẠY NHƯ CŨ (Qua Skill 01)"
+                )
+                log_info(
+                    "SCRIPT",
+                    f"🎯 Đã chuyển chế độ xử lý tiêu đề sang [{mode_str}] cho {len(updated_ids)} mã: {updated_ids}",
+                )
+            return ideas
+
     def delete_idea(self, ma_id: str) -> List[Dict[str, Any]]:
         target = (ma_id or "").strip()
         deleted_paths: List[str] = []

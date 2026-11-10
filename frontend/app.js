@@ -122,14 +122,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnActivateLicense = document.getElementById("btn-activate-license");
   const licenseModalMsg = document.getElementById("license-modal-msg");
   let isLicenseValid = false;
-
-  // Init App
-  initApp();
+  window.__initErrors = [];
 
   function safeSetup(fn, label) {
     try {
       fn();
     } catch (err) {
+      window.__initErrors.push({ label, error: String((err && err.stack) || err) });
       console.error(`[InitApp] Lỗi khởi tạo module ${label}:`, err);
     }
   }
@@ -2287,34 +2286,18 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   let currentAdasFilter = "all";
-  let currentAdasTitleMode = localStorage.getItem("adas_title_mode") === "original" ? "original" : "rewrite";
+  let currentAdasTitleMode = (window.currentAdasTitleMode || localStorage.getItem("adas_title_mode")) === "original" ? "original" : "rewrite";
+  window.currentAdasTitleMode = currentAdasTitleMode;
 
-  function applyAdasTitleModeUI(mode) {
+  function applyAdasTitleModeUI(mode, syncBackend = false) {
     currentAdasTitleMode = mode === "original" ? "original" : "rewrite";
+    window.currentAdasTitleMode = currentAdasTitleMode;
     try {
       localStorage.setItem("adas_title_mode", currentAdasTitleMode);
     } catch (e) {}
-    const statusLbl = document.getElementById("adas-title-mode-status-label");
-    if (statusLbl) {
-      statusLbl.innerText = currentAdasTitleMode === "original"
-        ? "Đang chọn: 📌 Dùng Tiêu Đề Gốc (Vào Thẳng Skill 02)"
-        : "Đang chọn: 🔄 Chạy Như Cũ (Qua Skill 01)";
+    if (typeof window.selectAdasTitleMode === "function") {
+      window.selectAdasTitleMode(currentAdasTitleMode, syncBackend);
     }
-    document.querySelectorAll(".adas-title-mode-card").forEach((card) => {
-      const m = card.getAttribute("data-title-mode");
-      const isAct = m === currentAdasTitleMode;
-      const dot = card.querySelector(".title-mode-dot");
-      const titleDiv = card.querySelector("div:first-child");
-      if (isAct) {
-        card.className = "adas-title-mode-card active p-2 rounded-lg bg-primary-container/15 border-2 border-primary-container text-left transition-all";
-        if (dot) dot.className = "title-mode-dot w-2 h-2 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]";
-        if (titleDiv) titleDiv.className = "text-xs font-bold text-primary flex items-center justify-between";
-      } else {
-        card.className = "adas-title-mode-card p-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all";
-        if (dot) dot.className = "title-mode-dot w-2 h-2 rounded-full bg-surface-container-highest";
-        if (titleDiv) titleDiv.className = "text-xs font-bold text-on-surface flex items-center justify-between";
-      }
-    });
   }
   let adasVisibleLimit = 25;
 
@@ -2469,8 +2452,8 @@ document.addEventListener("DOMContentLoaded", () => {
           <div class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
             <span class="px-1.5 py-0.5 rounded bg-secondary-container/15 text-secondary-container font-mono font-bold text-[10.5px] border border-secondary-container/30 shrink-0">#${maId}</span>
             ${it.use_original_title
-              ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono font-bold text-[9.5px] border border-amber-400/40 shrink-0" title="Chế độ Tiêu Đề Gốc: Bỏ qua Skill 01, tạo thẳng Giàn ý Skill 02 từ tiêu đề gốc">📌 Gốc</span>`
-              : `<span class="px-1.5 py-0.5 rounded bg-primary-container/10 text-primary-container/90 font-mono text-[9.5px] border border-primary-container/25 shrink-0" title="Chế độ Viết Lại Tiêu Đề: Qua Skill 01 tạo 5 tiêu đề mới trước khi lập Giàn ý">🔄 Skill 1</span>`}
+              ? `<button type="button" class="btn-idea-toggle-title-mode px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 font-mono font-bold text-[9.5px] border border-amber-400/50 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-orig="1" title="Đang dùng Tiêu Đề Gốc (Bỏ Skill 01, tạo thẳng Giàn ý Skill 02) • Bấm để đổi sang Chạy Như Cũ (Skill 01)">📌 Gốc</button>`
+              : `<button type="button" class="btn-idea-toggle-title-mode px-1.5 py-0.5 rounded bg-primary-container/10 hover:bg-primary-container/25 text-primary-container/90 font-mono text-[9.5px] border border-primary-container/30 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-orig="0" title="Đang chọn Chạy Như Cũ (Qua Skill 01 viết lại 5 tiêu đề) • Bấm để đổi sang Dùng Tiêu Đề Gốc (Bỏ Skill 01)">🔄 Skill 1</button>`}
             <span class="text-[11.5px] text-on-surface font-medium truncate flex-1">${fullTitle}</span>
           </div>
           <div class="flex items-center gap-1 shrink-0">
@@ -2517,6 +2500,35 @@ document.addEventListener("DOMContentLoaded", () => {
         renderSavedIdeasList(lastSavedIdeasCache);
       });
     }
+
+    // Gắn sự kiện cho nút chuyển đổi nhanh Chế Độ Tiêu Đề trên từng mã (📌 Gốc <-> 🔄 Skill 1)
+    listEl.querySelectorAll(".btn-idea-toggle-title-mode").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const mid = btn.dataset.id;
+        if (!mid) return;
+        const nextOrig = btn.dataset.orig !== "1";
+        try {
+          const res = await fetch("/api/adas/ideas/set-title-mode", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ use_original_title: nextOrig, ma_ids: [mid] })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            renderSavedIdeasList(data.ideas || []);
+            appendInstantLogToUI(
+              nextOrig
+                ? `📌 [#${mid}] Đã chuyển sang chế độ: DÙNG TIÊU ĐỀ GỐC (Bỏ qua Skill 01, tạo thẳng Giàn ý Skill 02).`
+                : `🔄 [#${mid}] Đã chuyển sang chế độ: CHẠY NHƯ CŨ (Qua Skill 01 viết lại tiêu đề).`,
+              "SCRIPT",
+              "INFO",
+              mid
+            );
+          }
+        } catch (e) {}
+      });
+    });
 
     // Gắn sự kiện cho nút Render MP4 trực tiếp (dành cho các mã đã viết xong kịch bản)
     listEl.querySelectorAll(".btn-idea-render-mp4").forEach((btn) => {
@@ -2790,7 +2802,7 @@ document.addEventListener("DOMContentLoaded", () => {
           ai_provider: chosenProvider,
           force_rewrite_script: !!forceRewriteScript,
           max_retries: 3,
-          use_original_title: currentAdasTitleMode === "original"
+          use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
         })
       });
       const data = await res.json();
@@ -3373,11 +3385,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // 4b. Khởi tạo 2 nút chọn Chế Độ Xử Lý Tiêu Đề (1. Chạy Như Cũ Qua Skill 01 | 2. Dùng Tiêu Đề Gốc Vào Thẳng Skill 02)
-    applyAdasTitleModeUI(currentAdasTitleMode);
+    applyAdasTitleModeUI(window.currentAdasTitleMode || currentAdasTitleMode, false);
     document.querySelectorAll(".adas-title-mode-card").forEach((card) => {
       card.addEventListener("click", () => {
         const m = card.getAttribute("data-title-mode") || "rewrite";
-        applyAdasTitleModeUI(m);
+        currentAdasTitleMode = m === "original" ? "original" : "rewrite";
+        window.currentAdasTitleMode = currentAdasTitleMode;
         appendInstantLogToUI(
           m === "original"
             ? "📌 Đã chọn chế độ: DÙNG TIÊU ĐỀ GỐC (Bỏ qua Skill 01 • Giữ nguyên tiêu đề gốc tạo thẳng Giàn ý 7 Phần ở Skill 02)."
@@ -3403,7 +3416,7 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({
             raw_text: raw,
             custom_id: null,
-            use_original_title: currentAdasTitleMode === "original"
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
           })
         });
         const data = await res.json();
@@ -3438,7 +3451,7 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({
             raw_text: raw,
             custom_id: "1",
-            use_original_title: currentAdasTitleMode === "original"
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
           })
         });
         if (res.ok) {
@@ -3476,7 +3489,7 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({
             raw_text: raw,
             custom_id: null,
-            use_original_title: currentAdasTitleMode === "original"
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
           })
         });
         const data = await res.json();
@@ -3507,7 +3520,7 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({
             raw_text: raw,
             custom_id: null,
-            use_original_title: currentAdasTitleMode === "original"
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
           })
         });
         const data = await res.json();
@@ -6285,6 +6298,8 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
 
+  // Init App (sau khi toàn bộ biến trạng thái & hàm đã được khởi tạo đầy đủ, chống lỗi TDZ 100%)
+  initApp();
   safeSetup(setupSystemLogsAndDiagnostics, "SystemLogsAndDiagnostics");
   safeSetup(setupVoiceSelectorAndTuning, "VoiceSelectorAndTuning");
   safeSetup(setupWindowCloseAutoShutdown, "WindowCloseAutoShutdown");

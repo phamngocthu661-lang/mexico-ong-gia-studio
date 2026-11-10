@@ -329,27 +329,93 @@
               <textarea class="w-full bg-surface-container-lowest rounded p-2.5 font-label-md text-xs text-on-surface placeholder:text-outline-variant focus:outline-none focus:ring-1 focus:ring-primary-container border border-surface-container-high resize-y leading-relaxed" id="adas-raw-input" placeholder="Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo&#10;Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable&#10;Mis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso" rows="6"></textarea>
             </div>
             <!-- CHỌN CHẾ ĐỘ XỬ LÝ TIÊU ĐỀ: 1. CHẠY NHƯ CŨ (QUA SKILL 01) HOẶC 2. DÙNG TIÊU ĐỀ GỐC (VÀO THẲNG SKILL 02) -->
-            <div class="flex flex-col gap-1.5 p-2.5 rounded-lg bg-surface-container-low border border-secondary/30" id="adas-title-mode-box">
+            <div class="flex flex-col gap-1.5 p-2.5 rounded-lg bg-surface-container-low border border-secondary/30" id="adas-title-mode-box" style="position: relative; z-index: 30; pointer-events: auto;">
               <div class="flex items-center justify-between text-[11px]">
                 <span class="font-bold text-secondary uppercase tracking-wide">🎯 Chọn Chế Độ Xử Lý Tiêu Đề:</span>
                 <span class="font-mono text-[10px] text-primary-container font-semibold" id="adas-title-mode-status-label">Đang chọn: 🔄 Chạy Như Cũ (Qua Skill 01)</span>
               </div>
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <button class="adas-title-mode-card active p-2 rounded-lg bg-primary-container/15 border-2 border-primary-container text-left transition-all" data-title-mode="rewrite" id="btn-title-mode-rewrite" type="button">
-                  <div class="text-xs font-bold text-primary flex items-center justify-between">
+                <button aria-pressed="true" class="adas-title-mode-card active p-2.5 rounded-lg bg-primary-container/15 border-2 border-primary-container text-left transition-all cursor-pointer select-none" data-title-mode="rewrite" id="btn-title-mode-rewrite" onclick="window.selectAdasTitleMode && window.selectAdasTitleMode('rewrite', true)" style="cursor: pointer; pointer-events: auto;" type="button">
+                  <div class="text-xs font-bold text-primary flex items-center justify-between gap-1 pointer-events-none">
                     <span>🔄 1. Chạy Như Cũ (Skill 01)</span>
-                    <span class="title-mode-dot w-2 h-2 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]"></span>
+                    <span class="title-mode-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono bg-primary-container text-on-primary-fixed font-bold">✓ ĐANG CHỌN</span>
                   </div>
-                  <div class="text-[10px] text-on-surface-variant mt-0.5">Dùng Skill 01 viết lại 5 tiêu đề mới, chấm CTR &amp; chọn LOCKED_TITLE rồi lập Giàn ý</div>
+                  <div class="text-[10px] text-on-surface-variant mt-1 pointer-events-none">Dùng Skill 01 viết lại 5 tiêu đề mới, chấm CTR &amp; chọn LOCKED_TITLE rồi lập Giàn ý</div>
                 </button>
-                <button class="adas-title-mode-card p-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all" data-title-mode="original" id="btn-title-mode-original" type="button">
-                  <div class="text-xs font-bold text-on-surface flex items-center justify-between">
+                <button aria-pressed="false" class="adas-title-mode-card p-2.5 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all cursor-pointer select-none" data-title-mode="original" id="btn-title-mode-original" onclick="window.selectAdasTitleMode && window.selectAdasTitleMode('original', true)" style="cursor: pointer; pointer-events: auto;" type="button">
+                  <div class="text-xs font-bold text-on-surface flex items-center justify-between gap-1 pointer-events-none">
                     <span>📌 2. Dùng Tiêu Đề Gốc (Bỏ Skill 1)</span>
-                    <span class="title-mode-dot w-2 h-2 rounded-full bg-surface-container-highest"></span>
+                    <span class="title-mode-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono bg-surface-container-high text-on-surface-variant">Bấm để chọn</span>
                   </div>
-                  <div class="text-[10px] text-on-surface-variant mt-0.5">Giữ nguyên 100% tiêu đề gốc • Tạo thẳng Giàn ý 7 Phần (Skill 02), Kịch bản &amp; SEO</div>
+                  <div class="text-[10px] text-on-surface-variant mt-1 pointer-events-none">Giữ nguyên 100% tiêu đề gốc • Tạo thẳng Giàn ý 7 Phần (Skill 02), Kịch bản &amp; SEO</div>
                 </button>
               </div>
+              <script>
+                (function() {
+                  window.currentAdasTitleMode = (function() {
+                    try { return localStorage.getItem("adas_title_mode") === "original" ? "original" : "rewrite"; } catch (e) { return "rewrite"; }
+                  })();
+                  window.selectAdasTitleMode = function(mode, userClicked) {
+                    var m = mode === "original" ? "original" : "rewrite";
+                    window.currentAdasTitleMode = m;
+                    try { localStorage.setItem("adas_title_mode", m); } catch (e) {}
+                    var lbl = document.getElementById("adas-title-mode-status-label");
+                    if (lbl) {
+                      lbl.innerText = m === "original"
+                        ? "Đang chọn: 📌 Dùng Tiêu Đề Gốc (Vào Thẳng Skill 02)"
+                        : "Đang chọn: 🔄 Chạy Như Cũ (Qua Skill 01)";
+                      lbl.style.color = m === "original" ? "#ffd54f" : "#00ff87";
+                    }
+                    var cards = document.querySelectorAll(".adas-title-mode-card");
+                    for (var i = 0; i < cards.length; i++) {
+                      var c = cards[i];
+                      var cm = c.getAttribute("data-title-mode");
+                      var isAct = cm === m;
+                      c.setAttribute("aria-pressed", isAct ? "true" : "false");
+                      var dot = c.querySelector(".title-mode-dot");
+                      var titleDiv = c.querySelector("div:first-child");
+                      if (isAct) {
+                        c.className = "adas-title-mode-card active p-2.5 rounded-lg bg-primary-container/15 border-2 border-primary-container text-left transition-all cursor-pointer select-none";
+                        c.style.borderColor = m === "original" ? "#ffd54f" : "#00ff87";
+                        c.style.background = m === "original" ? "rgba(255, 213, 79, 0.14)" : "rgba(0, 255, 135, 0.14)";
+                        if (dot) {
+                          dot.className = "title-mode-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold";
+                          dot.style.background = m === "original" ? "#ffd54f" : "#00ff87";
+                          dot.style.color = "#08120d";
+                          dot.innerText = "✓ ĐANG CHỌN";
+                        }
+                        if (titleDiv) titleDiv.className = "text-xs font-bold text-primary flex items-center justify-between gap-1 pointer-events-none";
+                      } else {
+                        c.className = "adas-title-mode-card p-2.5 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all cursor-pointer select-none";
+                        c.style.borderColor = "";
+                        c.style.background = "";
+                        if (dot) {
+                          dot.className = "title-mode-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono bg-surface-container-high text-on-surface-variant";
+                          dot.style.background = "";
+                          dot.style.color = "";
+                          dot.innerText = "Bấm để chọn";
+                        }
+                        if (titleDiv) titleDiv.className = "text-xs font-bold text-on-surface flex items-center justify-between gap-1 pointer-events-none";
+                      }
+                    }
+                    if (userClicked) {
+                      fetch("/api/adas/ideas/set-title-mode", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ use_original_title: m === "original", ma_ids: null })
+                      })
+                        .then(function(r) { return r.ok ? r.json() : null; })
+                        .then(function(d) {
+                          if (d && Array.isArray(d.ideas) && typeof window.__renderSavedIdeasGlobal === "function") {
+                            window.__renderSavedIdeasGlobal(d.ideas);
+                          }
+                        })
+                        .catch(function() {});
+                    }
+                  };
+                  window.selectAdasTitleMode(window.currentAdasTitleMode, false);
+                })();
+              </script>
             </div>
             <!-- Param Matrix -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-2 bg-surface-container-low p-2.5 rounded border border-surface-container">
@@ -1844,6 +1910,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=20261109_v133"></script>
+  <script src="app.js?v=20261110_v149"></script>
 </body>
 </html>
