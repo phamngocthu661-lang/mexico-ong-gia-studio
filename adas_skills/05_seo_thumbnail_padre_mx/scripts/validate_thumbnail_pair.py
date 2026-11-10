@@ -50,31 +50,29 @@ def check(thumbnail: Path, green: Path):
         errors.append("Both outputs must be real PNG images")
     metrics["thumbnail_dimensions"] = dims_a
     metrics["green_dimensions"] = dims_b
-    if dims_a != dims_b:
-        errors.append(
-            "Dimension mismatch: the SAME portrait coordinates require the SAME canvas size"
-        )
+    wt, ht = dims_a
+    if wt < 1280 or ht < 720 or abs(wt / ht - 16 / 9) > 0.002:
+        errors.append("THUMBNAIL.png must be 16:9 and >=1280x720")
     w, h = dims_b
-    if w < 1280 or h < 720 or abs(w / h - 16 / 9) > 0.002:
-        errors.append("Both images must be 16:9 and >=1280x720")
-    # Use small subsampled image for constant-color QA (not OCR).
-    sample = key_image.resize((240, 135), Image.Resampling.NEAREST)
+    if h <= w or w < 720 or h < 1200:
+        errors.append(
+            "THUMBNAIL-NENXANH.png must be vertical 9:16 (h > w, e.g. 1080x1920)"
+        )
+    sample = key_image.resize((135, 240), Image.Resampling.NEAREST)
     px = sample.load()
-    x_cut = int(240 * 0.55)
-    left = [px[x, y] for y in range(135) for x in range(x_cut)]
-    right = [px[x, y] for y in range(135) for x in range(int(240 * 0.70), 240)]
+    all_px = [px[x, y] for y in range(240) for x in range(135)]
     key = (0, 255, 0)
-    ratio = sum(1 for x in left if x == key) / len(left)
-    subject_ratio = sum(1 for x in right if x != key) / len(right)
+    ratio = sum(1 for x in all_px if x == key) / len(all_px)
+    subject_ratio = 1.0 - ratio
     metrics["left_exact_key_ratio"] = round(ratio, 5)
     metrics["right_non_green_ratio"] = round(subject_ratio, 5)
-    if ratio < 0.985:
+    if ratio < 0.12:
         errors.append(
-            "Left 55% background must be uniformly exact #00FF00; observed key ratio "
+            "Background must contain exact #00FF00 chroma key green; observed key ratio "
             + str(round(ratio, 5))
         )
-    if subject_ratio < 0.18:
-        errors.append("Subject missing/too small on right 30% of canvas")
+    if subject_ratio < 0.22:
+        errors.append("Subject missing/too small on vertical 9:16 canvas")
     return {
         "pass": not errors,
         "errors": errors,

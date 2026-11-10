@@ -2890,10 +2890,12 @@ class ChatGPTWebSession:
         timeout_sec: int = 300,
         progress_cb: Optional[Callable[[str, int], None]] = None,
         should_stop_cb: Optional[Callable[[], bool]] = None,
+        reference_image_b64: Optional[str] = None,
+        reference_image_name: str = "character_reference.png",
     ) -> Dict[str, Any]:
         """
-        Gửi lệnh tạo ảnh Thumbnail vào ChatGPT Web, chờ công cụ tạo ảnh (GPT-4o / DALL-E)
-        vẽ xong ảnh thực tế và thu hoạch ảnh chất lượng gốc về dưới dạng Base64 PNG
+        Gửi lệnh tạo ảnh Thumbnail (hoặc kèm ảnh tham chiếu `reference_image_b64`) vào ChatGPT Web,
+        chờ công cụ tạo ảnh (GPT-4o / DALL-E) vẽ xong ảnh thực tế và thu hoạch ảnh chất lượng gốc về dưới dạng Base64 PNG
         (kết hợp Tầng 1 Backend API asset_pointer + Tầng 2 DOM <img> / Canvas).
         """
         if not self.ws_url:
@@ -2919,14 +2921,63 @@ class ChatGPTWebSession:
         )
 
         escaped_prompt_json = json.dumps(prompt_text, ensure_ascii=True)
+        escaped_ref_b64_json = json.dumps(reference_image_b64 or "", ensure_ascii=True)
+        escaped_ref_name_json = json.dumps(
+            reference_image_name or "character_reference.png", ensure_ascii=True
+        )
         inject_js = f"""
         (async () => {{
             const text = {escaped_prompt_json};
+            const refB64 = {escaped_ref_b64_json};
+            const refName = {escaped_ref_name_json};
             document.querySelectorAll('button[aria-label="Remove pasted text attachment"]').forEach(b => b.click());
             const el = document.querySelector(
                 '#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [data-composer-markdown], div[role="textbox"][contenteditable="true"], main textarea'
             );
             if (!el) return {{ ok: false, err: 'NO_PROMPT_BOX' }};
+            el.focus();
+
+            // Đính kèm ảnh tham chiếu (Reference Image) vào khung chat ChatGPT trước khi gửi lệnh
+            if (refB64 && refB64.length > 100) {{
+                try {{
+                    const byteChars = atob(refB64);
+                    const byteNums = new Uint8Array(byteChars.length);
+                    for (let i = 0; i < byteChars.length; i++) {{
+                        byteNums[i] = byteChars.charCodeAt(i);
+                    }}
+                    const blob = new Blob([byteNums], {{ type: 'image/png' }});
+                    const file = new File([blob], refName, {{ type: 'image/png', lastModified: Date.now() }});
+                    const dtImg = new DataTransfer();
+                    dtImg.items.add(file);
+                    el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dtImg, bubbles: true, cancelable: true }}));
+                    await new Promise(r => setTimeout(r, 700));
+
+                    const formEl = el.closest('form') || document.querySelector('main form') || document.body;
+                    const hasPreview = formEl.querySelectorAll('img, [data-testid*="attachment"], button[aria-label*="Remove" i]').length > 0;
+                    if (!hasPreview) {{
+                        const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+                        const targetInput = fileInputs.find(inp => !inp.accept || inp.accept.includes('image') || inp.accept.includes('*')) || fileInputs[0];
+                        if (targetInput) {{
+                            const dtIn = new DataTransfer();
+                            dtIn.items.add(file);
+                            targetInput.files = dtIn.files;
+                            targetInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    }}
+
+                    // Chờ ảnh tham chiếu upload xong lên ChatGPT (tối đa ~6 giây)
+                    for (let w = 0; w < 20; w++) {{
+                        await new Promise(r => setTimeout(r, 300));
+                        const uploading = formEl.querySelector('[role="progressbar"], [aria-busy="true"], svg.animate-spin');
+                        if (!uploading && w >= 5) break;
+                    }}
+                    // Đánh dấu mọi thẻ <img> của ảnh đính kèm để bộ thu hoạch không lấy nhầm ảnh tham chiếu
+                    document.querySelectorAll('form img, [data-message-author-role="user"] img, article[data-turn="user"] img').forEach(im => {{
+                        im.setAttribute('data-studio-img-seen', {json.dumps(img_stamp)});
+                    }});
+                }} catch (eRef) {{}}
+            }}
+
             el.focus();
             if (el.tagName === 'TEXTAREA') {{
                 const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
@@ -2947,11 +2998,11 @@ class ChatGPTWebSession:
                 const dt = new DataTransfer();
                 dt.setData('text/plain', text);
                 el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
-                await new Promise(r => setTimeout(r, 80));
+                await new Promise(r => setTimeout(r, 120));
             }}
 
             let sentConfirmed = false;
-            for (let s = 0; s < 25; s++) {{
+            for (let s = 0; s < 30; s++) {{
                 await new Promise(r => setTimeout(r, 320));
                 const stopNow = document.querySelector('[data-testid="stop-button"], form button[aria-label*="Stop" i], button[aria-label*="Stop streaming" i]');
                 const curBox = document.querySelector('#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], main textarea');
@@ -2963,14 +3014,17 @@ class ChatGPTWebSession:
                 const sendBtn = document.querySelector('button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], form button[aria-label*="Send" i], button[aria-label*="Send prompt" i], form button[type="submit"]');
                 if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
-                }} else if (s >= 6) {{
+                }} else if (s >= 8) {{
                     el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }}));
                 }}
             }}
+            document.querySelectorAll('[data-message-author-role="user"] img, article[data-turn="user"] img, div[data-turn="user"] img').forEach(im => {{
+                im.setAttribute('data-studio-img-seen', {json.dumps(img_stamp)});
+            }});
             return {{ ok: sentConfirmed }};
         }})()
         """
-        inj_res = _cdp_eval_js(self.ws_url, inject_js, await_promise=True, timeout=35.0)
+        inj_res = _cdp_eval_js(self.ws_url, inject_js, await_promise=True, timeout=45.0)
         if not isinstance(inj_res, dict) or not inj_res.get("ok"):
             return {"success": False, "error": f"Không thể gửi lệnh tạo ảnh: {inj_res}"}
 
@@ -2990,12 +3044,13 @@ class ChatGPTWebSession:
             const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
             const newImgs = allImgs.filter(im => {{
                 if (im.getAttribute('data-studio-img-seen') === stamp) return false;
+                if (im.closest('[data-message-author-role="user"], article[data-turn="user"], div[data-turn="user"], form')) return false;
                 const alt = (im.getAttribute('alt') || '').toLowerCase();
-                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar')) return false;
+                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar') || alt.includes('uploaded')) return false;
                 const nw = im.naturalWidth || 0;
                 const nh = im.naturalHeight || 0;
                 const src = im.currentSrc || im.src || '';
-                return im.complete && nw >= 350 && nh >= 200 && src.length > 10;
+                return im.complete && nw >= 250 && nh >= 250 && src.length > 10;
             }});
 
             if (newImgs.length > 0) {{
@@ -3036,22 +3091,23 @@ class ChatGPTWebSession:
                 reader.readAsDataURL(blob);
             }});
 
-            // Tầng 1: Thu hoạch trực tiếp từ thẻ <img> đã tải xong trên giao diện
+            // Tầng 1: Thu hoạch trực tiếp từ thẻ <img> của Assistant đã tải xong trên giao diện
             const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
             const newImgs = allImgs.filter(im => {{
                 if (im.getAttribute('data-studio-img-seen') === stamp) return false;
+                if (im.closest('[data-message-author-role="user"], article[data-turn="user"], div[data-turn="user"], form')) return false;
                 const alt = (im.getAttribute('alt') || '').toLowerCase();
-                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar')) return false;
+                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar') || alt.includes('uploaded')) return false;
                 const nw = im.naturalWidth || 0;
                 const nh = im.naturalHeight || 0;
-                return im.complete && nw >= 350 && nh >= 200;
+                return im.complete && nw >= 250 && nh >= 250;
             }});
 
             if (newImgs.length > 0) {{
                 const targetImg = newImgs[newImgs.length - 1];
                 const src = targetImg.currentSrc || targetImg.src || '';
                 const nw = targetImg.naturalWidth || 1024;
-                const nh = targetImg.naturalHeight || 1024;
+                const nh = targetImg.naturalHeight || 1536;
                 try {{
                     const r = await fetch(src, {{ credentials: 'include' }});
                     if (r.ok) {{
@@ -3077,7 +3133,7 @@ class ChatGPTWebSession:
                 }} catch (e) {{}}
             }}
 
-            // Tầng 2: Thu hoạch từ Backend API (/backend-api/conversation/ -> asset_pointer -> /backend-api/files/download/)
+            // Tầng 2: Thu hoạch từ Backend API (/backend-api/conversation/ -> asset_pointer của assistant/tool -> /backend-api/files/download/)
             try {{
                 const mUrl = window.location.pathname.match(/\\/c\\/([0-9a-fA-F\\-]{{16,}})/);
                 if (mUrl && mUrl[1]) {{
@@ -3100,11 +3156,16 @@ class ChatGPTWebSession:
                             let cur = conv.current_node;
                             const seen = new Set();
                             let foundPointer = '';
-                            let w = 1536, h = 1024;
+                            let w = 1024, h = 1536;
                             while (cur && !seen.has(cur) && mapping[cur]) {{
                                 seen.add(cur);
                                 const msg = mapping[cur].message;
-                                if (msg && msg.content && Array.isArray(msg.content.parts)) {{
+                                const role = (msg && msg.author && msg.author.role) ? msg.author.role : '';
+                                if (role === 'user') {{
+                                    // Không quét ngược qua tin nhắn user vừa gửi để tránh lấy nhầm ảnh tham chiếu hoặc ảnh cũ
+                                    break;
+                                }}
+                                if (msg && (role === 'assistant' || role === 'tool') && msg.content && Array.isArray(msg.content.parts)) {{
                                     for (const pt of msg.content.parts) {{
                                         if (pt && typeof pt === 'object' && pt.asset_pointer) {{
                                             foundPointer = pt.asset_pointer;
@@ -5574,67 +5635,56 @@ class ADASScriptEngine:
             except Exception:
                 pass
 
-            # Đảm bảo luôn có ảnh nền xanh THUMBNAIL-NENXANH.png đi kèm THUMBNAIL.png
-            has_green = (
-                target_green.exists() and target_green.stat().st_size > 10_000
-            ) or (target_green_id.exists() and target_green_id.stat().st_size > 10_000)
-            if not has_green:
+            # Kiểm tra ảnh nền xanh THUMBNAIL-NENXANH.png khổ dọc 9:16 do ChatGPT tạo (tuyệt đối KHÔNG cắt local từ THUMBNAIL.png)
+            try:
+                from backend.renderer import (
+                    _is_green_plate_clean_and_large,
+                    ensure_project_script_green_images,
+                )
+
                 for g_cand in (
+                    target_green,
+                    target_green_id,
                     proj_dir / "THUMBNAIL-NENXANH.png",
                     proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                     final_renders_dir / "THUMBNAIL-NENXANH.png",
                     final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                     final_proj_dir / "THUMBNAIL-NENXANH.png",
                 ):
-                    if g_cand.exists() and g_cand.stat().st_size > 10_000:
+                    if g_cand.exists() and not _is_green_plate_clean_and_large(g_cand):
                         try:
-                            shutil.copy2(g_cand, target_green)
-                            shutil.copy2(g_cand, target_green_id)
-                            has_green = True
-                            break
+                            g_cand.unlink()
                         except Exception:
                             pass
-            if not has_green and hasattr(
-                self, "_create_matched_green_screen_from_thumbnail_bytes"
-            ):
-                try:
-                    green_bytes = (
-                        self._create_matched_green_screen_from_thumbnail_bytes(
-                            found_thumb.read_bytes()
-                        )
-                    )
-                    if green_bytes and len(green_bytes) > 10_000:
-                        target_green.write_bytes(green_bytes)
-                        target_green_id.write_bytes(green_bytes)
-                        (proj_dir / "THUMBNAIL-NENXANH.png").write_bytes(green_bytes)
-                        has_green = True
-                except Exception:
-                    pass
-            if has_green:
-                try:
-                    from backend.renderer import (
-                        _is_green_plate_clean_and_large,
-                        ensure_project_script_green_images,
-                    )
 
+                valid_green: Optional[Path] = None
+                for g_cand in (
+                    target_green,
+                    target_green_id,
+                    proj_dir / "THUMBNAIL-NENXANH.png",
+                    proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                    final_renders_dir / "THUMBNAIL-NENXANH.png",
+                    final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                    final_proj_dir / "THUMBNAIL-NENXANH.png",
+                ):
+                    if g_cand.exists() and _is_green_plate_clean_and_large(g_cand):
+                        valid_green = g_cand
+                        break
+
+                if valid_green is not None:
+                    if not target_green.exists():
+                        shutil.copy2(valid_green, target_green)
+                    if not target_green_id.exists():
+                        shutil.copy2(valid_green, target_green_id)
+                    if not (proj_dir / "THUMBNAIL-NENXANH.png").exists():
+                        shutil.copy2(valid_green, proj_dir / "THUMBNAIL-NENXANH.png")
                     part1_chk = proj_dir / "script_green_images" / "green_part_01.png"
-                    if not part1_chk.exists() or not _is_green_plate_clean_and_large(
-                        target_green
-                    ):
+                    if not part1_chk.exists():
                         ensure_project_script_green_images(
                             proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
                         )
-                        if (proj_dir / "THUMBNAIL-NENXANH.png").exists() and (
-                            proj_dir / "THUMBNAIL-NENXANH.png"
-                        ).stat().st_size > 10_000:
-                            shutil.copy2(
-                                proj_dir / "THUMBNAIL-NENXANH.png", target_green
-                            )
-                            shutil.copy2(
-                                proj_dir / "THUMBNAIL-NENXANH.png", target_green_id
-                            )
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
         master_seo = proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt"
         render_seo = renders_dir / f"{ma_id}_SEO.txt"
@@ -7527,7 +7577,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
      + Bên trái 78–80% khung hình: Nền trắng sáng sạch (`#FFFFFF`), trình bày các dòng chữ Tây Ban Nha IN HOA đậm nét (L1..L5) với màu Đen, Xanh Cyan và Cam; phía dưới bên trái là băng rôn nền Đỏ tươi với dòng chữ L6 màu Vàng/Cam rực rỡ.
      + Bên phải 20–22% khung hình (BẮT BUỘC DÙNG ĐÚNG NGOẠI HÌNH & TRANG PHỤC NGẪU NHIÊN ĐỘC BẢN DƯỚI ĐÂY ĐỂ KHÔNG TRÙNG LẶP VỚI VIDEO KHÁC): {persona["full_en_prompt"]}
    - `</THUMBNAIL_PROMPT_1>`
-   - `<THUMBNAIL_GREEN_PROMPT_1>`: Prompt tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (16:9 `1920x1080`) lấy từ `THUMBNAIL.png`: xóa sạch 100% tất cả chữ, tiêu đề, băng rôn và giấy tờ; vẽ ĐẦY ĐỦ nhân vật người cha Mexico ({persona["short_en_tag"]}) gồm trọn vẹn đầu, tóc, hai tai, cổ và đầy đủ cả hai vai/thân trên ở bên phải khung hình, tách biệt hoàn toàn trên nền xanh lá thuần khiết `#00FF00` (`RGB 0, 255, 0`) không dính bất kỳ phông nền nào ở hốc cổ dưới tai.
+   - `<THUMBNAIL_GREEN_PROMPT_1>`: Prompt tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` khổ dọc 9:16 (`1024x1536` / `1080x1920`) lấy `THUMBNAIL.png` làm ảnh tham chiếu mặt & trang phục của nhân vật bên phải: xóa sạch 100% tất cả chữ, tiêu đề, băng rôn và giấy tờ; vẽ ĐẦY ĐỦ nhân vật người cha Mexico ({persona["short_en_tag"]}) gồm trọn vẹn đầu, tóc, hai tai, cổ và đầy đủ cả hai vai/thân trên đặt chính giữa khung hình dọc 9:16, tách biệt hoàn toàn trên nền xanh lá thuần khiết `#00FF00` (`RGB 0, 255, 0`) không dính bất kỳ phông nền nào ở hốc cổ dưới tai.
    - `</THUMBNAIL_GREEN_PROMPT_1>`"""
 
     def _extract_six_lines_from_single_source(self, src: str) -> List[str]:
@@ -7834,27 +7884,192 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         self, thumb_1080p_bytes: bytes
     ) -> bytes:
         """
-        Tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (1920x1080) từ `THUMBNAIL.png`:
-        - Tuyệt đối KHÔNG CÓ CHỮ (loại bỏ 100% khối chữ bên trái, băng rôn đỏ và giấy tờ văn bản).
-        - Tách sạch phông nền sau đầu/vai nhân vật bằng AI DeepLabV3_ResNet50.
-        - Phóng to chân dung nhân vật rõ nét, uy nghi ở bên phải khung hình trên nền xanh lá `#00FF00` (`RGB(0, 255, 0)`).
+        Chuẩn hóa ảnh nhân vật nền xanh khổ dọc 9:16 (`1080x1920`, nền `#00FF00` thuần khiết, không chữ)
+        từ ảnh nền xanh 9:16 do ChatGPT tạo.
         """
         from backend.renderer import (
-            extract_clean_large_green_character_bytes,
+            compose_chatgpt_9_16_green_portrait_to_plate,
         )
 
-        return extract_clean_large_green_character_bytes(
+        return compose_chatgpt_9_16_green_portrait_to_plate(
             thumb_1080p_bytes, part_index=1
         )
+
+    def _extract_right_character_reference_b64(
+        self, thumb_1080p_bytes: bytes, save_path: Optional[Path] = None
+    ) -> str:
+        """
+        Cắt lấy vùng chân dung nhân vật ông già bên phải (`x` từ 58%..100%) của `THUMBNAIL.png`
+        để làm ảnh tham chiếu (Reference Image) gửi lên ChatGPT (tham chiếu chuẩn khuôn mặt và trang phục,
+        không dính khối chữ tiêu đề bên trái).
+        """
+        import base64
+        import io
+
+        from PIL import Image
+
+        try:
+            im = Image.open(io.BytesIO(thumb_1080p_bytes)).convert("RGB")
+            w, h = im.size
+            x_start = int(round(w * 0.58)) if w > h else 0
+            crop_im = im.crop((x_start, 0, w, h))
+            buf = io.BytesIO()
+            crop_im.save(buf, format="PNG", optimize=True)
+            crop_bytes = buf.getvalue()
+            if save_path is not None:
+                try:
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    save_path.write_bytes(crop_bytes)
+                except Exception:
+                    pass
+            return base64.b64encode(crop_bytes).decode("ascii")
+        except Exception:
+            return base64.b64encode(thumb_1080p_bytes).decode("ascii")
+
+    def _generate_chatgpt_9_16_green_from_reference_sync(
+        self,
+        session: ChatGPTWebSession,
+        ma_id: str,
+        thumb_1080p_bytes: bytes,
+        proj_dir: Path,
+        renders_dir: Path,
+        idea: Optional[Dict[str, Any]] = None,
+        open_fresh_tab_first: bool = False,
+    ) -> Optional[bytes]:
+        """
+        BẮT BUỘC tạo ảnh nhân vật nền xanh khổ dọc 9:16 (`THUMBNAIL-NENXANH.png`, `1080x1920`) bằng ChatGPT:
+        - Lấy `THUMBNAIL.png` (vùng nhân vật bên phải) làm ảnh tham chiếu (tham chiếu mặt & trang phục).
+        - Yêu cầu tạo mới 1 bức ảnh khổ dọc 9:16 (`1024x1536` -> chuẩn hóa `1080x1920`), nền xanh `#00FF00`, không text.
+        - Nếu ChatGPT không tạo được ảnh ở tab hiện tại -> TỰ ĐỘNG mở tab mới (`start_fresh_chat`) kèm đính kèm ảnh tham chiếu để tạo bằng được!
+        """
+        import base64
+
+        from backend.renderer import (
+            _write_green_plate_stamp,
+            compose_chatgpt_9_16_green_portrait_to_plate,
+            ensure_project_script_green_images,
+        )
+
+        renders_dir.mkdir(parents=True, exist_ok=True)
+        proj_dir.mkdir(parents=True, exist_ok=True)
+
+        ref_crop_path = renders_dir / "CHAR_REFERENCE_CROP.png"
+        ref_b64 = self._extract_right_character_reference_b64(
+            thumb_1080p_bytes, save_path=ref_crop_path
+        )
+
+        green_9_16_prompt = (
+            "Call the image generation tool immediately to create a brand-new standalone VERTICAL 9:16 portrait image (size 1024x1536, tall 9:16 vertical aspect ratio) using the attached reference image of the older Mexican man:\n"
+            "1. REFERENCE FACE & WARDROBE: Strictly match the exact face, age, facial structure, hair, mustache/beard, eyewear (if any), expression, and the EXACT SAME shirt/jacket/outfit of the older Mexican man from the attached reference image.\n"
+            "2. FULL UPPER-BODY 9:16 VERTICAL PORTRAIT: Draw his complete head, hair, both ears, neck, and BOTH FULL SHOULDERS AND CHEST centered naturally inside the vertical 9:16 frame (do NOT slice or cut off his left or right shoulder or face).\n"
+            "3. PURE CHROMA-KEY GREEN BACKGROUND (#00FF00): 100% of the background behind and around him (including behind his neck and under both ears) MUST be a flat, solid, uniform chroma-key green screen (#00FF00, RGB 0, 255, 0) with NO walls, NO plants, NO courtyard, NO shadows, and NO gradients.\n"
+            "4. ZERO TEXT: Do NOT include any text, letters, words, numbers, titles, banners, nameplates, or documents anywhere in the image.\n"
+            "Strict rule: Generate the vertical 9:16 green-screen image directly right now without asking any questions."
+        )
+
+        max_green_tries = 4
+        tried_green_accs: set = {getattr(session, "acc_id", "acc_1")}
+
+        for g_try in range(1, max_green_tries + 1):
+            if self.should_stop:
+                raise RuntimeError("Đã dừng theo yêu cầu người dùng.")
+
+            acc_lbl = getattr(session, "cfg", {}).get(
+                "label", getattr(session, "acc_id", "AI")
+            )
+            # Từ lượt thử thứ 2 trở đi (hoặc khi được yêu cầu mở tab mới ngay từ lượt 1):
+            # BẮT BUỘC mở tab ChatGPT mới (New Chat) và đính kèm ảnh tham chiếu để tránh lỗi kẹt context!
+            need_new_tab = open_fresh_tab_first or (g_try >= 2)
+            if need_new_tab:
+                self._emit(
+                    message=f"[{ma_id}] 🔄 Mở tab ChatGPT mới (Lượt {g_try}/{max_green_tries}) trên {acc_lbl} kèm ảnh tham chiếu để vẽ Ảnh Nền Xanh Khổ Dọc 9:16..."
+                )
+                session.start_fresh_chat(f"STEP7_GREEN_9_16_TRY_{g_try}")
+
+            self._update_idea_record(
+                ma_id,
+                current_step=f"Đang vẽ Ảnh Nền Xanh Khổ Dọc 9:16 (Tham chiếu mặt & trang phục từ Thumbnail) trên {acc_lbl} (Lượt {g_try}/{max_green_tries})...",
+            )
+            self._emit(
+                current_step="ChatGPT đang vẽ Ảnh Nhân Vật Nền Xanh Khổ Dọc 9:16 (#00FF00, Không Text)...",
+                progress=96.5,
+                message=f"[{ma_id}] 🟩 [{acc_lbl}] Đang yêu cầu ChatGPT vẽ Ảnh Nhân Vật Nền Xanh Khổ Dọc 9:16 từ ảnh tham chiếu (Lượt {g_try}/{max_green_tries})...",
+            )
+
+            green_res = session.generate_image_and_harvest_base64(
+                green_9_16_prompt,
+                step_label=f"THUMB_2_GREEN_9_16_TRY_{g_try}",
+                timeout_sec=240,
+                progress_cb=lambda st, sec, gt=g_try, al=acc_lbl: self._emit(
+                    message=f"[{ma_id}] 🟩 {al} đang vẽ Ảnh Nền Xanh Khổ Dọc 9:16 (Lượt {gt}: {sec}s)..."
+                ),
+                should_stop_cb=lambda: self.should_stop,
+                reference_image_b64=ref_b64,
+                reference_image_name=f"{ma_id}_character_reference.png",
+            )
+
+            if green_res.get("success") and green_res.get("b64_data"):
+                try:
+                    raw_green_bytes = base64.b64decode(green_res["b64_data"])
+                    if len(raw_green_bytes) > 15_000:
+                        plate_9_16_bytes = compose_chatgpt_9_16_green_portrait_to_plate(
+                            raw_green_bytes, part_index=1
+                        )
+                        for g_out in (
+                            renders_dir / "THUMBNAIL-NENXANH.png",
+                            renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                            proj_dir / "THUMBNAIL-NENXANH.png",
+                        ):
+                            g_out.parent.mkdir(parents=True, exist_ok=True)
+                            g_out.write_bytes(plate_9_16_bytes)
+                            _write_green_plate_stamp(g_out)
+                        try:
+                            ensure_project_script_green_images(
+                                proj_dir=proj_dir,
+                                renders_dir=renders_dir,
+                                proj_name=ma_id,
+                                force_regenerate=True,
+                            )
+                        except Exception:
+                            pass
+                        log_info(
+                            "SCRIPT",
+                            f"[{ma_id}] 🟩 Đã tạo thành công THUMBNAIL-NENXANH.png khổ dọc 9:16 (1080x1920) bằng ChatGPT từ ảnh tham chiếu!",
+                            project_id=ma_id,
+                        )
+                        return plate_9_16_bytes
+                except Exception as e_dec:
+                    log_warn(
+                        "SCRIPT",
+                        f"[{ma_id}] ⚠️ Lỗi xử lý ảnh nền xanh 9:16 lượt {g_try}: {e_dec}",
+                        project_id=ma_id,
+                    )
+
+            err_g = str(green_res.get("error", "ChatGPT chưa trả về ảnh"))
+            is_rl_g = bool(green_res.get("rate_limited"))
+            self._emit(
+                message=f"[{ma_id}] ⚠️ Lượt {g_try} ({acc_lbl}) chưa tạo được ảnh nền xanh 9:16 ({err_g}) -> Chuyển sang tab mới / nick khác để tạo lại..."
+            )
+            if (is_rl_g or g_try >= 2) and hasattr(
+                session, "switch_to_another_account"
+            ):
+                switched = session.switch_to_another_account(
+                    extra_exclude=tried_green_accs
+                )
+                if switched:
+                    tried_green_accs.add(session.acc_id)
+                    self._emit(
+                        message=f"[{ma_id}] 🔄 Đã chuyển sang tài khoản {session.cfg['label']} (Cổng {session.port}) để mở tab mới vẽ Ảnh Nền Xanh 9:16!"
+                    )
+
+        return None
 
     def _validate_thumbnail_pair_bytes(
         self, thumb_bytes: bytes, green_bytes: bytes
     ) -> Dict[str, Any]:
         """
-        Kiểm định cặp ảnh `THUMBNAIL.png` và `THUMBNAIL-NENXANH.png`:
-        - Cùng độ phân giải 16:9 (`1920x1080`).
-        - Toàn bộ vùng bên trái (`x < 57%`) của `THUMBNAIL-NENXANH.png` phải là màu xanh `#00FF00` tinh khiết (`left_exact_key_ratio >= 0.98`, không dính chữ).
-        - Vùng bên phải chứa nhân vật người cha Mexico kích thước lớn, rõ nét (`right_character_ratio >= 0.35`).
+        Kiểm định cặp ảnh `THUMBNAIL.png` (16:9 `1920x1080`) và `THUMBNAIL-NENXANH.png` (khổ dọc 9:16 `1080x1920` do ChatGPT tạo):
+        - `THUMBNAIL-NENXANH.png` có khổ dọc 9:16 (`h > w`), nền xanh `#00FF00` tinh khiết và nhân vật đầy đủ 2 vai không chữ.
         """
         try:
             import io
@@ -7862,40 +8077,21 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             import numpy as np
             from PIL import Image
 
-            im_t = Image.open(io.BytesIO(thumb_bytes)).convert("RGB")
+            Image.open(io.BytesIO(thumb_bytes)).convert("RGB")
             im_g = Image.open(io.BytesIO(green_bytes)).convert("RGB")
-            if im_t.size != im_g.size:
-                return {"passed": False, "reason": "size_mismatch"}
             w, h = im_g.size
             arr_g = np.asarray(im_g, dtype=np.uint8)
-            left_x = int(round(w * 0.57))
-            left_zone = arr_g[:, :left_x, :]
             exact_green = (
-                (left_zone[:, :, 0] == 0)
-                & (left_zone[:, :, 1] == 255)
-                & (left_zone[:, :, 2] == 0)
+                (arr_g[:, :, 0] == 0) & (arr_g[:, :, 1] == 255) & (arr_g[:, :, 2] == 0)
             )
-            left_exact_ratio = float(np.mean(exact_green))
-
-            right_x = int(round(w * 0.64))
-            right_zone = arr_g[:, right_x:, :]
-            non_green = ~(
-                (
-                    right_zone[:, :, 1].astype(np.int16)
-                    - np.maximum(right_zone[:, :, 0], right_zone[:, :, 2]).astype(
-                        np.int16
-                    )
-                    > 80
-                )
-                & (right_zone[:, :, 1] > 170)
-            )
-            right_char_ratio = float(np.mean(non_green))
-            passed = (left_exact_ratio >= 0.98) and (right_char_ratio >= 0.35)
+            green_ratio = float(np.mean(exact_green))
+            char_ratio = 1.0 - green_ratio
+            passed = (h > w) and (green_ratio >= 0.12) and (char_ratio >= 0.22)
             return {
                 "passed": passed,
                 "size": f"{w}x{h}",
-                "left_exact_key_ratio": round(left_exact_ratio, 4),
-                "right_character_ratio": round(right_char_ratio, 4),
+                "left_exact_key_ratio": round(green_ratio, 4),
+                "right_character_ratio": round(char_ratio, 4),
             }
         except Exception as e:
             return {"passed": False, "reason": str(e)}
@@ -8022,62 +8218,66 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         def _save_matched_pair(
             thumb_1080p_bytes: bytes,
-            chatgpt_green_raw_bytes: Optional[bytes] = None,
+            chatgpt_green_9_16_bytes: Optional[bytes] = None,
         ) -> List[Path]:
             target_file.write_bytes(thumb_1080p_bytes)
             target_std_file.write_bytes(thumb_1080p_bytes)
             proj_std_file.write_bytes(thumb_1080p_bytes)
             out_list = [target_file]
             try:
-                green_bytes = None
-                if chatgpt_green_raw_bytes and len(chatgpt_green_raw_bytes) > 20_000:
-                    try:
-                        norm_g = self._normalize_thumbnail_to_16_9_1080p(
-                            chatgpt_green_raw_bytes
-                        )
-                        cand_g = self._create_matched_green_screen_from_thumbnail_bytes(
-                            norm_g
-                        )
-                        val_cand = self._validate_thumbnail_pair_bytes(
-                            thumb_1080p_bytes, cand_g
-                        )
-                        if val_cand.get("passed"):
-                            green_bytes = cand_g
-                    except Exception:
-                        green_bytes = None
-                if not green_bytes:
-                    green_bytes = (
-                        self._create_matched_green_screen_from_thumbnail_bytes(
-                            thumb_1080p_bytes
-                        )
-                    )
-                val_pair = self._validate_thumbnail_pair_bytes(
-                    thumb_1080p_bytes, green_bytes
+                from backend.renderer import (
+                    _is_green_plate_clean_and_large,
+                    _write_green_plate_stamp,
+                    compose_chatgpt_9_16_green_portrait_to_plate,
+                    ensure_project_script_green_images,
                 )
-                green_file.write_bytes(green_bytes)
-                green_id_file.write_bytes(green_bytes)
-                proj_green_file.write_bytes(green_bytes)
-                out_list.append(green_file)
-                try:
-                    from backend.renderer import (
-                        ensure_project_script_green_images,
+
+                green_bytes = None
+                if chatgpt_green_9_16_bytes and len(chatgpt_green_9_16_bytes) > 15_000:
+                    green_bytes = compose_chatgpt_9_16_green_portrait_to_plate(
+                        chatgpt_green_9_16_bytes, part_index=1
+                    )
+                elif _is_green_plate_clean_and_large(green_file):
+                    green_bytes = green_file.read_bytes()
+                else:
+                    # BẮT BUỘC gọi ChatGPT vẽ ảnh dọc 9:16 từ ảnh tham chiếu THUMBNAIL.png (TUYỆT ĐỐI KHÔNG tự cắt từ THUMBNAIL.png)
+                    green_bytes = self._generate_chatgpt_9_16_green_from_reference_sync(
+                        session=session,
+                        ma_id=ma_id,
+                        thumb_1080p_bytes=thumb_1080p_bytes,
+                        proj_dir=proj_dir,
+                        renders_dir=renders_dir,
+                        idea=idea,
+                        open_fresh_tab_first=True,
                     )
 
-                    ensure_project_script_green_images(
-                        proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
+                if green_bytes and len(green_bytes) > 10_000:
+                    val_pair = self._validate_thumbnail_pair_bytes(
+                        thumb_1080p_bytes, green_bytes
                     )
-                except Exception:
-                    pass
-                log_info(
-                    "SCRIPT",
-                    f"[{ma_id}] 🟩 Đã tạo & kiểm định cặp ảnh THUMBNAIL.png + THUMBNAIL-NENXANH.png + bộ 7 ảnh green_part_01..07.png "
-                    f"(left_key={val_pair.get('left_exact_key_ratio')}, right_char={val_pair.get('right_character_ratio')})",
-                    project_id=ma_id,
-                )
+                    for g_out in (green_file, green_id_file, proj_green_file):
+                        g_out.write_bytes(green_bytes)
+                        _write_green_plate_stamp(g_out)
+                    out_list.append(green_file)
+                    try:
+                        ensure_project_script_green_images(
+                            proj_dir=proj_dir,
+                            renders_dir=renders_dir,
+                            proj_name=ma_id,
+                            force_regenerate=True,
+                        )
+                    except Exception:
+                        pass
+                    log_info(
+                        "SCRIPT",
+                        f"[{ma_id}] 🟩 Đã tạo & kiểm định cặp ảnh THUMBNAIL.png (16:9) + THUMBNAIL-NENXANH.png (Khổ dọc 9:16 ChatGPT) + bộ 7 ảnh green_part_01..07.png "
+                        f"(size={val_pair.get('size')}, green_key={val_pair.get('left_exact_key_ratio')}, char={val_pair.get('right_character_ratio')})",
+                        project_id=ma_id,
+                    )
             except Exception as e_gr:
                 log_warn(
                     "SCRIPT",
-                    f"[{ma_id}] ⚠️ Lỗi tách nền tạo THUMBNAIL-NENXANH.png: {e_gr}",
+                    f"[{ma_id}] ⚠️ Lỗi tạo THUMBNAIL-NENXANH.png 9:16 bằng ChatGPT: {e_gr}",
                     project_id=ma_id,
                 )
             return out_list
@@ -8085,7 +8285,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         if target_file.exists() and target_file.stat().st_size > 30000:
             saved_paths = _save_matched_pair(target_file.read_bytes())
             self._emit(
-                message=f"[{ma_id}] ♻️ Đã đồng bộ cặp Thumbnail + Ảnh Nền Xanh ({target_file.name} & THUMBNAIL-NENXANH.png)..."
+                message=f"[{ma_id}] ♻️ Đã đồng bộ cặp Thumbnail + Ảnh Nền Xanh 9:16 ({target_file.name} & THUMBNAIL-NENXANH.png)..."
             )
             return [str(p) for p in saved_paths]
 
@@ -8102,12 +8302,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
             self._update_idea_record(
                 ma_id,
-                current_step=f"New Chat #4 (Vẽ Thumbnail): Đang tạo cặp Thumbnail 80/20 + Ảnh Nền Xanh trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
+                current_step=f"New Chat #4 (Vẽ Thumbnail): Đang tạo cặp Thumbnail 80/20 + Ảnh Nền Xanh 9:16 trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
             )
             self._emit(
-                current_step="New Chat #4 — Vẽ Thumbnail 80/20 + Ảnh Nhân Vật Nền Xanh",
+                current_step="New Chat #4 — Vẽ Thumbnail 80/20 + Ảnh Nhân Vật Nền Xanh Khổ Dọc 9:16",
                 progress=94.0,
-                message=f"[{ma_id}] 🎨 [New Chat #4] Đang vẽ Thumbnail 80/20 + Ảnh Nền Xanh trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
+                message=f"[{ma_id}] 🎨 [New Chat #4] Đang vẽ Thumbnail 80/20 + Ảnh Nền Xanh 9:16 trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
             )
 
             # Lượt 1: Nếu đang đứng sẵn ở New Chat #4 (vừa chạy xong Skill 05 SEO) thì vẽ trực tiếp trong cùng New Chat #4!
@@ -8169,7 +8369,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             best_fallback_bytes = img_bytes
 
             self._emit(
-                message=f"[{ma_id}] 🔍 Đang đánh giá QA Thumbnail 80/20 & tách nền tạo THUMBNAIL-NENXANH.png..."
+                message=f"[{ma_id}] 🔍 Đang đánh giá QA Thumbnail 80/20 & yêu cầu ChatGPT vẽ THUMBNAIL-NENXANH.png khổ dọc 9:16..."
             )
             qa_prompt = (
                 "Hãy nhìn trực tiếp vào bức ảnh Thumbnail vừa tạo ở trên và kiểm định chất lượng (PADRE MX 80/20 QA Gate):\n"
@@ -8196,47 +8396,26 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
 
             if is_qa_pass:
-                # Lượt 2 ngay trên cùng đoạn chat ChatGPT: Yêu cầu ChatGPT lấy đúng nhân vật ông già từ ảnh THUMBNAIL.png vừa tạo,
-                # vẽ đầy đủ đầu, tai, cổ và 2 vai hoàn chỉnh trên nền xanh lá #00FF00 thuần khiết, loại bỏ 100% chữ & phông nền!
-                chatgpt_green_raw: Optional[bytes] = None
-                try:
-                    self._emit(
-                        current_step="New Chat #4 — ChatGPT đang vẽ ảnh nhân vật nền xanh THUMBNAIL-NENXANH.png (Đầy đủ nhân vật, xóa sạch chữ)...",
-                        progress=96.5,
-                        message=f"[{ma_id}] 🟩 [{acc_lbl}] Đang yêu cầu ChatGPT tách & vẽ đầy đủ nhân vật ông già sang nền xanh #00FF00 (Loại bỏ 100% chữ)...",
+                # Lượt 2: BẮT BUỘC dùng ChatGPT vẽ ảnh khổ dọc 9:16 nền xanh #00FF00 không text,
+                # lấy vùng nhân vật ông già bên phải của THUMBNAIL.png làm ảnh tham chiếu (mặt & trang phục).
+                # Nếu tab hiện tại không vẽ được thì tự động mở tab mới (start_fresh_chat) kèm ảnh tham chiếu để vẽ!
+                chatgpt_green_9_16 = (
+                    self._generate_chatgpt_9_16_green_from_reference_sync(
+                        session=session,
+                        ma_id=ma_id,
+                        thumb_1080p_bytes=img_bytes,
+                        proj_dir=proj_dir,
+                        renders_dir=renders_dir,
+                        idea=idea,
+                        open_fresh_tab_first=False,
                     )
-                    green_prompt_2 = (
-                        "Call the image generation tool immediately to create the matched SECOND image (THUMBNAIL-NENXANH.png, horizontal landscape 1536x1024) based directly on the thumbnail image you just generated above:\n"
-                        "1. REMOVE 100% OF ALL TEXT, HEADLINES, LETTERS, NUMBERS, BANNERS, AND DOCUMENTS. There must be ZERO text anywhere in the image.\n"
-                        "2. Keep the EXACT SAME older Mexican man from the image above (identical face, age, hair, beard/mustache, eyewear, expression, and exact same clothing/outfit).\n"
-                        "3. Draw the COMPLETE upper-body portrait of this man (showing his full head, hair, both ears, neck, and BOTH FULL SHOULDERS & CHEST cleanly without cutting off his shoulders) positioned on the right side of the frame (occupying the right 30%-35% of the canvas).\n"
-                        "4. Replace 100% of the background (the entire left side and 100% of the space behind his head, hair, ears, neck, and shoulders) with a pure, flat, solid chroma-key green screen (#00FF00, RGB 0, 255, 0) — NO courtyard, NO plants, NO walls behind his neck, NO shadows, and NO gradients.\n"
-                        "Strict rule: Generate the image directly right now without asking any questions."
-                    )
-                    green_res = session.generate_image_and_harvest_base64(
-                        green_prompt_2,
-                        step_label=f"THUMB_2_GREEN_TRY_{attempt}",
-                        timeout_sec=220,
-                        progress_cb=lambda st, sec, at=attempt, al=acc_lbl: self._emit(
-                            message=f"[{ma_id}] 🟩 {al} đang vẽ ảnh nhân vật nền xanh #00FF00 (Lượt {at}: {sec}s)..."
-                        ),
-                        should_stop_cb=lambda: self.should_stop,
-                    )
-                    if green_res.get("success") and green_res.get("b64_data"):
-                        chatgpt_green_raw = base64.b64decode(green_res["b64_data"])
-                except Exception as e_g2:
-                    log_warn(
-                        "SCRIPT",
-                        f"[{ma_id}] Lưu ý khi ChatGPT vẽ ảnh nền xanh lượt 2 (sẽ dùng AI DeepLabV3 tách sạch): {e_g2}",
-                        project_id=ma_id,
-                    )
-
+                )
                 saved_paths = _save_matched_pair(
-                    img_bytes, chatgpt_green_raw_bytes=chatgpt_green_raw
+                    img_bytes, chatgpt_green_9_16_bytes=chatgpt_green_9_16
                 )
                 self._update_idea_record(ma_id, has_thumbnail=True)
                 self._emit(
-                    message=f"[{ma_id}] ✅ Cặp ảnh THUMBNAIL.png + THUMBNAIL-NENXANH.png ĐẠT CHUẨN QA -> Đã lưu vào {renders_dir}!"
+                    message=f"[{ma_id}] ✅ Cặp ảnh THUMBNAIL.png (16:9) + THUMBNAIL-NENXANH.png (9:16 ChatGPT) ĐẠT CHUẨN QA -> Đã lưu vào {renders_dir}!"
                 )
                 break
             else:
@@ -8248,7 +8427,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             saved_paths = _save_matched_pair(best_fallback_bytes)
             self._update_idea_record(ma_id, has_thumbnail=True)
             self._emit(
-                message=f"[{ma_id}] 💾 Đã lưu cặp ảnh THUMBNAIL.png + THUMBNAIL-NENXANH.png vào thư mục dự án!"
+                message=f"[{ma_id}] 💾 Đã lưu cặp ảnh THUMBNAIL.png + THUMBNAIL-NENXANH.png (9:16 ChatGPT) vào thư mục dự án!"
             )
 
         return [str(p) for p in saved_paths]
@@ -8260,11 +8439,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         exclude_accs: Optional[set] = None,
     ) -> List[str]:
         """
-        Đảm bảo 100% dự án `ma_id` có đủ cặp Thumbnail (`{ma_id}_THUMBNAIL_1.png` / `THUMBNAIL.png` + `THUMBNAIL-NENXANH.png` > 20KB).
-        Nếu chưa có hoặc tạo lỗi / tài khoản bị limit:
-        - Tự động xoay vòng qua tất cả các tài khoản ChatGPT đang có (`acc_1`, `acc_2`, `acc_3`),
-        - Nếu tài khoản nào bị limit thì tạm dừng tài khoản đó 30 phút và chuyển sang nick khác tạo ngay.
+        Đảm bảo 100% dự án `ma_id` có đủ cặp Thumbnail (`{ma_id}_THUMBNAIL_1.png` / `THUMBNAIL.png` + `THUMBNAIL-NENXANH.png` 9:16 do ChatGPT tạo).
+        Nếu đã có `THUMBNAIL.png` nhưng chưa có `THUMBNAIL-NENXANH.png` chuẩn 9:16 ChatGPT:
+        - BẮT BUỘC mở ChatGPT đính kèm ảnh tham chiếu nhân vật từ `THUMBNAIL.png` để tạo mới ảnh dọc 9:16 nền xanh không chữ!
         """
+        from backend.renderer import _is_green_plate_clean_and_large
 
         proj_dir = self.projects_dir / ma_id
         proj_dir.mkdir(parents=True, exist_ok=True)
@@ -8272,20 +8451,36 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         renders_dir.mkdir(parents=True, exist_ok=True)
 
         target_thumb = renders_dir / f"{ma_id}_THUMBNAIL_1.png"
+        if not target_thumb.exists() and (renders_dir / "THUMBNAIL.png").exists():
+            target_thumb = renders_dir / "THUMBNAIL.png"
         target_green = renders_dir / "THUMBNAIL-NENXANH.png"
         if target_thumb.exists() and target_thumb.stat().st_size > 20000:
-            if not (target_green.exists() and target_green.stat().st_size > 10000):
+            if not _is_green_plate_clean_and_large(target_green):
+                session_gr = None
                 try:
-                    g_bytes = self._create_matched_green_screen_from_thumbnail_bytes(
-                        target_thumb.read_bytes()
+                    session_gr = ChatGPTWebSession(
+                        project_id=f"{ma_id}_GREEN_9_16", acc_id=preferred_acc_id
                     )
-                    target_green.write_bytes(g_bytes)
-                    (renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png").write_bytes(
-                        g_bytes
+                    self._generate_chatgpt_9_16_green_from_reference_sync(
+                        session=session_gr,
+                        ma_id=ma_id,
+                        thumb_1080p_bytes=target_thumb.read_bytes(),
+                        proj_dir=proj_dir,
+                        renders_dir=renders_dir,
+                        open_fresh_tab_first=True,
                     )
-                    (proj_dir / "THUMBNAIL-NENXANH.png").write_bytes(g_bytes)
-                except Exception:
-                    pass
+                except Exception as e_gr_failover:
+                    log_warn(
+                        "SCRIPT",
+                        f"[{ma_id}] ⚠️ Lỗi gọi ChatGPT tạo THUMBNAIL-NENXANH.png 9:16: {e_gr_failover}",
+                        project_id=ma_id,
+                    )
+                finally:
+                    if session_gr is not None:
+                        try:
+                            session_gr.close()
+                        except Exception:
+                            pass
             self._update_idea_record(ma_id, has_thumbnail=True)
             return (
                 [str(target_thumb), str(target_green)]
@@ -10614,48 +10809,26 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         green_thumb_path = cand_g
                         break
 
-        # Tự động kiểm tra nếu ảnh nền xanh cũ chưa đạt chuẩn DeepLabV3 V1.0.25 thì tái tạo ngay từ THUMBNAIL.png
-        if main_thumb_path is not None and green_thumb_path is not None:
+        # Kiểm tra nếu ảnh nền xanh cũ là bản cắt cục bộ (không phải bản dọc 9:16 do ChatGPT tạo chuẩn V1.0.28) thì xóa bỏ để tạo lại bằng ChatGPT
+        if green_thumb_path is not None:
             try:
                 from backend.renderer import _is_green_plate_clean_and_large
 
                 if not _is_green_plate_clean_and_large(green_thumb_path):
+                    for old_bad_g in (
+                        renders_dir / "THUMBNAIL-NENXANH.png",
+                        renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                        proj_dir / "THUMBNAIL-NENXANH.png",
+                        proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                    ):
+                        if old_bad_g.exists():
+                            try:
+                                old_bad_g.unlink()
+                            except Exception:
+                                pass
                     green_thumb_path = None
             except Exception:
                 pass
-
-        # Tự động tách nền tạo ngay THUMBNAIL-NENXANH.png nếu đã có THUMBNAIL.png nhưng chưa có ảnh nền xanh
-        if main_thumb_path is not None and green_thumb_path is None:
-            try:
-                green_bytes = self._create_matched_green_screen_from_thumbnail_bytes(
-                    main_thumb_path.read_bytes()
-                )
-                if green_bytes and len(green_bytes) > 5_000:
-                    renders_dir.mkdir(parents=True, exist_ok=True)
-                    proj_dir.mkdir(parents=True, exist_ok=True)
-                    out_g_renders = renders_dir / "THUMBNAIL-NENXANH.png"
-                    out_g_id = renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png"
-                    out_g_proj = proj_dir / "THUMBNAIL-NENXANH.png"
-                    out_g_renders.write_bytes(green_bytes)
-                    out_g_id.write_bytes(green_bytes)
-                    out_g_proj.write_bytes(green_bytes)
-                    green_thumb_path = out_g_renders
-                    try:
-                        from backend.renderer import (
-                            ensure_project_script_green_images,
-                        )
-
-                        ensure_project_script_green_images(
-                            proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
-                        )
-                    except Exception:
-                        pass
-            except Exception as e_auto_gr:
-                log_warn(
-                    "SCRIPT",
-                    f"[{ma_id}] Lưu ý khi tự động tách nền tạo THUMBNAIL-NENXANH.png: {e_auto_gr}",
-                    project_id=ma_id,
-                )
 
         for p_cand in (main_thumb_path, green_thumb_path):
             if p_cand is not None and p_cand not in thumb_files:
@@ -10674,7 +10847,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     "filename": fallback_name,
                     "path": "",
                     "data_url": "",
-                    "meta": "Chưa có ảnh",
+                    "meta": "Chưa có ảnh (Bấm Vẽ/Tách Lại để ChatGPT tạo)",
                     "exists": False,
                 }
             try:
@@ -10686,7 +10859,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     if size_kb >= 1024
                     else f"{size_kb:.0f} KB"
                 )
-                dim_str = "1920×1080"
+                dim_str = "1080×1920" if kind == "green" else "1920×1080"
                 try:
                     from PIL import Image
 
@@ -10717,13 +10890,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         main_card = _encode_thumb_card(
             main_thumb_path,
             "main",
-            "1. Ảnh Thumbnail Chính (80/20 Có Chữ)",
+            "1. Ảnh Thumbnail Chính (16:9 • 80/20 Có Chữ)",
             "THUMBNAIL.png",
         )
         green_card = _encode_thumb_card(
             green_thumb_path,
             "green",
-            "2. Ảnh Nhân Vật Nền Xanh (#00FF00 Không Chữ)",
+            "2. Ảnh Nhân Vật Nền Xanh (Khổ Dọc 9:16 ChatGPT • #00FF00 Không Chữ)",
             "THUMBNAIL-NENXANH.png",
         )
 
@@ -10858,6 +11031,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 renders_dir = proj_dir / "renders"
                 renders_dir.mkdir(parents=True, exist_ok=True)
 
+                from backend.renderer import _is_green_plate_clean_and_large
+
                 existing_main = next(
                     (
                         p
@@ -10877,7 +11052,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             renders_dir / "THUMBNAIL-NENXANH.png",
                             proj_dir / "THUMBNAIL-NENXANH.png",
                         )
-                        if p.exists() and p.stat().st_size > 10_000
+                        if _is_green_plate_clean_and_large(p)
                     ),
                     None,
                 )
@@ -10885,39 +11060,37 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     self._emit(
                         status="running",
                         current_ma_id=ma_id,
-                        current_step="Đang tách nền tạo THUMBNAIL-NENXANH.png từ THUMBNAIL.png sẵn có...",
-                        progress=60.0,
-                        message=f"[{ma_id}] 🟩 Đang tách nền tạo THUMBNAIL-NENXANH.png từ {existing_main.name}...",
+                        current_step="Đang mở ChatGPT vẽ THUMBNAIL-NENXANH.png khổ dọc 9:16 từ ảnh tham chiếu THUMBNAIL.png...",
+                        progress=45.0,
+                        message=f"[{ma_id}] 🟩 Đang mở ChatGPT lấy {existing_main.name} làm ảnh tham chiếu (mặt & trang phục) để vẽ Ảnh Nền Xanh Khổ Dọc 9:16...",
                     )
-                    g_bytes = self._create_matched_green_screen_from_thumbnail_bytes(
-                        existing_main.read_bytes()
+                    if not session.open_session_tab():
+                        raise RuntimeError(
+                            f"Không mở được khung chat trên {session.cfg['label']}."
+                        )
+                    g_bytes = self._generate_chatgpt_9_16_green_from_reference_sync(
+                        session=session,
+                        ma_id=ma_id,
+                        thumb_1080p_bytes=existing_main.read_bytes(),
+                        proj_dir=proj_dir,
+                        renders_dir=renders_dir,
+                        idea=idea,
+                        open_fresh_tab_first=True,
                     )
-                    for g_out in (
-                        renders_dir / "THUMBNAIL-NENXANH.png",
-                        renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                        proj_dir / "THUMBNAIL-NENXANH.png",
-                    ):
-                        g_out.write_bytes(g_bytes)
-                    try:
-                        from backend.renderer import (
-                            ensure_project_script_green_images,
+                    if not g_bytes:
+                        raise RuntimeError(
+                            "ChatGPT chưa trả về được ảnh nền xanh khổ dọc 9:16 sau các lượt thử tab mới."
                         )
-
-                        ensure_project_script_green_images(
-                            proj_dir=proj_dir, renders_dir=renders_dir, proj_name=ma_id
-                        )
-                    except Exception:
-                        pass
                     self._update_idea_record(
                         ma_id,
                         has_thumbnail=True,
-                        current_step="✅ Đã tách xong THUMBNAIL-NENXANH.png từ THUMBNAIL.png",
+                        current_step="✅ Đã tạo xong THUMBNAIL-NENXANH.png khổ dọc 9:16 bằng ChatGPT",
                     )
                     self._emit(
                         status="completed",
-                        current_step="Hoàn tất tách nền THUMBNAIL-NENXANH.png",
+                        current_step="Hoàn tất vẽ THUMBNAIL-NENXANH.png khổ dọc 9:16 bằng ChatGPT",
                         progress=100.0,
-                        message=f"[{ma_id}] 🎉 Đã tạo xong THUMBNAIL-NENXANH.png tại {renders_dir}!",
+                        message=f"[{ma_id}] 🎉 Đã tạo xong THUMBNAIL-NENXANH.png (Khổ dọc 9:16 ChatGPT) tại {renders_dir}!",
                     )
                     completed_ok = True
                     return

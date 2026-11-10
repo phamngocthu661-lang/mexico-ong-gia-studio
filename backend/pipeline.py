@@ -1594,6 +1594,15 @@ class ProductionPipeline:
                                             pass
 
                             green_screen_img = None
+                            try:
+                                from backend.renderer import (
+                                    _is_green_plate_clean_and_large,
+                                )
+                            except Exception:
+                                _is_green_plate_clean_and_large = lambda p: (
+                                    p.exists() and p.stat().st_size > 10_000
+                                )
+
                             for gs_cand in (
                                 renders_dir / "THUMBNAIL-NENXANH.png",
                                 renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
@@ -1603,9 +1612,39 @@ class ProductionPipeline:
                                 final_renders_dir
                                 / f"{proj_name}_THUMBNAIL_NENXANH.png",
                             ):
-                                if gs_cand.exists() and gs_cand.stat().st_size > 10_000:
+                                if _is_green_plate_clean_and_large(gs_cand):
                                     green_screen_img = str(gs_cand)
                                     break
+
+                            if not green_screen_img:
+                                try:
+                                    from backend.adas_script_engine import (
+                                        ADASScriptEngine,
+                                    )
+
+                                    self._emit(
+                                        stage="render",
+                                        progress=74.5,
+                                        message="🟩 Đang gọi ChatGPT tạo ảnh nhân vật nền xanh khổ dọc 9:16 từ ảnh tham chiếu THUMBNAIL.png...",
+                                        job_id=job_id,
+                                    )
+                                    eng_gr = ADASScriptEngine(root_dir=self.root_dir)
+                                    eng_gr.ensure_project_thumbnail_with_failover_sync(
+                                        proj_name
+                                    )
+                                    for gs_cand2 in (
+                                        renders_dir / "THUMBNAIL-NENXANH.png",
+                                        proj_dir / "THUMBNAIL-NENXANH.png",
+                                    ):
+                                        if _is_green_plate_clean_and_large(gs_cand2):
+                                            green_screen_img = str(gs_cand2)
+                                            break
+                                except Exception as e_gr_pipe:
+                                    log_warn(
+                                        "RENDER",
+                                        f"[{proj_name}] Lưu ý khi tự động gọi ChatGPT tạo THUMBNAIL-NENXANH.png 9:16: {e_gr_pipe}",
+                                        project_id=proj_name,
+                                    )
 
                             # Khởi tạo / cập nhật Bộ Điều Phối Hình Ảnh (`visual_cues.json` + `script_green_images/green_part_01..07.png` + `TIMESTAMPS.txt`)
                             cues_json_path = assets_dir / "visual_cues.json"

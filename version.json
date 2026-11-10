@@ -1,8 +1,8 @@
 {
-  "version": "V1.0.27",
-  "build_number": 143,
-  "released_at": "2026-11-10 01:45:29",
+  "version": "1.0.28",
+  "build_number": 144,
+  "released_at": "2026-11-10 09:35:50",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.27: Xoa tieu de xoa sach folder/file lien quan, bo dem ma tieu de tang luy tien khong trung lap, va dong bo day du kho video Kho_Green cho khach hang"
+  "changelog": "V1.0.28 (Build #144): Bắt buộc tạo ảnh nền xanh khổ dọc 9:16 (1080x1920) bằng ChatGPT từ ảnh tham chiếu THUMBNAIL.png (tham chiếu mặt & trang phục nhân vật bên phải, nền xanh #00FF00, không text); tự động chuyển sang tab ChatGPT mới kèm ảnh tham chiếu khi chưa tạo được ảnh; xóa bỏ hoàn toàn nhánh tự cắt local từ THUMBNAIL.png"
 }
