@@ -1,8 +1,8 @@
 {
-  "version": "1.0.32",
-  "build_number": 148,
-  "released_at": "2026-11-10 21:11:00",
+  "version": "V1.0.33",
+  "build_number": 149,
+  "released_at": "2026-11-10 22:01:20",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V1.0.32 (Build #148): Bổ sung chế độ chọn Xử Lý Tiêu Đề Đầu Vào (1. Chạy Như Cũ qua Skill 01 viết lại tiêu đề | 2. Dùng Tiêu Đề Gốc bỏ qua Skill 01, khóa trực tiếp tiêu đề gốc làm LOCKED_TITLE và tạo thẳng Giàn ý 7 Phần ở Skill 02)."
+  "changelog": "V1.0.33 (Build #149): Sửa triệt để lỗi không chọn được mục Dùng Tiêu Đề Gốc trên giao diện (sửa lỗi TDZ initApp trong frontend/app.js, gắn trực tiếp window.selectAdasTitleMode trong index.html, chống cache app.js và đồng bộ tức thì các mã chờ trong Kho Dự Án)."
 }
