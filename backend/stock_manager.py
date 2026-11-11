@@ -255,8 +255,14 @@ class StockManager:
             "| # | Mã Video ID | Thời Gian Tải | Nguồn / Tiêu Đề | Link Gốc |",
             "|---|---|---|---|---|",
         ]
+        if isinstance(used_ids, dict):
+            values_iter = list(used_ids.values())
+        elif isinstance(used_ids, (list, tuple, set)):
+            values_iter = [x for x in used_ids if isinstance(x, dict)]
+        else:
+            values_iter = []
         sorted_items = sorted(
-            used_ids.values(),
+            values_iter,
             key=lambda x: str(x.get("downloaded_at", "")),
             reverse=True,
         )

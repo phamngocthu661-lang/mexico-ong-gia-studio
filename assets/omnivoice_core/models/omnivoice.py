@@ -859,9 +859,39 @@ class OmniVoice(PreTrainedModel):
                 # installed model (#959; see _resolve_snapshot_dir).
                 resolved_path = _resolve_snapshot_dir(pretrained_model_name_or_path)
 
+                # Chuẩn hóa trực tiếp file tokenizer_config.json trên ổ cứng trước khi nạp AutoTokenizer:
+                # Nếu extra_special_tokens đang là kiểu list (định dạng transformers 5.x gây lỗi
+                # AttributeError: 'list' object has no attribute 'keys' trên máy khách dùng transformers 4.x),
+                # tự động chuyển sang additional_special_tokens để tương thích 100% với cả transformers 4.x & 5.x.
+                _extra_toks = []
+                _tc_path = os.path.join(resolved_path, "tokenizer_config.json")
+                if os.path.isfile(_tc_path):
+                    try:
+                        import json as _json_tok
+
+                        with open(_tc_path, "r", encoding="utf-8") as _f_tc:
+                            _tc_data = _json_tok.load(_f_tc)
+                        if isinstance(_tc_data, dict) and isinstance(
+                            _tc_data.get("extra_special_tokens"), list
+                        ):
+                            _extra_toks = list(_tc_data.pop("extra_special_tokens"))
+                            _existing_add = list(
+                                _tc_data.get("additional_special_tokens") or []
+                            )
+                            for _tk in _extra_toks:
+                                if _tk not in _existing_add:
+                                    _existing_add.append(_tk)
+                            _tc_data["additional_special_tokens"] = _existing_add
+                            with open(_tc_path, "w", encoding="utf-8") as _f_tc_out:
+                                _json_tok.dump(
+                                    _tc_data, _f_tc_out, ensure_ascii=False, indent=2
+                                )
+                    except Exception:
+                        pass
+
                 try:
                     model.text_tokenizer = AutoTokenizer.from_pretrained(
-                        pretrained_model_name_or_path
+                        resolved_path
                     )
                 except (AttributeError, TypeError, AssertionError) as _tok_err:
                     if (
@@ -869,30 +899,8 @@ class OmniVoice(PreTrainedModel):
                         or "extra_special_tokens" in str(_tok_err)
                         or "values" in str(_tok_err)
                     ):
-                        import json as _json_tok
-
-                        _extra_toks = []
-                        _tc_path = os.path.join(
-                            resolved_path, "tokenizer_config.json"
-                        )
-                        if os.path.isfile(_tc_path):
-                            try:
-                                with open(
-                                    _tc_path, "r", encoding="utf-8"
-                                ) as _f_tc:
-                                    _tc_data = _json_tok.load(_f_tc)
-                                if isinstance(
-                                    _tc_data, dict
-                                ) and isinstance(
-                                    _tc_data.get("extra_special_tokens"), list
-                                ):
-                                    _extra_toks = list(
-                                        _tc_data["extra_special_tokens"]
-                                    )
-                            except Exception:
-                                pass
                         model.text_tokenizer = AutoTokenizer.from_pretrained(
-                            pretrained_model_name_or_path,
+                            resolved_path,
                             extra_special_tokens={},
                         )
                         if _extra_toks:

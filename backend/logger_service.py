@@ -904,6 +904,54 @@ PLAN_LABELS = {
     "VIP": "Gói Tùy Chỉnh Thời Hạn",
 }
 
+CHANNEL_KEY_METADATA: Dict[str, Dict[str, Any]] = {
+    "padre_mx": {
+        "channel_key": "padre_mx",
+        "prefix": "MEXICO",
+        "label": "🇲🇽 Mexico Ông Già (PADRE MX V4.0 — es-MX)",
+        "short_label": "🇲🇽 Mexico Ông Già",
+        "language": "es",
+        "default_voice_id": "04_mx_ong_gia_padre_implacable",
+        "use_script_green_image": True,
+        "layout_config_file": "video_layout_padre_mx.json",
+    },
+    "homeless": {
+        "channel_key": "homeless",
+        "prefix": "HOMELESS",
+        "label": "🏚️ Homeless Story US (V3.0 — en-US, Không Ảnh Green)",
+        "short_label": "🏚️ Homeless US",
+        "language": "en",
+        "default_voice_id": "homeless",
+        "use_script_green_image": False,
+        "layout_config_file": "video_layout_homeless.json",
+    },
+    "mafia": {
+        "channel_key": "mafia",
+        "prefix": "MAFIA",
+        "label": "🕴️ Mafia × Maid US (V2.0 — en-US, Không Ảnh Green)",
+        "short_label": "🕴️ Mafia US",
+        "language": "en",
+        "default_voice_id": "mafia",
+        "use_script_green_image": False,
+        "layout_config_file": "video_layout_mafia.json",
+    },
+}
+
+
+def normalize_channel_key(raw_key: Optional[str]) -> str:
+    """Chuẩn hóa mã kênh/key về 'padre_mx', 'homeless' hoặc 'mafia' (Mặc định 'padre_mx')."""
+    s = str(raw_key or "").strip().lower()
+    if s in ("homeless", "hl", "homeless_us", "homeless_story", "en_homeless", "us_homeless") or "homeless" in s:
+        return "homeless"
+    if s in ("mafia", "mf", "mafia_us", "mafia_maid", "nguoi_hau", "en_mafia", "us_mafia") or "mafia" in s:
+        return "mafia"
+    return "padre_mx"
+
+
+def get_channel_metadata(channel_key: Optional[str] = None) -> Dict[str, Any]:
+    ck = normalize_channel_key(channel_key)
+    return dict(CHANNEL_KEY_METADATA.get(ck, CHANNEL_KEY_METADATA["padre_mx"]))
+
 
 class LicenseManager:
     def __init__(self, root_dir: Optional[Path] = None):
@@ -932,7 +980,9 @@ class LicenseManager:
                 try:
                     with open(fpath, "r", encoding="utf-8-sig") as f:
                         d = json.load(f)
-                        if isinstance(d, dict) and d.get("license_key"):
+                        if isinstance(d, dict) and (
+                            d.get("license_key") or d.get("keys_by_channel")
+                        ):
                             prev_ts = int(data.get("last_seen_ts", 0) or 0)
                             cur_ts = int(d.get("last_seen_ts", 0) or 0)
                             if not data or cur_ts >= prev_ts:
@@ -948,6 +998,7 @@ class LicenseManager:
             targets.append(self.root_dir / "app" / "license.json")
         for fpath in targets:
             try:
+                fpath.parent.mkdir(parents=True, exist_ok=True)
                 with open(fpath, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
             except Exception:
@@ -956,35 +1007,41 @@ class LicenseManager:
     def verify_key_string(
         self, key_str: str, check_online_time: bool = True
     ) -> Dict[str, Any]:
-        """Kiểm tra tính hợp lệ, chữ ký số, mã máy HWID và thời hạn của một License Key Mexico Ông Già."""
+        """Kiểm tra tính hợp lệ, chữ ký số, mã máy HWID và thời hạn của một License Key (MEXICO / HOMELESS / MULTI)."""
         if not key_str or not key_str.strip():
             return {
                 "valid": False,
                 "status": "missing",
                 "hwid": self.hwid,
-                "message": "Chưa kích hoạt Key bản quyền. Vui lòng nhập Key Mexico Ông Già Studio để mở khóa ứng dụng.",
+                "channel_key": "padre_mx",
+                "unlocked_channels": [],
+                "message": "Chưa kích hoạt Key bản quyền. Vui lòng nhập Key Mexico Ông Già hoặc Homeless để mở khóa ứng dụng.",
             }
 
         clean_key = key_str.strip().upper()
-        pattern = (
-            r"^MEXICO-(\d{8})-([A-Z0-9]{3})-([A-Z0-9]{8})-([A-Z0-9]{4})-([A-Z0-9]{12})$"
-        )
+        pattern = r"^(MEXICO|HOMELESS|MAFIA|MULTI)-(\d{8})-([A-Z0-9]{3})-([A-Z0-9]{8})-([A-Z0-9]{4})-([A-Z0-9]{12})$"
         m = re.match(pattern, clean_key)
         if not m:
             return {
                 "valid": False,
                 "status": "invalid_format",
                 "hwid": self.hwid,
-                "message": "❌ Định dạng Key không hợp lệ! Vui lòng nhập đúng Key của Mexico Ông Già Studio (VD: MEXICO-YYYYMMDD-...).",
+                "channel_key": "padre_mx",
+                "unlocked_channels": [],
+                "message": "❌ Định dạng Key không hợp lệ! Vui lòng nhập đúng Key (VD: MEXICO-..., HOMELESS-... hoặc MAFIA-...).",
             }
 
-        expiry_ymd, plan_code, key_hwid_tag, nonce, sig = m.groups()
-        expected_sig = _compute_signature(expiry_ymd, plan_code, key_hwid_tag, nonce)
+        key_prefix, expiry_ymd, plan_code, key_hwid_tag, nonce, sig = m.groups()
+        expected_sig = _compute_signature(
+            expiry_ymd, plan_code, key_hwid_tag, nonce, key_prefix=key_prefix
+        )
         if not hmac.compare_digest(sig, expected_sig):
             return {
                 "valid": False,
                 "status": "invalid_signature",
                 "hwid": self.hwid,
+                "channel_key": "padre_mx",
+                "unlocked_channels": [],
                 "message": "❌ Mã Key không hợp lệ hoặc đã bị chỉnh sửa sai chữ ký bảo mật!",
             }
 
@@ -995,6 +1052,8 @@ class LicenseManager:
                 "valid": False,
                 "status": "hwid_mismatch",
                 "hwid": self.hwid,
+                "channel_key": "padre_mx",
+                "unlocked_channels": [],
                 "message": f"❌ Key này được cấp riêng cho Mã Máy [{bound_display}], không khớp với Mã Máy hiện tại [{self.hwid}]!",
             }
 
@@ -1011,6 +1070,8 @@ class LicenseManager:
                 "valid": False,
                 "status": "invalid_date",
                 "hwid": self.hwid,
+                "channel_key": "padre_mx",
+                "unlocked_channels": [],
                 "message": "❌ Ngày hết hạn trong Key không hợp lệ!",
             }
 
@@ -1027,6 +1088,8 @@ class LicenseManager:
                 "valid": False,
                 "status": "clock_tampered",
                 "hwid": self.hwid,
+                "channel_key": "padre_mx",
+                "unlocked_channels": [],
                 "expiry_formatted": exp_date.strftime("%d/%m/%Y"),
                 "message": "⚠️ Phát hiện đồng hồ máy tính bị chỉnh lùi ngày giờ! Vui lòng chỉnh lại đúng ngày giờ thực tế hoặc kết nối Internet.",
             }
@@ -1034,12 +1097,31 @@ class LicenseManager:
         now_dt = datetime.datetime.fromtimestamp(effective_ts)
         today_date = now_dt.date()
 
+        if key_prefix == "HOMELESS":
+            primary_channel = "homeless"
+            unlocked_channels = ["homeless"]
+        elif key_prefix == "MAFIA":
+            primary_channel = "mafia"
+            unlocked_channels = ["mafia"]
+        elif key_prefix == "MULTI":
+            primary_channel = "padre_mx"
+            unlocked_channels = ["padre_mx", "homeless", "mafia"]
+        else:
+            primary_channel = "padre_mx"
+            unlocked_channels = ["padre_mx"]
+
+        ch_meta = get_channel_metadata(primary_channel)
+
         if effective_ts > exp_ts or today_date > exp_date:
             return {
                 "valid": False,
                 "status": "expired",
                 "hwid": self.hwid,
                 "license_key": clean_key,
+                "key_prefix": key_prefix,
+                "channel_key": primary_channel,
+                "unlocked_channels": [],
+                "channel_meta": ch_meta,
                 "plan_code": plan_code,
                 "plan_label": PLAN_LABELS.get(plan_code, "Gói Bản Quyền"),
                 "expiry_ymd": expiry_ymd,
@@ -1061,6 +1143,12 @@ class LicenseManager:
             "status": "active",
             "hwid": self.hwid,
             "license_key": clean_key,
+            "key_prefix": key_prefix,
+            "channel_key": primary_channel,
+            "active_channel_key": primary_channel,
+            "unlocked_channels": unlocked_channels,
+            "channel_meta": ch_meta,
+            "channels_catalog": CHANNEL_KEY_METADATA,
             "plan_code": plan_code,
             "plan_label": plan_label,
             "mode_label": mode_label,
@@ -1068,19 +1156,49 @@ class LicenseManager:
             "expiry_formatted": exp_date.strftime("%d/%m/%Y"),
             "days_remaining": days_left,
             "effective_ts": max(effective_ts, last_seen_ts),
-            "message": f"✅ Bản quyền hợp lệ ({plan_label}) — Hạn dùng đến hết {exp_date.strftime('%d/%m/%Y')} (Còn {days_left} ngày).",
+            "message": f"✅ Bản quyền hợp lệ ({ch_meta['short_label']} • {plan_label}) — Hạn dùng đến hết {exp_date.strftime('%d/%m/%Y')} (Còn {days_left} ngày).",
         }
 
     def activate_license(self, key_str: str) -> Dict[str, Any]:
-        """Kích hoạt và lưu Key bản quyền vào máy."""
+        """
+        Kích hoạt và lưu Key bản quyền vào Ví Đa Key (Multi-Key Wallet):
+        - Nếu máy đã có Key MEXICO và người dùng nhập thêm Key HOMELESS (hoặc ngược lại),
+          cả 2 Key đều được lưu song song trong `keys_by_channel` để chạy hỗn hợp đa kịch bản!
+        """
         res = self.verify_key_string(key_str, check_online_time=True)
         if not res.get("valid"):
             return res
 
         now_ts = int(res.get("effective_ts") or time.time())
         clean_key = res["license_key"]
+        saved = self._load_saved_data()
+        keys_by_channel: Dict[str, str] = {}
+        if isinstance(saved.get("keys_by_channel"), dict):
+            for ck, kv in saved["keys_by_channel"].items():
+                if ck in ("padre_mx", "homeless", "mafia") and isinstance(kv, str) and kv.strip():
+                    keys_by_channel[ck] = kv.strip().upper()
+        old_primary = str(saved.get("license_key") or "").strip().upper()
+        if old_primary:
+            if old_primary.startswith("HOMELESS-") and "homeless" not in keys_by_channel:
+                keys_by_channel["homeless"] = old_primary
+            elif old_primary.startswith("MAFIA-") and "mafia" not in keys_by_channel:
+                keys_by_channel["mafia"] = old_primary
+            elif old_primary.startswith("MEXICO-") and "padre_mx" not in keys_by_channel:
+                keys_by_channel["padre_mx"] = old_primary
+            elif old_primary.startswith("MULTI-"):
+                keys_by_channel["padre_mx"] = old_primary
+                keys_by_channel["homeless"] = old_primary
+                keys_by_channel["mafia"] = old_primary
+
+        for ck_unlock in res.get("unlocked_channels") or [res.get("channel_key", "padre_mx")]:
+            if ck_unlock in ("padre_mx", "homeless", "mafia"):
+                keys_by_channel[ck_unlock] = clean_key
+
+        active_ck = normalize_channel_key(res.get("channel_key"))
         save_payload = {
             "license_key": clean_key,
+            "active_channel_key": active_ck,
+            "keys_by_channel": keys_by_channel,
             "hwid": self.hwid,
             "plan_code": res["plan_code"],
             "plan_label": res["plan_label"],
@@ -1091,32 +1209,162 @@ class LicenseManager:
             "state_mac": _compute_state_mac(clean_key, now_ts),
         }
         self._save_data(save_payload)
-        return res
+        return self.get_license_status(check_online_time=False)
+
+    def set_active_channel_key(self, channel_key: str) -> Dict[str, Any]:
+        """Chuyển đổi Key/Chủ đề đang chọn làm mặc định trên giao diện ('padre_mx' hoặc 'homeless')."""
+        target_ck = normalize_channel_key(channel_key)
+        saved = self._load_saved_data()
+        st = self.get_license_status(check_online_time=False)
+        unlocked = st.get("unlocked_channels") or ["padre_mx"]
+        if target_ck not in unlocked:
+            return {
+                **st,
+                "switch_ok": False,
+                "switch_error": f"Key '{target_ck}' chưa được kích hoạt trên máy này. Vui lòng nhập Key {target_ck.upper()} trước!",
+            }
+        saved["active_channel_key"] = target_ck
+        keys_map = saved.get("keys_by_channel") or {}
+        if isinstance(keys_map, dict) and keys_map.get(target_ck):
+            saved["license_key"] = keys_map[target_ck]
+        self._save_data(saved)
+        new_st = self.get_license_status(check_online_time=False)
+        new_st["switch_ok"] = True
+        return new_st
 
     def get_license_status(self, check_online_time: bool = False) -> Dict[str, Any]:
-        """Kiểm tra trạng thái bản quyền hiện tại của ứng dụng."""
+        """Kiểm tra trạng thái bản quyền hiện tại của ứng dụng (Hỗ trợ Ví Đa Key: padre_mx + homeless)."""
         saved = self._load_saved_data()
-        key_str = saved.get("license_key", "")
-        if not key_str:
+        key_str = str(saved.get("license_key") or "").strip()
+        keys_by_channel: Dict[str, str] = {}
+        if isinstance(saved.get("keys_by_channel"), dict):
+            for ck, kv in saved["keys_by_channel"].items():
+                if ck in ("padre_mx", "homeless", "mafia") and isinstance(kv, str) and kv.strip():
+                    keys_by_channel[ck] = kv.strip().upper()
+        if key_str:
+            up_k = key_str.upper()
+            if up_k.startswith("HOMELESS-") and "homeless" not in keys_by_channel:
+                keys_by_channel["homeless"] = up_k
+            elif up_k.startswith("MAFIA-") and "mafia" not in keys_by_channel:
+                keys_by_channel["mafia"] = up_k
+            elif up_k.startswith("MULTI-"):
+                keys_by_channel.setdefault("padre_mx", up_k)
+                keys_by_channel.setdefault("homeless", up_k)
+                keys_by_channel.setdefault("mafia", up_k)
+            elif "padre_mx" not in keys_by_channel:
+                keys_by_channel["padre_mx"] = up_k
+
+        if not key_str and not keys_by_channel:
             return {
                 "valid": False,
                 "status": "missing",
                 "hwid": self.hwid,
+                "channel_key": "padre_mx",
+                "active_channel_key": "padre_mx",
+                "unlocked_channels": [],
+                "channel_meta": get_channel_metadata("padre_mx"),
+                "channels_catalog": CHANNEL_KEY_METADATA,
                 "plan_label": "Chưa kích hoạt",
                 "expiry_formatted": "--/--/----",
                 "days_remaining": 0,
-                "message": "Vui lòng nhập Key bản quyền để sử dụng Mexico Ông Già Studio.",
+                "message": "Vui lòng nhập Key bản quyền để sử dụng Studio.",
             }
 
-        res = self.verify_key_string(key_str, check_online_time=check_online_time)
-        if res.get("valid"):
-            now_ts = int(res.get("effective_ts") or time.time())
-            prev_ts = int(saved.get("last_seen_ts", 0) or 0)
-            if now_ts > prev_ts:
-                saved["last_seen_ts"] = now_ts
-                saved["state_mac"] = _compute_state_mac(key_str, now_ts)
-                self._save_data(saved)
-        return res
+        unlocked_channels: List[str] = []
+        valid_results_by_channel: Dict[str, Dict[str, Any]] = {}
+        last_invalid_res: Optional[Dict[str, Any]] = None
+
+        for ck_order in ("padre_mx", "homeless", "mafia"):
+            cand_k = keys_by_channel.get(ck_order)
+            if not cand_k:
+                continue
+            v_res = self.verify_key_string(cand_k, check_online_time=check_online_time)
+            if v_res.get("valid"):
+                for u_ck in v_res.get("unlocked_channels") or [ck_order]:
+                    if u_ck not in unlocked_channels:
+                        unlocked_channels.append(u_ck)
+                    valid_results_by_channel[u_ck] = v_res
+            else:
+                last_invalid_res = v_res
+
+        if not unlocked_channels and key_str:
+            v_primary = self.verify_key_string(key_str, check_online_time=check_online_time)
+            if v_primary.get("valid"):
+                for u_ck in v_primary.get("unlocked_channels") or [
+                    v_primary.get("channel_key", "padre_mx")
+                ]:
+                    if u_ck not in unlocked_channels:
+                        unlocked_channels.append(u_ck)
+                    valid_results_by_channel[u_ck] = v_primary
+            else:
+                last_invalid_res = v_primary
+
+        if not unlocked_channels:
+            fail_res = last_invalid_res or {
+                "valid": False,
+                "status": "missing",
+                "hwid": self.hwid,
+                "message": "Key bản quyền không hợp lệ hoặc đã hết hạn.",
+            }
+            fail_res["channel_key"] = "padre_mx"
+            fail_res["active_channel_key"] = "padre_mx"
+            fail_res["unlocked_channels"] = []
+            fail_res["channel_meta"] = get_channel_metadata("padre_mx")
+            fail_res["channels_catalog"] = CHANNEL_KEY_METADATA
+            return fail_res
+
+        preferred_ck = normalize_channel_key(saved.get("active_channel_key"))
+        active_ck = (
+            preferred_ck
+            if preferred_ck in unlocked_channels
+            else unlocked_channels[0]
+        )
+        active_res = dict(
+            valid_results_by_channel.get(active_ck)
+            or next(iter(valid_results_by_channel.values()))
+        )
+        ch_meta = get_channel_metadata(active_ck)
+
+        now_ts = int(active_res.get("effective_ts") or time.time())
+        prev_ts = int(saved.get("last_seen_ts", 0) or 0)
+        if (
+            now_ts > prev_ts
+            or saved.get("active_channel_key") != active_ck
+            or saved.get("keys_by_channel") != keys_by_channel
+        ):
+            saved["last_seen_ts"] = max(now_ts, prev_ts)
+            saved["active_channel_key"] = active_ck
+            saved["keys_by_channel"] = keys_by_channel
+            saved["license_key"] = active_res.get("license_key", key_str)
+            saved["state_mac"] = _compute_state_mac(saved["license_key"], saved["last_seen_ts"])
+            self._save_data(saved)
+
+        unlocked_labels = [
+            get_channel_metadata(c)["short_label"] for c in unlocked_channels
+        ]
+        active_res["channel_key"] = active_ck
+        active_res["active_channel_key"] = active_ck
+        active_res["unlocked_channels"] = unlocked_channels
+        active_res["unlocked_labels"] = unlocked_labels
+        active_res["channel_meta"] = ch_meta
+        active_res["channels_catalog"] = CHANNEL_KEY_METADATA
+        active_res["keys_by_channel"] = keys_by_channel
+        active_res["message"] = (
+            f"✅ Đang dùng [{ch_meta['short_label']}] ({active_res.get('plan_label')}) — "
+            f"Đã mở khóa {len(unlocked_channels)} Key ({', '.join(unlocked_labels)}) • "
+            f"Còn {active_res.get('days_remaining', 0)} ngày."
+        )
+        return active_res
+
+
+def get_license_manager(root_dir: Optional[Path] = None) -> LicenseManager:
+    """Trả về đối tượng LicenseManager dùng chung cho toàn hệ thống."""
+    base = (
+        Path(root_dir)
+        if root_dir is not None
+        else Path(os.path.abspath(__file__)).parent.parent
+    )
+    return LicenseManager(base)
 
 
 def get_machine_hwid() -> str:
@@ -1176,9 +1424,16 @@ def normalize_hwid_tag(hwid_input: Optional[str]) -> str:
 
 
 def _compute_signature(
-    expiry_ymd: str, plan_code: str, hwid_tag: str, nonce: str
+    expiry_ymd: str,
+    plan_code: str,
+    hwid_tag: str,
+    nonce: str,
+    key_prefix: str = "MEXICO",
 ) -> str:
-    payload = f"MEXICO|{expiry_ymd}|{plan_code}|{hwid_tag}|{nonce}".encode("utf-8")
+    pfx = str(key_prefix or "MEXICO").strip().upper()
+    if pfx not in ("MEXICO", "HOMELESS", "MAFIA", "MULTI"):
+        pfx = "MEXICO"
+    payload = f"{pfx}|{expiry_ymd}|{plan_code}|{hwid_tag}|{nonce}".encode("utf-8")
     sig = hmac.new(_MASTER_SECRET, payload, hashlib.sha256).hexdigest().upper()
     return sig[:12]
 
@@ -1194,14 +1449,33 @@ def generate_license_key(
     days: Optional[int] = None,
     hwid_input: Optional[str] = None,
     nonce: Optional[str] = None,
+    key_prefix: str = "MEXICO",
+    channel_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Tạo mã License Key bản quyền có chữ ký số HMAC-SHA256 chuyên cho Mexico Ông Già Studio.
-    Định dạng Key: MEXICO-YYYYMMDD-PLAN-HWIDTAG8-NONCE4-SIG12
+    Tạo mã License Key bản quyền có chữ ký số HMAC-SHA256.
+    Hỗ trợ 3 loại tiền tố Key:
+    - MEXICO-YYYYMMDD-PLAN-HWIDTAG8-NONCE4-SIG12 (Kênh Mexico Ông Già — padre_mx)
+    - HOMELESS-YYYYMMDD-PLAN-HWIDTAG8-NONCE4-SIG12 (Kênh Homeless US — homeless)
+    - MULTI-YYYYMMDD-PLAN-HWIDTAG8-NONCE4-SIG12 (Mở khóa đồng thời cả 2 kênh)
     """
     plan_code = (plan_code or "M01").upper().strip()[:3]
     if plan_code not in PLAN_LABELS:
         plan_code = "VIP"
+
+    if channel_key:
+        ck_low = str(channel_key).strip().lower()
+        if ck_low in ("homeless", "hl"):
+            key_prefix = "HOMELESS"
+        elif ck_low in ("mafia", "mf", "mafia_maid"):
+            key_prefix = "MAFIA"
+        elif ck_low in ("multi", "all", "both"):
+            key_prefix = "MULTI"
+        else:
+            key_prefix = "MEXICO"
+    pfx = str(key_prefix or "MEXICO").strip().upper()
+    if pfx not in ("MEXICO", "HOMELESS", "MAFIA", "MULTI"):
+        pfx = "MEXICO"
 
     now_dt = datetime.date.today()
     if expiry_date_str:
@@ -1237,11 +1511,19 @@ def generate_license_key(
     else:
         nonce = re.sub(r"[^0-9A-F]", "", nonce.upper())[:4].ljust(4, "A")
 
-    sig = _compute_signature(expiry_ymd, plan_code, hwid_tag, nonce)
-    full_key = f"MEXICO-{expiry_ymd}-{plan_code}-{hwid_tag}-{nonce}-{sig}"
+    sig = _compute_signature(expiry_ymd, plan_code, hwid_tag, nonce, key_prefix=pfx)
+    full_key = f"{pfx}-{expiry_ymd}-{plan_code}-{hwid_tag}-{nonce}-{sig}"
+    if pfx == "HOMELESS":
+        resolved_ck = "homeless"
+    elif pfx == "MAFIA":
+        resolved_ck = "mafia"
+    else:
+        resolved_ck = "padre_mx"
 
     return {
         "key": full_key,
+        "key_prefix": pfx,
+        "channel_key": resolved_ck,
         "plan_code": plan_code,
         "plan_label": PLAN_LABELS.get(plan_code, "Gói Tùy Chỉnh"),
         "expiry_ymd": expiry_ymd,
@@ -2150,11 +2432,19 @@ def apply_github_update(
                     ):
                         _safe_copy_file(item, app_subdir / item.name)
 
-            # 3. Khởi tạo config mặc định nếu máy khách chưa có file cấu hình bố cục
-            s_cfg = src_root / "config" / "video_layout_config.json"
-            d_cfg = root_dir / "config" / "video_layout_config.json"
-            if s_cfg.exists() and not d_cfg.exists():
-                _safe_copy_file(s_cfg, d_cfg)
+            # 3. Đồng bộ các file cấu hình bố cục Preview theo từng Key (padre_mx, homeless, mafia) cho máy khách
+            for layout_fn in (
+                "video_layout_config.json",
+                "video_layout_padre_mx.json",
+                "video_layout_homeless.json",
+                "video_layout_mafia.json",
+            ):
+                s_cfg = src_root / "config" / layout_fn
+                if not s_cfg.exists():
+                    s_cfg = src_root / "assets" / "default_layouts" / layout_fn
+                d_cfg = root_dir / "config" / layout_fn
+                if s_cfg.exists():
+                    _safe_copy_file(s_cfg, d_cfg)
 
             shutil.rmtree(tmp_dir, ignore_errors=True)
             try:

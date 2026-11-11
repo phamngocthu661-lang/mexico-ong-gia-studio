@@ -328,6 +328,39 @@
               </div>
               <textarea class="w-full bg-surface-container-lowest rounded p-2.5 font-label-md text-xs text-on-surface placeholder:text-outline-variant focus:outline-none focus:ring-1 focus:ring-primary-container border border-surface-container-high resize-y leading-relaxed" id="adas-raw-input" placeholder="Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo&#10;Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable&#10;Mis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso" rows="6"></textarea>
             </div>
+            <!-- CHỌN KEY KỊCH BẢN & GIỌNG CLONE ĐỂ LƯU VÀO HÀNG ĐỢI ĐA KEY (VÍ DỤ: 10 KB MEXICO + 10 KB HOMELESS) -->
+            <div class="flex flex-col gap-1.5 p-2.5 rounded-lg bg-surface-container-low border border-primary-container/40" id="adas-channel-key-box">
+              <div class="flex flex-wrap items-center justify-between gap-1 text-[11px]">
+                <span class="font-bold text-primary-container uppercase tracking-wide">🔑 Chọn Key Kênh Cho Các Tiêu Đề Sắp Lưu (Hỗ Trợ Chạy Đa Key Cùng Lúc):</span>
+                <span class="font-mono text-[10px] text-secondary font-bold" id="adas-active-key-status-label">Đang chọn: 🇲🇽 Mexico Ông Già (padre_mx)</span>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button class="adas-channel-key-card active p-2 rounded-lg bg-primary-container/15 border-2 border-primary-container text-left transition-all cursor-pointer select-none" data-channel-key="padre_mx" id="btn-channel-key-padre-mx" type="button">
+                  <div class="text-xs font-bold text-primary flex items-center justify-between gap-1">
+                    <span>🇲🇽 1. Key Mexico Ông Già (MXC)</span>
+                    <span class="channel-key-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono bg-primary-container text-on-primary-fixed font-bold">✓ ĐANG CHỌN</span>
+                  </div>
+                  <div class="text-[10px] text-on-surface-variant mt-0.5">5 Skills Mexico (es-MX) • Có Ảnh Green Kịch Bản • Preview MXC</div>
+                </button>
+                <button class="adas-channel-key-card p-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all cursor-pointer select-none" data-channel-key="homeless" id="btn-channel-key-homeless" type="button">
+                  <div class="text-xs font-bold text-on-surface flex items-center justify-between gap-1">
+                    <span>🏚️ 2. Key Homeless US (Tiếng Anh)</span>
+                    <span class="channel-key-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono bg-surface-container-high text-on-surface-variant">Bấm để chọn</span>
+                  </div>
+                  <div class="text-[10px] text-on-surface-variant mt-0.5">5 Skills Homeless V3.0 (en-US) • Voice Homeless • Không Ảnh Green KB</div>
+                </button>
+                <button class="adas-channel-key-card p-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all cursor-pointer select-none" data-channel-key="mafia" id="btn-channel-key-mafia" type="button">
+                  <div class="text-xs font-bold text-on-surface flex items-center justify-between gap-1">
+                    <span>🕴️ 3. Key Mafia US (Tiếng Anh)</span>
+                    <span class="channel-key-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono bg-surface-container-high text-on-surface-variant">Bấm để chọn</span>
+                  </div>
+                  <div class="text-[10px] text-on-surface-variant mt-0.5">5 Skills Mafia V2.0 (en-US) • Voice Mafia • Không Ảnh Green KB</div>
+                </button>
+              </div>
+              <div class="text-[10px] font-mono text-on-surface-variant">
+                💡 Mẹo chạy tự động <strong class="text-primary-container">10 KB MXC + 10 KB Homeless + 10 KB Mafia</strong>: Chọn Key bấm Lưu từng lô tiêu đề (hoặc gắn nhãn <code class="text-amber-300">[MX]</code> / <code class="text-amber-300">[HL]</code> / <code class="text-amber-300">[MF]</code> đầu dòng) rồi bấm Chạy Tất Cả!
+              </div>
+            </div>
             <!-- CHỌN CHẾ ĐỘ XỬ LÝ TIÊU ĐỀ: 1. CHẠY NHƯ CŨ (QUA SKILL 01) HOẶC 2. DÙNG TIÊU ĐỀ GỐC (VÀO THẲNG SKILL 02) -->
             <div class="flex flex-col gap-1.5 p-2.5 rounded-lg bg-surface-container-low border border-secondary/30" id="adas-title-mode-box" style="position: relative; z-index: 30; pointer-events: auto;">
               <div class="flex items-center justify-between text-[11px]">
@@ -1034,6 +1067,28 @@
               </div>
             </div>
 
+            <!-- THANH CHỌN MÀN HÌNH PREVIEW RIÊNG TỪNG KEY (MỖI KEY 1 BỐ CỤC PREVIEW ĐỘC LẬP • KHI RENDER KEY NÀO TỰ LẤY PREVIEW KEY ĐÓ) -->
+            <div class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-surface-container-lowest border-2 border-secondary/50 shadow-sm" id="preview-channel-switcher-bar">
+              <div class="flex items-center gap-1.5">
+                <span class="material-symbols-outlined text-secondary text-[18px]">tune</span>
+                <div class="flex flex-col">
+                  <span class="font-label-md text-xs font-extrabold text-primary">MÀN HÌNH PREVIEW RIÊNG THEO KEY (CẤU HÌNH ĐỘC LẬP):</span>
+                  <span class="text-[10px] font-mono text-on-surface-variant" id="preview-channel-desc-text">Đang chỉnh Preview của Key Mexico Ông Già (`video_layout_padre_mx.json`) • Video Green kéo ra ngoài viền sẽ tự động cắt gọn đúng khung 1920x1080 khi Render</span>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-1.5 shrink-0">
+                <button class="preview-key-tab-btn active px-3 py-1.5 rounded-md bg-primary-container text-on-primary-fixed font-mono text-xs font-extrabold shadow-[0_0_10px_rgba(0,255,135,0.35)] transition-all cursor-pointer" data-preview-key="padre_mx" id="btn-preview-key-padre-mx" type="button">
+                  🇲🇽 Preview: Mexico Ông Già (Có Ảnh Green KB)
+                </button>
+                <button class="preview-key-tab-btn px-3 py-1.5 rounded-md bg-surface-container-high hover:bg-surface-bright text-on-surface-variant font-mono text-xs font-bold border border-surface-container-highest transition-all cursor-pointer" data-preview-key="homeless" id="btn-preview-key-homeless" type="button">
+                  🏚️ Preview: Homeless US (Không Ảnh Green KB)
+                </button>
+                <button class="preview-key-tab-btn px-3 py-1.5 rounded-md bg-surface-container-high hover:bg-surface-bright text-on-surface-variant font-mono text-xs font-bold border border-surface-container-highest transition-all cursor-pointer" data-preview-key="mafia" id="btn-preview-key-mafia" type="button">
+                  🕴️ Preview: Mafia US (Không Ảnh Green KB)
+                </button>
+              </div>
+            </div>
+
             <!-- THANH CÔNG CỤ NỔI BẬT NGAY TRÊN PREVIEW: THÊM VIDEO GREEN VÀO PREVIEW & CHỈNH CỠ CHỮ SUB KARAOKE -->
             <div class="flex flex-col gap-2.5 p-3 rounded-lg bg-surface-container-lowest border-2 border-primary-container/50 shadow-md w-full min-w-0 overflow-hidden" id="preview-top-action-bar">
               <!-- Hàng 1: Thêm Video Green vào Preview (Chọn trực tiếp từ máy tính HOẶC chọn từ Kho_Green) -->
@@ -1214,23 +1269,23 @@
                     <span class="px-2 py-0.5 rounded bg-surface-container text-secondary font-mono text-[10.5px] font-bold shrink-0" id="selected-layer-z-badge">Z-Order: #2</span>
                   </div>
 
-                  <!-- Tọa độ X, Y, Rộng (W), Cao (H) trên hệ quy chiếu 1920x1080 -->
+                  <!-- Tọa độ X, Y, Rộng (W), Cao (H) trên hệ quy chiếu 1920x1080 (Cho phép Video Green phóng to lên tới 3840x2160 và kéo ra ngoài viền âm X,Y; khi Render tự cắt lấy đúng khung 1920x1080) -->
                   <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full min-w-0">
                     <div class="flex flex-col gap-0.5 min-w-0">
-                      <label class="font-mono text-[10px] text-on-surface-variant truncate" for="layer-prop-x">Vị trí X (px)</label>
-                      <input class="w-full h-8 px-2 rounded bg-surface-container-low text-primary font-mono text-xs border border-surface-container-high focus:outline-none focus:border-primary-container" id="layer-prop-x" max="1900" min="0" step="2" type="number" value="1410"/>
+                      <label class="font-mono text-[10px] text-on-surface-variant truncate" for="layer-prop-x">Vị trí X (px • Cho phép âm)</label>
+                      <input class="w-full h-8 px-2 rounded bg-surface-container-low text-primary font-mono text-xs border border-surface-container-high focus:outline-none focus:border-primary-container" id="layer-prop-x" max="1900" min="-3800" step="2" type="number" value="1410"/>
                     </div>
                     <div class="flex flex-col gap-0.5 min-w-0">
-                      <label class="font-mono text-[10px] text-on-surface-variant truncate" for="layer-prop-y">Vị trí Y (px)</label>
-                      <input class="w-full h-8 px-2 rounded bg-surface-container-low text-primary font-mono text-xs border border-surface-container-high focus:outline-none focus:border-primary-container" id="layer-prop-y" max="1060" min="0" step="2" type="number" value="300"/>
+                      <label class="font-mono text-[10px] text-on-surface-variant truncate" for="layer-prop-y">Vị trí Y (px • Cho phép âm)</label>
+                      <input class="w-full h-8 px-2 rounded bg-surface-container-low text-primary font-mono text-xs border border-surface-container-high focus:outline-none focus:border-primary-container" id="layer-prop-y" max="1060" min="-2100" step="2" type="number" value="300"/>
                     </div>
                     <div class="flex flex-col gap-0.5 min-w-0">
-                      <label class="font-mono text-[10px] text-on-surface-variant truncate" for="layer-prop-w">Rộng W (px)</label>
-                      <input class="w-full h-8 px-2 rounded bg-surface-container-low text-primary font-mono text-xs border border-surface-container-high focus:outline-none focus:border-primary-container" id="layer-prop-w" max="1920" min="40" step="4" type="number" value="490"/>
+                      <label class="font-mono text-[10px] text-on-surface-variant truncate" for="layer-prop-w">Rộng W (px • Tối đa 3840)</label>
+                      <input class="w-full h-8 px-2 rounded bg-surface-container-low text-primary font-mono text-xs border border-surface-container-high focus:outline-none focus:border-primary-container" id="layer-prop-w" max="3840" min="40" step="4" type="number" value="490"/>
                     </div>
                     <div class="flex flex-col gap-0.5 min-w-0">
-                      <label class="font-mono text-[10px] text-on-surface-variant truncate" for="layer-prop-h">Cao H (px)</label>
-                      <input class="w-full h-8 px-2 rounded bg-surface-container-low text-primary font-mono text-xs border border-surface-container-high focus:outline-none focus:border-primary-container" id="layer-prop-h" max="1080" min="40" step="4" type="number" value="780"/>
+                      <label class="font-mono text-[10px] text-on-surface-variant truncate" for="layer-prop-h">Cao H (px • Tối đa 2160)</label>
+                      <input class="w-full h-8 px-2 rounded bg-surface-container-low text-primary font-mono text-xs border border-surface-container-high focus:outline-none focus:border-primary-container" id="layer-prop-h" max="2160" min="40" step="4" type="number" value="780"/>
                     </div>
                   </div>
 

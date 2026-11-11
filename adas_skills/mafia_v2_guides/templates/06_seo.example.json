@@ -1,0 +1,76 @@
+{
+  "primary_title": "The Maid Noticed a Missing Receipt—Then the Mafia Boss Asked Her to Stay",
+  "supporting_titles": [
+    "Supporting alternative one under 100 characters",
+    "Supporting alternative two under 100 characters"
+  ],
+  "script_sha256": "REPLACE_WITH_CURRENT_SHA_FROM_state.json",
+  "qa_sha256": "REPLACE_WITH_SHA_OF_QA_JSON_FILE",
+  "description": "Replace with accurate US English description",
+  "tags": [
+    "maid story",
+    "mafia boss story",
+    "romantic suspense",
+    "emotional storytelling",
+    "hidden evidence",
+    "underestimated heroine",
+    "mafia romance",
+    "justice drama",
+    "female lead",
+    "romance story",
+    "slow burn story",
+    "betrayal reveal"
+  ],
+  "hashtags": [
+    "#MaidStory",
+    "#MafiaRomance",
+    "#EmotionalStory"
+  ],
+  "thumbnail_hypotheses": [
+    {
+      "click_hypothesis": "VISUAL_CURIOSITY_1",
+      "scene": "PLOT_VERIFIED_SCENE_1",
+      "viewer_question": "What is being hidden?",
+      "score": 90
+    },
+    {
+      "click_hypothesis": "VISUAL_CURIOSITY_2",
+      "scene": "PLOT_VERIFIED_SCENE_2",
+      "viewer_question": "What is being hidden?",
+      "score": 90
+    },
+    {
+      "click_hypothesis": "VISUAL_CURIOSITY_3",
+      "scene": "PLOT_VERIFIED_SCENE_3",
+      "viewer_question": "What is being hidden?",
+      "score": 90
+    }
+  ],
+  "thumbnail_final": {
+    "scene": "A verified turning-point from the script",
+    "evidence_object": "A script-verified paper receipt"
+  },
+  "image_prompt": "Create a 16:9 cinematic still of a story-verified moment, original character designs",
+  "hook_8s": {
+    "0-2s": "Immediate visual contradiction",
+    "2-5s": "A small clue gains attention",
+    "5-7s": "A meaningful reaction",
+    "7-8s": "Cut before the core answer"
+  },
+  "video_prompt": "8-second original cinematic hook derived from a verified script scene",
+  "visual_evidence": [
+    {
+      "source": "PART 2 exact script evidence",
+      "fact": "a visible paper record"
+    }
+  ],
+  "script_accuracy_confirmed": false,
+  "complement_check": {
+    "Locked Title altered?": "NO",
+    "Result": "PASS when verified"
+  },
+  "qa_summary": {
+    "Script accuracy": "PENDING until verified"
+  },
+  "channel_recommendation": "DRAFT — NOT PUBLISHABLE without verified evidence"
+}

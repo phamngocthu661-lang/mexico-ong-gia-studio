@@ -14,7 +14,7 @@ BROWSER_PROFILE_3/
 BROWSER_PROFILE_4/
 BROWSER_PROFILE_5/
 GEMINI_PROFILE_1/
-config/
+config/*
 _ota_update_tmp/
 app/
 agent_reach/
@@ -63,6 +63,14 @@ CODE_PROGRESS.md
 !Kho_Voice/
 !Kho_Voice/04_mx_ong_gia_padre_implacable/
 !Kho_Voice/04_mx_ong_gia_padre_implacable/**
+!Kho_Voice/homeless/
+!Kho_Voice/homeless/**
+!Kho_Voice/mafia/
+!Kho_Voice/mafia/**
+!config/video_layout_config.json
+!config/video_layout_padre_mx.json
+!config/video_layout_homeless.json
+!config/video_layout_mafia.json
 !assets/
 !assets/**
 !VoiceStudio/

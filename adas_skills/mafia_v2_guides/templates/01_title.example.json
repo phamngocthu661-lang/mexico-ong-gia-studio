@@ -1,0 +1,34 @@
+{
+  "selected_title": "The Maid Noticed a Missing Receipt—Then the Mafia Boss Asked Her to Stay",
+  "candidates": [
+    {
+      "title": "The Maid Noticed a Missing Receipt—Then the Mafia Boss Asked Her to Stay",
+      "score": 92
+    },
+    {
+      "title": "Alternative Title 2: The Maid Found the Clue",
+      "score": 87
+    },
+    {
+      "title": "Alternative Title 3: The Maid Found the Clue",
+      "score": 88
+    },
+    {
+      "title": "Alternative Title 4: The Maid Found the Clue",
+      "score": 89
+    },
+    {
+      "title": "Alternative Title 5: The Maid Found the Clue",
+      "score": 90
+    }
+  ],
+  "fingerprint": {
+    "heroine_role": "maid",
+    "trigger_event": "missing receipt",
+    "power_dynamic": "boss initially distrusts maid",
+    "hidden_competence": "inventory process experience",
+    "evidence_mechanism": "paper records cross-check",
+    "core_reversal": "trusted lieutenant fabricated evidence",
+    "payoff": "heroine gains independent vindication"
+  }
+}

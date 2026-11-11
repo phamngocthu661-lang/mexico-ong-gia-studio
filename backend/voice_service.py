@@ -2263,6 +2263,32 @@ def _ensure_omnivoice_package_files(root_dir: Optional[Path] = None) -> Path:
     else:
         sys.path.insert(0, vs_str)
 
+    # 4. Tự động chuẩn hóa tokenizer_config.json trong pretrained_models/OmniVoice trên máy khách
+    #    (Chuyển extra_special_tokens dạng list sang additional_special_tokens để khắc phục 100%
+    #     lỗi AttributeError: 'list' object has no attribute 'keys' trên mọi phiên bản transformers)
+    for tok_cfg_path in (
+        base / "pretrained_models" / "OmniVoice" / "tokenizer_config.json",
+        base / "app" / "pretrained_models" / "OmniVoice" / "tokenizer_config.json",
+    ):
+        try:
+            if tok_cfg_path.is_file():
+                _tc_data = json.loads(tok_cfg_path.read_text(encoding="utf-8"))
+                if isinstance(_tc_data, dict) and isinstance(
+                    _tc_data.get("extra_special_tokens"), list
+                ):
+                    _est_items = _tc_data.pop("extra_special_tokens")
+                    _add_items = list(_tc_data.get("additional_special_tokens") or [])
+                    for _it in _est_items:
+                        if _it not in _add_items:
+                            _add_items.append(_it)
+                    _tc_data["additional_special_tokens"] = _add_items
+                    tok_cfg_path.write_text(
+                        json.dumps(_tc_data, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+        except Exception:
+            pass
+
     return vs_dir
 
 
@@ -2541,6 +2567,29 @@ class VoiceStudioService:
             print(
                 f"[VoiceStudioService] Nạp VoiceStudio OmniVoice từ {self.model_path}..."
             )
+            # Chuẩn hóa trực tiếp tokenizer_config.json trên ổ cứng (chuyển extra_special_tokens kiểu list sang additional_special_tokens)
+            # để ngăn chặn triệt để 100% lỗi AttributeError: 'list' object has no attribute 'keys' trên mọi phiên bản transformers 4.x & 5.x
+            try:
+                _tc_file = self.model_path / "tokenizer_config.json"
+                if _tc_file.exists():
+                    _tc_obj = json.loads(_tc_file.read_text(encoding="utf-8"))
+                    if isinstance(_tc_obj, dict) and isinstance(
+                        _tc_obj.get("extra_special_tokens"), list
+                    ):
+                        _est_vals = list(_tc_obj.pop("extra_special_tokens"))
+                        _add_vals = list(
+                            _tc_obj.get("additional_special_tokens") or []
+                        )
+                        for _tv in _est_vals:
+                            if _tv not in _add_vals:
+                                _add_vals.append(_tv)
+                        _tc_obj["additional_special_tokens"] = _add_vals
+                        _tc_file.write_text(
+                            json.dumps(_tc_obj, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+            except Exception:
+                pass
             _ensure_omnivoice_package_files(self.root_dir)
             _apply_omnivoice_torch_compat_patch()
 
@@ -2721,24 +2770,41 @@ class VoiceStudioService:
                 )
 
         ref_text = ""
+        prof_lang = ""
         ref_p = Path(ref_audio)
         txt_path = ref_p.with_suffix(".txt")
         prof_path = ref_p.parent / "profile.json"
-        if txt_path.exists():
-            with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
-                ref_text = f.read().strip()
-        elif prof_path.exists():
+        if prof_path.exists():
             try:
                 prof_data = json.loads(
                     prof_path.read_text(encoding="utf-8", errors="ignore")
                 )
+                prof_lang = str(prof_data.get("language") or "").strip().lower()
                 ref_text = str(prof_data.get("refText") or "").strip()
             except Exception:
                 pass
+        if txt_path.exists():
+            with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+                txt_val = f.read().strip()
+                if txt_val:
+                    ref_text = txt_val
         if not ref_text:
             ref_text = "A las seis y cuarto de la mañana, mientras yo estaba tumbado en un catre en la cochera de la casa de mi hijo."
 
-        lang_code = "ja" if _is_cjk_text(script_text[:500]) else "es"
+        voice_folder_low = ref_p.parent.name.lower()
+        if _is_cjk_text(script_text[:500]):
+            lang_code = "ja"
+        elif prof_lang.startswith("en") or voice_folder_low in ("homeless", "mafia"):
+            lang_code = "en"
+        else:
+            sample_head = (script_text[:800] or "").lower()
+            has_es_chars = any(ch in sample_head for ch in "ñ¿¡áéíóú")
+            en_hits = sum(
+                1
+                for w in (" the ", " and ", " with ", " that ", " from ", " his ", " her ")
+                if w in sample_head
+            )
+            lang_code = "en" if (en_hits >= 3 and not has_es_chars) else "es"
         sentences = split_japanese_script(script_text)
         total_sentences = len(sentences)
         if total_sentences == 0:

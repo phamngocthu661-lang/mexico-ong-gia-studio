@@ -1,0 +1,88 @@
+{
+  "script_sha256": "REPLACE_WITH_SHA_FROM_state.json",
+  "part_handoffs": [
+    {
+      "part": 1,
+      "entry_bridge": "START",
+      "exit_bridge": "B1",
+      "location_end": "PLACEHOLDER_LOCATION_1",
+      "timeline_end": "PLACEHOLDER_DAY_1",
+      "heroine_action": "Heroine causes change in Part 1",
+      "relationship_state": "Guarded trust",
+      "character_knowledge": {
+        "heroine": [
+          "evidence actually known at this time"
+        ]
+      },
+      "open_loops": [
+        "L01"
+      ]
+    },
+    {
+      "part": 2,
+      "entry_bridge": "B1",
+      "exit_bridge": "B2",
+      "location_end": "PLACEHOLDER_LOCATION_2",
+      "timeline_end": "PLACEHOLDER_DAY_2",
+      "heroine_action": "Heroine causes change in Part 2",
+      "relationship_state": "Guarded trust",
+      "character_knowledge": {
+        "heroine": [
+          "evidence actually known at this time"
+        ]
+      },
+      "open_loops": [
+        "L01"
+      ]
+    },
+    {
+      "part": 3,
+      "entry_bridge": "B2",
+      "exit_bridge": "B3",
+      "location_end": "PLACEHOLDER_LOCATION_3",
+      "timeline_end": "PLACEHOLDER_DAY_3",
+      "heroine_action": "Heroine causes change in Part 3",
+      "relationship_state": "Guarded trust",
+      "character_knowledge": {
+        "heroine": [
+          "evidence actually known at this time"
+        ]
+      },
+      "open_loops": [
+        "L01"
+      ]
+    },
+    {
+      "part": 4,
+      "entry_bridge": "B3",
+      "exit_bridge": "B4",
+      "location_end": "PLACEHOLDER_LOCATION_4",
+      "timeline_end": "PLACEHOLDER_DAY_4",
+      "heroine_action": "Heroine causes change in Part 4",
+      "relationship_state": "Guarded trust",
+      "character_knowledge": {
+        "heroine": [
+          "evidence actually known at this time"
+        ]
+      },
+      "open_loops": [
+        "L01"
+      ]
+    },
+    {
+      "part": 5,
+      "entry_bridge": "B4",
+      "exit_bridge": "END",
+      "location_end": "PLACEHOLDER_LOCATION_5",
+      "timeline_end": "PLACEHOLDER_DAY_5",
+      "heroine_action": "Heroine causes change in Part 5",
+      "relationship_state": "Guarded trust",
+      "character_knowledge": {
+        "heroine": [
+          "evidence actually known at this time"
+        ]
+      },
+      "open_loops": []
+    }
+  ]
+}

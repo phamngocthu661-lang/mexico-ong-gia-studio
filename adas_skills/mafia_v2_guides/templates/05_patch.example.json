@@ -1,0 +1,12 @@
+{
+  "base_sha256": "REPLACE_WITH_SHA_FROM_state.json",
+  "authorized_net_change": false,
+  "patches": [
+    {
+      "issue_id": "P01",
+      "part": 2,
+      "old": "REPLACE_WITH_EXACT_UNIQUE_SPAN_CONTAINING_QA_QUOTE",
+      "new": "REPLACE_WITH_APPROVED_REPLACEMENT"
+    }
+  ]
+}

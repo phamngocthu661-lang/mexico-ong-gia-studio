@@ -2014,8 +2014,12 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (data.valid) {
+        if (data.channel_key && typeof window.selectAdasChannelKey === "function") {
+          window.selectAdasChannelKey(data.channel_key, false);
+        }
         if (licenseBadgeText) {
-          licenseBadgeText.innerText = `Bản Quyền: Còn ${data.days_remaining} ngày (${data.expiry_formatted})`;
+          const ckTag = (data.channel_key === "homeless") ? "🏚️ HOMELESS" : "🇲🇽 MEXICO";
+          licenseBadgeText.innerText = `${ckTag} • Còn ${data.days_remaining} ngày (${data.expiry_formatted})`;
         }
         if (btnOpenLicenseModal) {
           btnOpenLicenseModal.style.borderColor = "rgba(0, 230, 118, 0.5)";
@@ -2446,11 +2450,19 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const safeTooltip = String(`${maId}: ${fullTitle} (${it.current_step || ""})`).replace(/"/g, "&quot;");
+      const rawCk = String(it.channel_key || "padre_mx").toLowerCase();
+      const itemChannelKey = rawCk.includes("mafia") ? "mafia" : (rawCk.includes("homeless") ? "homeless" : "padre_mx");
+      const channelBadgeHtml = itemChannelKey === "mafia"
+        ? `<button type="button" class="btn-idea-toggle-channel-key px-1.5 py-0.5 rounded bg-purple-500/20 hover:bg-purple-500/35 text-purple-300 font-mono font-bold text-[9.5px] border border-purple-400/50 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-ck="mafia" title="Dự án chạy theo Key MAFIA US (5 Skills Mafia V2.0 • Giọng Mafia • Không dùng Ảnh Green KB) • Bấm để đổi sang Key Mexico">🕴️ MAFIA</button>`
+        : itemChannelKey === "homeless"
+        ? `<button type="button" class="btn-idea-toggle-channel-key px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 font-mono font-bold text-[9.5px] border border-amber-400/50 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-ck="homeless" title="Dự án chạy theo Key HOMELESS US (5 Skills Homeless V3.0 • Giọng Homeless • Không dùng Ảnh Green KB) • Bấm để đổi sang Key Mafia">🏚️ HOMELESS</button>`
+        : `<button type="button" class="btn-idea-toggle-channel-key px-1.5 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/30 text-[#00ff87] font-mono font-bold text-[9.5px] border border-[#00ff87]/40 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-ck="padre_mx" title="Dự án chạy theo Key MEXICO ÔNG GIÀ (5 Skills Mexico es-MX • Có Ảnh Green KB) • Bấm để đổi sang Key Homeless">🇲🇽 MXC</button>`;
 
       return `
         <div class="adas-idea-card px-2.5 py-1.5 rounded bg-surface-container-high border border-outline-variant/25 hover:border-secondary-container/40 transition-all flex items-center justify-between gap-2" style="display:flex;" title="${safeTooltip}">
-          <div class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+          <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
             <span class="px-1.5 py-0.5 rounded bg-secondary-container/15 text-secondary-container font-mono font-bold text-[10.5px] border border-secondary-container/30 shrink-0">#${maId}</span>
+            ${channelBadgeHtml}
             ${it.use_original_title
               ? `<button type="button" class="btn-idea-toggle-title-mode px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 font-mono font-bold text-[9.5px] border border-amber-400/50 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-orig="1" title="Đang dùng Tiêu Đề Gốc (Bỏ Skill 01, tạo thẳng Giàn ý Skill 02) • Bấm để đổi sang Chạy Như Cũ (Skill 01)">📌 Gốc</button>`
               : `<button type="button" class="btn-idea-toggle-title-mode px-1.5 py-0.5 rounded bg-primary-container/10 hover:bg-primary-container/25 text-primary-container/90 font-mono text-[9.5px] border border-primary-container/30 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-orig="0" title="Đang chọn Chạy Như Cũ (Qua Skill 01 viết lại 5 tiêu đề) • Bấm để đổi sang Dùng Tiêu Đề Gốc (Bỏ Skill 01)">🔄 Skill 1</button>`}
@@ -2500,6 +2512,38 @@ document.addEventListener("DOMContentLoaded", () => {
         renderSavedIdeasList(lastSavedIdeasCache);
       });
     }
+
+    // Gắn sự kiện cho nút chuyển đổi nhanh Key Kênh trên từng mã (🇲🇽 MXC -> 🏚️ HOMELESS -> 🕴️ MAFIA -> 🇲🇽 MXC)
+    listEl.querySelectorAll(".btn-idea-toggle-channel-key").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const mid = btn.dataset.id;
+        if (!mid) return;
+        const curCk = btn.dataset.ck || "padre_mx";
+        const nextCk = curCk === "padre_mx" ? "homeless" : (curCk === "homeless" ? "mafia" : "padre_mx");
+        try {
+          const res = await fetch("/api/adas/ideas/channel-key", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel_key: nextCk, ma_ids: [mid] })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            renderSavedIdeasList(data.ideas || []);
+            appendInstantLogToUI(
+              nextCk === "mafia"
+                ? `🕴️ [#${mid}] Đã chuyển sang Key MAFIA US (5 Skills Mafia V2.0 • Voice Mafia • Không dùng Ảnh Green KB).`
+                : nextCk === "homeless"
+                ? `🏚️ [#${mid}] Đã chuyển sang Key HOMELESS US (5 Skills Homeless V3.0 • Voice Homeless • Không dùng Ảnh Green KB).`
+                : `🇲🇽 [#${mid}] Đã chuyển sang Key MEXICO ÔNG GIÀ (5 Skills Mexico es-MX • Có Ảnh Green KB).`,
+              "SCRIPT",
+              "INFO",
+              mid
+            );
+          }
+        } catch (e) {}
+      });
+    });
 
     // Gắn sự kiện cho nút chuyển đổi nhanh Chế Độ Tiêu Đề trên từng mã (📌 Gốc <-> 🔄 Skill 1)
     listEl.querySelectorAll(".btn-idea-toggle-title-mode").forEach((btn) => {
@@ -3270,10 +3314,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // 4. Nút Điền Mẫu Tiêu Đề (Mỗi tiêu đề 1 dòng — Tự động bỏ qua Mã và đánh STT 1, 2, 3...)
-    const sampleText = [
+    const sampleTextMexico = [
       "Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo",
       "Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable",
       "Mis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso"
+    ].join("\n");
+    const sampleTextHomeless = [
+      "Everyone Laughed When an Old Homeless Man Bought the Abandoned Victorian House Until They Opened the Basement Safe",
+      "My Son Threw Me Out on a Freezing Night Thinking I Was Broke, Until the County Clerk Read the Original Property Deed",
+      "She Let a Shivering Homeless Veteran Sleep on Her Porch; The Next Morning Lawyers Arrived With a Sealed Estate Trust"
+    ].join("\n");
+    const sampleTextMafia = [
+      "The Ruthless Mafia Boss Fired the Quiet Maid for Dropping a Teacup Until He Saw the Scar on Her Wrist",
+      "Everyone Mocked the Deaf Hotel Cleaner Until the Don Knelt in the Lobby and Called Her His Wife",
+      "A Feared Crime Lord Found His Newborn Left in the Rain With the Quiet Waitress Nobody Dared to Touch"
     ].join("\n");
 
     const rawInputEl = document.getElementById("adas-raw-input");
@@ -3352,11 +3406,108 @@ document.addEventListener("DOMContentLoaded", () => {
     const fillSampleBtn = document.getElementById("btn-adas-fill-sample");
     if (fillSampleBtn && rawInputEl) {
       fillSampleBtn.addEventListener("click", () => {
-        rawInputEl.value = sampleText;
+        const curCk = (window.currentActiveChannelKey || "padre_mx");
+        rawInputEl.value = curCk === "mafia" ? sampleTextMafia : (curCk === "homeless" ? sampleTextHomeless : sampleTextMexico);
         refreshDetectedCountBadge();
-        appendInstantLogToUI("📋 Đã điền 3 tiêu đề mẫu (mỗi dòng 1 tiêu đề, tự động đánh Mã theo STT #1, #2, #3).", "SCRIPT", "INFO");
+        appendInstantLogToUI(
+          curCk === "mafia"
+            ? "📋 Đã điền 3 tiêu đề mẫu Key MAFIA US (en-US)."
+            : curCk === "homeless"
+            ? "📋 Đã điền 3 tiêu đề mẫu Key HOMELESS US (en-US)."
+            : "📋 Đã điền 3 tiêu đề mẫu Key MEXICO ÔNG GIÀ (es-MX).",
+          "SCRIPT",
+          "INFO"
+        );
       });
     }
+
+    // 4a. Khởi tạo Bộ Chọn Key Kênh (`padre_mx` vs `homeless` vs `mafia`) để hỗ trợ chạy tự động Đa Key (MXC + Homeless + Mafia)
+    window.currentActiveChannelKey = localStorage.getItem("adas_active_channel_key") || "padre_mx";
+    window.selectAdasChannelKey = async function(ck, userClicked = false) {
+      const rawCk = String(ck || "").toLowerCase();
+      const normCk = rawCk.includes("mafia") ? "mafia" : (rawCk.includes("homeless") ? "homeless" : "padre_mx");
+      window.currentActiveChannelKey = normCk;
+      try { localStorage.setItem("adas_active_channel_key", normCk); } catch (e) {}
+      const statusLbl = document.getElementById("adas-active-key-status-label");
+      if (statusLbl) {
+        statusLbl.innerText = normCk === "mafia"
+          ? "Đang chọn: 🕴️ Mafia US (mafia • Không Ảnh Green KB)"
+          : normCk === "homeless"
+          ? "Đang chọn: 🏚️ Homeless US (homeless • Không Ảnh Green KB)"
+          : "Đang chọn: 🇲🇽 Mexico Ông Già (padre_mx • Có Ảnh Green KB)";
+        statusLbl.style.color = normCk === "mafia" ? "#d8b4fe" : (normCk === "homeless" ? "#ffd54f" : "#00ff87");
+      }
+      document.querySelectorAll(".adas-channel-key-card").forEach((card) => {
+        const cardCk = card.getAttribute("data-channel-key");
+        const isAct = cardCk === normCk;
+        const dot = card.querySelector(".channel-key-dot");
+        const actColor = normCk === "mafia" ? "#c084fc" : (normCk === "homeless" ? "#ffd54f" : "#00ff87");
+        const actBg = normCk === "mafia" ? "rgba(192, 132, 252, 0.14)" : (normCk === "homeless" ? "rgba(255, 213, 79, 0.14)" : "rgba(0, 255, 135, 0.14)");
+        if (isAct) {
+          card.className = "adas-channel-key-card active p-2 rounded-lg bg-primary-container/15 border-2 border-primary-container text-left transition-all cursor-pointer select-none";
+          card.style.borderColor = actColor;
+          card.style.background = actBg;
+          if (dot) {
+            dot.className = "channel-key-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold";
+            dot.style.background = actColor;
+            dot.style.color = "#08120d";
+            dot.innerText = "✓ ĐANG CHỌN";
+          }
+        } else {
+          card.className = "adas-channel-key-card p-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all cursor-pointer select-none";
+          card.style.borderColor = "";
+          card.style.background = "";
+          if (dot) {
+            dot.className = "channel-key-dot px-1.5 py-0.5 rounded text-[9.5px] font-mono bg-surface-container-high text-on-surface-variant";
+            dot.style.background = "";
+            dot.style.color = "";
+            dot.innerText = "Bấm để chọn";
+          }
+        }
+      });
+      if (rawInputEl) {
+        rawInputEl.placeholder = normCk === "mafia"
+          ? "The Ruthless Mafia Boss Fired the Quiet Maid for Dropping a Teacup Until He Saw the Scar on Her Wrist\nEveryone Mocked the Deaf Hotel Cleaner Until the Don Knelt in the Lobby and Called Her His Wife"
+          : normCk === "homeless"
+          ? "Everyone Laughed When an Old Homeless Man Bought the Abandoned Victorian House Until They Opened the Basement Safe\nMy Son Threw Me Out on a Freezing Night Thinking I Was Broke, Until the County Clerk Read the Original Property Deed"
+          : "Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo\nMi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable";
+      }
+      if (userClicked) {
+        try {
+          const res = await fetch("/api/license/switch-key", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel_key: normCk })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (typeof window.switchPreviewChannelKey === "function") {
+              window.switchPreviewChannelKey(normCk);
+            }
+            const voiceSel = document.getElementById("voice-preset-select");
+            if (voiceSel && data.voice_status && data.voice_status.config) {
+              voiceSel.value = data.voice_status.config.selected_preset_id || voiceSel.value;
+            }
+            appendInstantLogToUI(
+              normCk === "mafia"
+                ? "🕴️ Đã chuyển sang Key MAFIA US (5 Skills Mafia V2.0 • Voice Clone `mafia` • Preview riêng không dùng Ảnh Green KB)."
+                : normCk === "homeless"
+                ? "🏚️ Đã chuyển sang Key HOMELESS US (5 Skills Homeless V3.0 • Voice Clone `homeless` • Preview riêng không dùng Ảnh Green KB)."
+                : "🇲🇽 Đã chuyển sang Key MEXICO ÔNG GIÀ (5 Skills Padre MX • Voice Clone Mexico • Preview 80/20 có Ảnh Green KB).",
+              "SYSTEM",
+              "INFO"
+            );
+          }
+        } catch (e) {}
+      }
+    };
+    document.querySelectorAll(".adas-channel-key-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        const ck = card.getAttribute("data-channel-key") || "padre_mx";
+        window.selectAdasChannelKey(ck, true);
+      });
+    });
+    window.selectAdasChannelKey(window.currentActiveChannelKey, false);
 
     const deleteAllBtn = document.getElementById("btn-adas-delete-all");
     if (deleteAllBtn) {
@@ -3416,7 +3567,8 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({
             raw_text: raw,
             custom_id: null,
-            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
+            channel_key: window.currentActiveChannelKey || "padre_mx"
           })
         });
         const data = await res.json();
@@ -3489,7 +3641,8 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({
             raw_text: raw,
             custom_id: null,
-            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
+            channel_key: window.currentActiveChannelKey || "padre_mx"
           })
         });
         const data = await res.json();
@@ -3520,7 +3673,8 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({
             raw_text: raw,
             custom_id: null,
-            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
+            channel_key: window.currentActiveChannelKey || "padre_mx"
           })
         });
         const data = await res.json();
@@ -5329,8 +5483,10 @@ document.addEventListener("DOMContentLoaded", () => {
       openGreenFolderBtn.addEventListener("click", () => openSystemFolder("Kho_Green"));
     }
 
-    // Trạng thái bố cục chuẩn 1920x1080 (đồng bộ 100% giữa Frontend và Backend)
+    // Trạng thái bố cục chuẩn 1920x1080 (đồng bộ 100% giữa Frontend và Backend, tách riêng theo từng Key)
+    let currentPreviewChannelKey = window.currentActiveChannelKey || "padre_mx";
     let layoutState = {
+      channel_key: currentPreviewChannelKey,
       canvas_width: 1920,
       canvas_height: 1080,
       stock_darken: { brightness: -0.12, contrast: 1.05, saturation: 0.92 },
@@ -5343,8 +5499,74 @@ document.addEventListener("DOMContentLoaded", () => {
       ],
     };
 
+    function syncPreviewChannelTabUI() {
+      document.querySelectorAll(".preview-key-tab-btn").forEach((btn) => {
+        const k = btn.getAttribute("data-preview-key");
+        if (k === currentPreviewChannelKey) {
+          btn.className = "preview-key-tab-btn px-2 py-1 rounded text-[10px] font-mono font-bold transition-all bg-primary-container text-on-primary shadow-[0_0_8px_rgba(0,255,135,0.4)]";
+        } else {
+          btn.className = "preview-key-tab-btn px-2 py-1 rounded text-[10px] font-mono font-bold transition-all bg-surface-container-high text-on-surface-variant hover:text-on-surface";
+        }
+      });
+      const lbl = document.getElementById("preview-active-channel-file-label");
+      if (lbl) {
+        lbl.textContent = currentPreviewChannelKey === "mafia"
+          ? "video_layout_mafia.json (Không dùng ảnh Green KB)"
+          : currentPreviewChannelKey === "homeless"
+          ? "video_layout_homeless.json (Không dùng ảnh Green KB)"
+          : "video_layout_padre_mx.json (Có ảnh Green KB)";
+      }
+    }
+
+    window.switchPreviewChannelKey = function (channelKey) {
+      const rawK = String(channelKey || "").toLowerCase();
+      const norm = rawK.includes("mafia") ? "mafia" : (rawK.includes("homeless") ? "homeless" : "padre_mx");
+      currentPreviewChannelKey = norm;
+      syncPreviewChannelTabUI();
+      fetch(`/api/video-layout?channel_key=${encodeURIComponent(norm)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data && data.layout) {
+            normalizeIncomingLayout(data.layout);
+          }
+          if (data && Array.isArray(data.green_library)) {
+            greenLibraryItems = data.green_library;
+            populateGreenLibraryDropdown();
+          }
+          if ((norm === "homeless" || norm === "mafia") && selectedTarget.type === "script_char") {
+            selectedTarget = { type: "karaoke_sub" };
+          }
+          refreshAllPreviewUI();
+          if (saveMsgEl) {
+            saveMsgEl.textContent = norm === "mafia"
+              ? "🕴️ Đang cấu hình Preview riêng cho Key [Mafia US] (Đã tắt Ảnh Green Nhân Vật Kịch Bản • Tự động cắt chuẩn 1920x1080 khi Render)"
+              : norm === "homeless"
+              ? "🏚️ Đang cấu hình Preview riêng cho Key [Homeless US] (Đã tắt Ảnh Green Nhân Vật Kịch Bản • Tự động cắt chuẩn 1920x1080 khi Render)"
+              : "🇲🇽 Đang cấu hình Preview riêng cho Key [Mexico Ông Già] (Bật Ảnh Green Nhân Vật Kịch Bản • Tự động cắt chuẩn 1920x1080 khi Render)";
+            saveMsgEl.className = "text-[10.5px] font-mono text-secondary font-bold text-center";
+          }
+        })
+        .catch(() => {
+          refreshAllPreviewUI();
+        });
+    };
+
+    document.querySelectorAll(".preview-key-tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const k = btn.getAttribute("data-preview-key");
+        if (k) window.switchPreviewChannelKey(k);
+      });
+    });
+    syncPreviewChannelTabUI();
+
     function normalizeIncomingLayout(raw) {
       if (!raw || typeof raw !== "object") return;
+      if (raw.channel_key) {
+        const rk = String(raw.channel_key).toLowerCase();
+        currentPreviewChannelKey = rk.includes("mafia") ? "mafia" : (rk.includes("homeless") ? "homeless" : "padre_mx");
+        syncPreviewChannelTabUI();
+      }
+      layoutState.channel_key = currentPreviewChannelKey;
       const gLayers = Array.isArray(raw.green_video_layers)
         ? raw.green_video_layers
         : Array.isArray(raw.green_layers)
@@ -5366,24 +5588,32 @@ document.addEventListener("DOMContentLoaded", () => {
       const charX = Math.max(0, Math.min(1920 - charW, Math.round(Number(sChar.x ?? 1410))));
       const charOp = Math.max(0.1, Math.min(1.0, Number(sChar.opacity ?? 0.90)));
 
-      layoutState.green_video_layers = gLayers.map((l, idx) => ({
-        ...l,
-        id: l.id || `green_layer_${idx + 1}`,
-        name: l.name || l.file || `Layer ${idx + 1}`,
-        file: l.file || "SUB.mp4",
-        enabled: l.enabled !== false,
-        x: Math.round(Number(l.x ?? 45)),
-        y: Math.round(Number(l.y ?? 45)),
-        width: Math.max(40, Math.round(Number(l.width ?? 330))),
-        height: Math.max(40, Math.round(Number(l.height ?? 145))),
-        opacity: Math.max(0.1, Math.min(1.0, Number(l.opacity ?? 1.0))),
-        zIndex: Number(l.zIndex ?? (idx + 1) * 10),
-      }));
+      layoutState.green_video_layers = gLayers.map((l, idx) => {
+        const lw = Math.max(40, Math.min(3840, Math.round(Number(l.width ?? 330))));
+        const lh = Math.max(40, Math.min(2160, Math.round(Number(l.height ?? 145))));
+        const lx = Math.max(-lw + 40, Math.min(1920 - 40, Math.round(Number(l.x ?? 45))));
+        const ly = Math.max(-lh + 40, Math.min(1080 - 40, Math.round(Number(l.y ?? 45))));
+        return {
+          ...l,
+          id: l.id || `green_layer_${idx + 1}`,
+          name: l.name || l.file || `Layer ${idx + 1}`,
+          file: l.file || "SUB.mp4",
+          enabled: l.enabled !== false,
+          x: lx,
+          y: ly,
+          width: lw,
+          height: lh,
+          opacity: Math.max(0.1, Math.min(1.0, Number(l.opacity ?? 1.0))),
+          zIndex: Number(l.zIndex ?? (idx + 1) * 10),
+        };
+      });
       layoutState.green_layers = layoutState.green_video_layers;
 
+      const isNoScriptCharKey = (currentPreviewChannelKey === "homeless" || currentPreviewChannelKey === "mafia");
+      const charEnabled = isNoScriptCharKey ? false : (sChar.enabled !== false);
       layoutState.script_character_green = {
         ...sChar,
-        enabled: sChar.enabled !== false,
+        enabled: charEnabled,
         x: charX,
         y: 1080 - charH,
         width: charW,
@@ -5621,23 +5851,30 @@ document.addEventListener("DOMContentLoaded", () => {
       // Bắt buộc luôn nằm sát đáy dưới cùng (y = 1080 - height)
       sc.y = 1080 - sc.height;
       sc.opacity = Math.max(0.1, Math.min(1.0, Number(sc.opacity !== undefined ? sc.opacity : 0.90)));
+      const isNoScriptChar = (currentPreviewChannelKey === "homeless" || currentPreviewChannelKey === "mafia");
+      sc.enabled = isNoScriptChar ? false : (sc.enabled !== false);
       layoutState.script_green_character = sc;
 
       if (scriptCharBox) {
-        scriptCharBox.style.left = `${(sc.x / 1920) * 100}%`;
-        scriptCharBox.style.bottom = "0%";
-        scriptCharBox.style.top = "auto";
-        scriptCharBox.style.width = `${(sc.width / 1920) * 100}%`;
-        scriptCharBox.style.height = `${(sc.height / 1080) * 100}%`;
-        scriptCharBox.style.opacity = String(sc.opacity);
-        const opTag = document.getElementById("preview-script-char-opacity-tag");
-        if (opTag) opTag.textContent = `OPACITY ${sc.opacity.toFixed(2)}`;
-        const inner = document.getElementById("preview-script-char-inner");
-        if (inner) {
-          if (selectedTarget.type === "script_char") {
-            inner.classList.add("ring-2", "ring-[#00ff87]");
-          } else {
-            inner.classList.remove("ring-2", "ring-[#00ff87]");
+        if (isNoScriptChar || sc.enabled === false) {
+          scriptCharBox.style.display = "none";
+        } else {
+          scriptCharBox.style.display = "flex";
+          scriptCharBox.style.left = `${(sc.x / 1920) * 100}%`;
+          scriptCharBox.style.bottom = "0%";
+          scriptCharBox.style.top = "auto";
+          scriptCharBox.style.width = `${(sc.width / 1920) * 100}%`;
+          scriptCharBox.style.height = `${(sc.height / 1080) * 100}%`;
+          scriptCharBox.style.opacity = String(sc.opacity);
+          const opTag = document.getElementById("preview-script-char-opacity-tag");
+          if (opTag) opTag.textContent = `OPACITY ${sc.opacity.toFixed(2)}`;
+          const inner = document.getElementById("preview-script-char-inner");
+          if (inner) {
+            if (selectedTarget.type === "script_char") {
+              inner.classList.add("ring-2", "ring-[#00ff87]");
+            } else {
+              inner.classList.remove("ring-2", "ring-[#00ff87]");
+            }
           }
         }
       }
@@ -5711,11 +5948,12 @@ document.addEventListener("DOMContentLoaded", () => {
     function scheduleAutoSaveLayout() {
       if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
       _autoSaveTimer = setTimeout(() => {
+        layoutState.channel_key = currentPreviewChannelKey;
         layoutState.green_layers = layoutState.green_video_layers;
         layoutState.script_green_character = layoutState.script_character_green;
         layoutState.karaoke_subtitle = layoutState.subtitle_karaoke;
         layoutState.stock_background = layoutState.stock_darken;
-        fetch("/api/video-layout", {
+        fetch(`/api/video-layout?channel_key=${encodeURIComponent(currentPreviewChannelKey)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(layoutState),
@@ -5807,20 +6045,30 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       `;
 
-      // Tầng #2: Ảnh Green Nhân Vật Theo Kịch Bản (Đáy phải • Opacity 0.9)
-      const isCharSel = selectedTarget.type === "script_char";
-      const charOp = Number(layoutState.script_character_green?.opacity ?? 0.90).toFixed(2);
-      html += `
-        <div class="layer-stack-row cursor-pointer p-1.5 rounded flex items-center justify-between text-[11px] font-mono border ${
-          isCharSel ? "bg-primary-container/20 border-primary-container text-primary" : "bg-surface-container-low border-surface-container-high text-on-surface"
-        }" data-select-type="script_char">
-          <div class="flex items-center gap-1.5 truncate">
-            <span class="px-1.5 py-0.2 rounded bg-primary-container text-black font-bold text-[9.5px]">LỚP #2</span>
-            <span class="font-bold truncate">👴🏽 Ảnh Green Kịch Bản (Đáy phải)</span>
+      // Tầng #2: Ảnh Green Nhân Vật Theo Kịch Bản (Đáy phải • Opacity 0.9) — Tắt đối với Key Homeless & Mafia
+      if (currentPreviewChannelKey === "homeless" || currentPreviewChannelKey === "mafia") {
+        const keyTitle = currentPreviewChannelKey === "mafia" ? "Key Mafia US" : "Key Homeless US";
+        html += `
+          <div class="p-1.5 rounded flex items-center justify-between text-[10.5px] font-mono bg-surface-container-lowest border border-surface-container text-on-surface-variant opacity-75">
+            <span>🚫 LỚP #2: ĐÃ TẮT (${keyTitle} không dùng Ảnh Green Kịch Bản)</span>
+            <span>OFF</span>
           </div>
-          <span class="text-[9.5px] text-primary-container shrink-0">Op:${charOp}</span>
-        </div>
-      `;
+        `;
+      } else {
+        const isCharSel = selectedTarget.type === "script_char";
+        const charOp = Number(layoutState.script_character_green?.opacity ?? 0.90).toFixed(2);
+        html += `
+          <div class="layer-stack-row cursor-pointer p-1.5 rounded flex items-center justify-between text-[11px] font-mono border ${
+            isCharSel ? "bg-primary-container/20 border-primary-container text-primary" : "bg-surface-container-low border-surface-container-high text-on-surface"
+          }" data-select-type="script_char">
+            <div class="flex items-center gap-1.5 truncate">
+              <span class="px-1.5 py-0.2 rounded bg-primary-container text-black font-bold text-[9.5px]">LỚP #2</span>
+              <span class="font-bold truncate">👴🏽 Ảnh Green Kịch Bản (Đáy phải)</span>
+            </div>
+            <span class="text-[9.5px] text-primary-container shrink-0">Op:${charOp}</span>
+          </div>
+        `;
+      }
 
       // Tầng #3.x: Các lớp Video Green trong Kho_Green (từ trên xuống dưới)
       greenLayersDesc.forEach((layer, idx) => {
@@ -5963,22 +6211,29 @@ document.addEventListener("DOMContentLoaded", () => {
       inp.addEventListener("input", () => {
         const obj = getActiveLayerObject();
         if (!obj) return;
-        if (propX) obj.x = Math.max(0, Math.min(1900, parseInt(propX.value, 10) || 0));
-        if (propW) obj.width = Math.max(40, Math.min(1920, parseInt(propW.value, 10) || 360));
-        if (propH) {
-          const newH = Math.max(40, Math.min(1080, parseInt(propH.value, 10) || 220));
-          obj.height = newH;
-          if (selectedTarget.type === "karaoke_sub") {
-            const mappedFs = Math.max(20, Math.min(110, Math.round(newH / 2.1)));
-            obj.fontSize = mappedFs;
-            obj.font_size = mappedFs;
+        if (selectedTarget.type === "green_layer") {
+          if (propW) obj.width = Math.max(40, Math.min(3840, parseInt(propW.value, 10) || 360));
+          if (propH) obj.height = Math.max(40, Math.min(2160, parseInt(propH.value, 10) || 220));
+          if (propX) obj.x = Math.max(-obj.width + 40, Math.min(1920 - 40, parseInt(propX.value, 10) || 0));
+          if (propY) obj.y = Math.max(-obj.height + 40, Math.min(1080 - 40, parseInt(propY.value, 10) || 0));
+        } else {
+          if (propX) obj.x = Math.max(0, Math.min(1900, parseInt(propX.value, 10) || 0));
+          if (propW) obj.width = Math.max(40, Math.min(1920, parseInt(propW.value, 10) || 360));
+          if (propH) {
+            const newH = Math.max(40, Math.min(1080, parseInt(propH.value, 10) || 220));
+            obj.height = newH;
+            if (selectedTarget.type === "karaoke_sub") {
+              const mappedFs = Math.max(20, Math.min(110, Math.round(newH / 2.1)));
+              obj.fontSize = mappedFs;
+              obj.font_size = mappedFs;
+            }
           }
-        }
-        if (selectedTarget.type === "script_char") {
-          obj.y = 1080 - obj.height;
-          if (propY) propY.value = String(obj.y);
-        } else if (propY) {
-          obj.y = Math.max(0, Math.min(1060, parseInt(propY.value, 10) || 0));
+          if (selectedTarget.type === "script_char") {
+            obj.y = 1080 - obj.height;
+            if (propY) propY.value = String(obj.y);
+          } else if (propY) {
+            obj.y = Math.max(0, Math.min(1060, parseInt(propY.value, 10) || 0));
+          }
         }
         if (propOpacity && selectedTarget.type !== "karaoke_sub") {
           obj.opacity = Math.max(0.1, Math.min(1.0, parseFloat(propOpacity.value) || 0.9));
@@ -6024,40 +6279,62 @@ document.addEventListener("DOMContentLoaded", () => {
       function onMove(ev) {
         const dx = Math.round((ev.clientX - startX) * scaleX);
         const dy = Math.round((ev.clientY - startY) * scaleY);
+        const isGreen = action.target.type === "green_layer";
         if (action.mode === "move") {
-          obj.x = Math.max(0, Math.min(1920 - origW, origX + dx));
-          if (action.target.type === "script_char") {
-            obj.y = 1080 - obj.height;
+          if (isGreen) {
+            obj.x = Math.max(-origW + 40, Math.min(1920 - 40, origX + dx));
+            obj.y = Math.max(-origH + 40, Math.min(1080 - 40, origY + dy));
           } else {
-            obj.y = Math.max(0, Math.min(1080 - origH, origY + dy));
+            obj.x = Math.max(0, Math.min(1920 - origW, origX + dx));
+            if (action.target.type === "script_char") {
+              obj.y = 1080 - obj.height;
+            } else {
+              obj.y = Math.max(0, Math.min(1080 - origH, origY + dy));
+            }
           }
         } else if (action.mode === "resize") {
           const dir = action.dir || "se";
-          if (dir.includes("e")) obj.width = Math.max(100, Math.min(1920 - origX, origW + dx));
-          if (dir.includes("s")) obj.height = Math.max(60, Math.min(1080 - origY, origH + dy));
-          if (dir.includes("w")) {
-            const newW = Math.max(100, origW - dx);
-            obj.x = Math.max(0, origX + (origW - newW));
-            obj.width = newW;
-          }
-          if (dir.includes("n")) {
-            const newH = Math.max(60, origH - dy);
-            if (action.target.type === "script_char") {
-              obj.height = Math.min(1060, newH);
-              obj.y = 1080 - obj.height;
-            } else {
-              obj.y = Math.max(0, origY + (origH - newH));
+          if (isGreen) {
+            // Cho phép phóng to Video/Ảnh Green vượt khung (tối đa 3840x2160) và kéo lố ra ngoài mép (tự động cắt phần thừa khi Render)
+            if (dir.includes("e")) obj.width = Math.max(40, Math.min(3840, origW + dx));
+            if (dir.includes("s")) obj.height = Math.max(40, Math.min(2160, origH + dy));
+            if (dir.includes("w")) {
+              const newW = Math.max(40, Math.min(3840, origW - dx));
+              obj.x = Math.max(-newW + 40, Math.min(1920 - 40, origX + (origW - newW)));
+              obj.width = newW;
+            }
+            if (dir.includes("n")) {
+              const newH = Math.max(40, Math.min(2160, origH - dy));
+              obj.y = Math.max(-newH + 40, Math.min(1080 - 40, origY + (origH - newH)));
               obj.height = newH;
             }
-          }
-          // Nếu đang kéo 4 góc của khung Phụ Đề Karaoke -> Phóng to / thu nhỏ cỡ chữ trực tiếp!
-          if (action.target.type === "karaoke_sub") {
-            const ratioW = obj.width / Math.max(200, origW);
-            const ratioH = obj.height / Math.max(60, origH);
-            const scaleFactor = Math.max(0.45, Math.min(2.2, (ratioW + ratioH) / 2));
-            const nextFs = Math.max(20, Math.min(110, Math.round(origFs * scaleFactor)));
-            obj.fontSize = nextFs;
-            obj.font_size = nextFs;
+          } else {
+            if (dir.includes("e")) obj.width = Math.max(100, Math.min(1920 - origX, origW + dx));
+            if (dir.includes("s")) obj.height = Math.max(60, Math.min(1080 - origY, origH + dy));
+            if (dir.includes("w")) {
+              const newW = Math.max(100, origW - dx);
+              obj.x = Math.max(0, origX + (origW - newW));
+              obj.width = newW;
+            }
+            if (dir.includes("n")) {
+              const newH = Math.max(60, origH - dy);
+              if (action.target.type === "script_char") {
+                obj.height = Math.min(1060, newH);
+                obj.y = 1080 - obj.height;
+              } else {
+                obj.y = Math.max(0, origY + (origH - newH));
+                obj.height = newH;
+              }
+            }
+            // Nếu đang kéo 4 góc của khung Phụ Đề Karaoke -> Phóng to / thu nhỏ cỡ chữ trực tiếp!
+            if (action.target.type === "karaoke_sub") {
+              const ratioW = obj.width / Math.max(200, origW);
+              const ratioH = obj.height / Math.max(60, origH);
+              const scaleFactor = Math.max(0.45, Math.min(2.2, (ratioW + ratioH) / 2));
+              const nextFs = Math.max(20, Math.min(110, Math.round(origFs * scaleFactor)));
+              obj.fontSize = nextFs;
+              obj.font_size = nextFs;
+            }
           }
         }
         syncInspectorInputsFromSelection();
@@ -6237,7 +6514,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    // 8. Nút Lưu Bố Cục Preview & Tạo Cache Video Green
+    // 8. Nút Lưu Bố Cục Preview & Tạo Cache Video Green (Theo từng Key riêng biệt)
     async function handleSaveVideoLayout(triggerBtn) {
       const origHtml = triggerBtn ? triggerBtn.innerHTML : "";
       if (triggerBtn) {
@@ -6245,12 +6522,13 @@ document.addEventListener("DOMContentLoaded", () => {
         triggerBtn.innerText = "⏳ Đang lưu & tạo Cache...";
       }
       try {
+        layoutState.channel_key = currentPreviewChannelKey;
         layoutState.green_layers = layoutState.green_video_layers;
         layoutState.script_green_character = layoutState.script_character_green;
         layoutState.karaoke_subtitle = layoutState.subtitle_karaoke;
         layoutState.stock_background = layoutState.stock_darken;
 
-        const res = await fetch("/api/video-layout", {
+        const res = await fetch(`/api/video-layout?channel_key=${encodeURIComponent(currentPreviewChannelKey)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(layoutState),
@@ -6259,11 +6537,12 @@ document.addEventListener("DOMContentLoaded", () => {
         if (res.ok && data.success) {
           if (data.layout) normalizeIncomingLayout(data.layout);
           refreshAllPreviewUI();
+          const keyLbl = currentPreviewChannelKey === "mafia" ? "Mafia US" : (currentPreviewChannelKey === "homeless" ? "Homeless US" : "Mexico Ông Già");
           if (saveMsgEl) {
-            saveMsgEl.textContent = `✅ Đã lưu Vị trí / Kích thước / Cỡ chữ (${layoutState.subtitle_karaoke?.fontSize || 52}px) / Opacity & đóng gói Cache Video Green!`;
+            saveMsgEl.textContent = `✅ Đã lưu Preview riêng cho Key [${keyLbl}] • Cỡ chữ (${layoutState.subtitle_karaoke?.fontSize || 52}px) & đóng gói Cache Video Green (Cắt chuẩn 1920x1080)!`;
             saveMsgEl.className = "text-[10.5px] font-mono text-primary-container font-bold text-center";
           }
-          appendInstantLogToUI("💾 Đã lưu bố cục Preview (Tách lớp Video Green + Ảnh Green sát đáy phải Opacity 0.9 + Karaoke Sub cao nhất)!", "RENDER", "INFO");
+          appendInstantLogToUI(`💾 Đã lưu bố cục Preview riêng cho Key [${keyLbl}] (Cắt chuẩn khung hình 1920x1080)!`, "RENDER", "INFO");
         }
       } catch (err) {
         if (saveMsgEl) saveMsgEl.textContent = "❌ Lỗi lưu cấu hình: " + err.message;
@@ -6296,22 +6575,9 @@ document.addEventListener("DOMContentLoaded", () => {
       if (greenLibSelectTop) greenLibSelectTop.innerHTML = html;
     }
 
-    // Tải dữ liệu ban đầu từ Backend (/api/video-layout)
-    fetch("/api/video-layout")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data && data.layout) {
-          normalizeIncomingLayout(data.layout);
-        }
-        if (data && Array.isArray(data.green_library)) {
-          greenLibraryItems = data.green_library;
-          populateGreenLibraryDropdown();
-        }
-        refreshAllPreviewUI();
-      })
-      .catch(() => {
-        refreshAllPreviewUI();
-      });
+    // Tải dữ liệu ban đầu từ Backend (/api/video-layout) theo Key đang kích hoạt
+    const initPreviewKey = window.currentActiveChannelKey || currentPreviewChannelKey || "padre_mx";
+    window.switchPreviewChannelKey(initPreviewKey);
   }
 
   // Init App (sau khi toàn bộ biến trạng thái & hàm đã được khởi tạo đầy đủ, chống lỗi TDZ 100%)

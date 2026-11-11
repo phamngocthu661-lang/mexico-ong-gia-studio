@@ -1063,6 +1063,37 @@ class ProductionPipeline:
                         except Exception:
                             pass
 
+                    # Xác định channel_key của dự án hiện tại (`padre_mx` hoặc `homeless`) để tự động đồng bộ Giọng đọc + Preview Layout riêng của từng Key
+                    from backend.logger_service import (
+                        get_license_manager,
+                        normalize_channel_key,
+                    )
+
+                    raw_job_ck = job.get("channel_key")
+                    if not raw_job_ck:
+                        for info_cand in (
+                            proj_dir / "idea_info.json",
+                            final_proj_dir / "idea_info.json",
+                        ):
+                            if info_cand.exists():
+                                try:
+                                    info_obj = json.loads(
+                                        info_cand.read_text(encoding="utf-8")
+                                    )
+                                    if isinstance(info_obj, dict) and info_obj.get(
+                                        "channel_key"
+                                    ):
+                                        raw_job_ck = info_obj.get("channel_key")
+                                        break
+                                except Exception:
+                                    pass
+                    if not raw_job_ck:
+                        try:
+                            raw_job_ck = get_license_manager().get_active_channel_key()
+                        except Exception:
+                            raw_job_ck = "padre_mx"
+                    job_channel_key = normalize_channel_key(raw_job_ck)
+
                     # Luôn đọc cấu hình Voice mới nhất (ưu tiên cấu hình đi kèm job hoặc vừa chọn trên UI)
                     v_cfg = load_voice_config()
                     if (
@@ -1070,12 +1101,55 @@ class ProductionPipeline:
                         and job["voice_config"]
                     ):
                         v_cfg.update(job["voice_config"])
+
+                    # Tự động chọn đúng Voice Clone tương ứng với `job_channel_key` khi chạy lô đa key (ví dụ 10 MXC + 10 Homeless + 10 Mafia)
+                    cur_preset_low = str(
+                        v_cfg.get("selected_preset_id") or ""
+                    ).lower()
+                    if job_channel_key == "homeless":
+                        hl_voice_wav = (
+                            Path(self.root_dir) / "Kho_Voice" / "homeless" / "sample.wav"
+                        )
+                        if hl_voice_wav.exists() and (
+                            not cur_preset_low
+                            or cur_preset_low == "mafia"
+                            or "mx" in cur_preset_low
+                            or "mexico" in cur_preset_low
+                            or "ernesto" in cur_preset_low
+                        ):
+                            v_cfg["selected_preset_id"] = "homeless"
+                            v_cfg["ref_wav"] = "homeless"
+                            v_cfg["language"] = "en"
+                    elif job_channel_key == "mafia":
+                        mf_voice_wav = (
+                            Path(self.root_dir) / "Kho_Voice" / "mafia" / "sample.wav"
+                        )
+                        if mf_voice_wav.exists() and (
+                            not cur_preset_low
+                            or cur_preset_low == "homeless"
+                            or "mx" in cur_preset_low
+                            or "mexico" in cur_preset_low
+                            or "ernesto" in cur_preset_low
+                        ):
+                            v_cfg["selected_preset_id"] = "mafia"
+                            v_cfg["ref_wav"] = "mafia"
+                            v_cfg["language"] = "en"
+                    elif job_channel_key == "padre_mx" and cur_preset_low in (
+                        "homeless",
+                        "mafia",
+                    ):
+                        v_cfg["selected_preset_id"] = (
+                            "04_mx_don_ernesto_trung_tri_mexico_clone"
+                        )
+                        v_cfg["ref_wav"] = "04_mx_don_ernesto_trung_tri_mexico_clone"
+                        v_cfg["language"] = "es"
+
                     current_sig = compute_voice_signature(v_cfg)
                     preset_id = str(v_cfg.get("selected_preset_id") or "Drama")
                     speed_val = float(v_cfg.get("speedScale", 0.97))
 
                     log_info(
-                        f"🎬 [LUỒNG #{job_num}] Bắt đầu xử lý '{proj_name}' ({len(script_text):,} chữ) với giọng [{preset_id} • {speed_val}x] "
+                        f"🎬 [LUỒNG #{job_num} • KEY={job_channel_key.upper()}] Bắt đầu xử lý '{proj_name}' ({len(script_text):,} chữ) với giọng [{preset_id} • {speed_val}x] "
                         f"| Voice tại Folder Project: {proj_dir / 'assets'} -> Đích lưu trữ cuối: {final_proj_dir}",
                         category="RENDER",
                         project_id=proj_name,
@@ -1609,57 +1683,64 @@ class ProductionPipeline:
                                             pass
 
                             green_screen_img = None
-                            try:
-                                from backend.renderer import (
-                                    _is_green_plate_clean_and_large,
-                                )
-                            except Exception:
-                                _is_green_plate_clean_and_large = lambda p: (
-                                    p.exists() and p.stat().st_size > 10_000
-                                )
-
-                            for gs_cand in (
-                                renders_dir / "THUMBNAIL-NENXANH.png",
-                                renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
-                                proj_dir / "THUMBNAIL-NENXANH.png",
-                                proj_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
-                                final_renders_dir / "THUMBNAIL-NENXANH.png",
-                                final_renders_dir
-                                / f"{proj_name}_THUMBNAIL_NENXANH.png",
-                            ):
-                                if _is_green_plate_clean_and_large(gs_cand):
-                                    green_screen_img = str(gs_cand)
-                                    break
-
-                            if not green_screen_img:
+                            if job_channel_key not in ("homeless", "mafia"):
                                 try:
-                                    from backend.adas_script_engine import (
-                                        ADASScriptEngine,
+                                    from backend.renderer import (
+                                        _is_green_plate_clean_and_large,
+                                    )
+                                except Exception:
+                                    _is_green_plate_clean_and_large = lambda p: (
+                                        p.exists() and p.stat().st_size > 10_000
                                     )
 
-                                    self._emit(
-                                        stage="render",
-                                        progress=74.5,
-                                        message="🟩 Đang gọi ChatGPT tạo ảnh nhân vật nền xanh khổ dọc 9:16 từ ảnh tham chiếu THUMBNAIL.png...",
-                                        job_id=job_id,
-                                    )
-                                    eng_gr = ADASScriptEngine(root_dir=self.root_dir)
-                                    eng_gr.ensure_project_thumbnail_with_failover_sync(
-                                        proj_name
-                                    )
-                                    for gs_cand2 in (
-                                        renders_dir / "THUMBNAIL-NENXANH.png",
-                                        proj_dir / "THUMBNAIL-NENXANH.png",
-                                    ):
-                                        if _is_green_plate_clean_and_large(gs_cand2):
-                                            green_screen_img = str(gs_cand2)
-                                            break
-                                except Exception as e_gr_pipe:
-                                    log_warn(
-                                        "RENDER",
-                                        f"[{proj_name}] Lưu ý khi tự động gọi ChatGPT tạo THUMBNAIL-NENXANH.png 9:16: {e_gr_pipe}",
-                                        project_id=proj_name,
-                                    )
+                                for gs_cand in (
+                                    renders_dir / "THUMBNAIL-NENXANH.png",
+                                    renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
+                                    proj_dir / "THUMBNAIL-NENXANH.png",
+                                    proj_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
+                                    final_renders_dir / "THUMBNAIL-NENXANH.png",
+                                    final_renders_dir
+                                    / f"{proj_name}_THUMBNAIL_NENXANH.png",
+                                ):
+                                    if _is_green_plate_clean_and_large(gs_cand):
+                                        green_screen_img = str(gs_cand)
+                                        break
+
+                                if not green_screen_img:
+                                    try:
+                                        from backend.adas_script_engine import (
+                                            ADASScriptEngine,
+                                        )
+
+                                        self._emit(
+                                            stage="render",
+                                            progress=74.5,
+                                            message="🟩 Đang gọi ChatGPT tạo ảnh nhân vật nền xanh khổ dọc 9:16 từ ảnh tham chiếu THUMBNAIL.png...",
+                                            job_id=job_id,
+                                        )
+                                        eng_gr = ADASScriptEngine(root_dir=self.root_dir)
+                                        eng_gr.ensure_project_thumbnail_with_failover_sync(
+                                            proj_name
+                                        )
+                                        for gs_cand2 in (
+                                            renders_dir / "THUMBNAIL-NENXANH.png",
+                                            proj_dir / "THUMBNAIL-NENXANH.png",
+                                        ):
+                                            if _is_green_plate_clean_and_large(gs_cand2):
+                                                green_screen_img = str(gs_cand2)
+                                                break
+                                    except Exception as e_gr_pipe:
+                                        log_warn(
+                                            "RENDER",
+                                            f"[{proj_name}] Lưu ý khi tự động gọi ChatGPT tạo THUMBNAIL-NENXANH.png 9:16: {e_gr_pipe}",
+                                            project_id=proj_name,
+                                        )
+                            else:
+                                log_info(
+                                    f"🎬 [{proj_name}] Key={job_channel_key.upper()} -> Không dùng ảnh nhân vật nền xanh kịch bản (Giữ nguyên các lớp còn lại theo Preview của key {job_channel_key.upper()}).",
+                                    category="RENDER",
+                                    project_id=proj_name,
+                                )
 
                             # Khởi tạo / cập nhật Bộ Điều Phối Hình Ảnh (`visual_cues.json` + `script_green_images/green_part_01..07.png` + `TIMESTAMPS.txt`)
                             cues_json_path = assets_dir / "visual_cues.json"
@@ -1709,7 +1790,7 @@ class ProductionPipeline:
                                 )
 
                             log_info(
-                                f"🔥 Bắt đầu FFmpeg GPU Render chuẩn Skill 04 80/20 ({'Có Nhân Vật Green 7 Part + Icon Green SFX • ' if green_screen_img or cues_json_path.exists() else ''}{'SSD Staging -> ' if use_ssd else ''}{final_video}) (Lần {sync_attempt})...",
+                                f"🔥 Bắt đầu FFmpeg GPU Render chuẩn Preview Key [{job_channel_key.upper()}] ({'Có Nhân Vật Green 7 Part + Icon Green SFX • ' if (job_channel_key not in ('homeless', 'mafia') and (green_screen_img or cues_json_path.exists())) else 'Không dùng ảnh Green Kịch bản • '}{'SSD Staging -> ' if use_ssd else ''}{final_video}) (Lần {sync_attempt})...",
                                 category="RENDER",
                                 project_id=proj_name,
                             )
@@ -1739,10 +1820,16 @@ class ProductionPipeline:
                                 ),
                                 ssd_staging_dir=str(ssd_root),
                                 use_ssd_staging=use_ssd,
-                                green_screen_image_path=green_screen_img,
-                                visual_cues_path=str(cues_json_path)
-                                if cues_json_path.exists()
+                                green_screen_image_path=green_screen_img
+                                if job_channel_key not in ("homeless", "mafia")
                                 else None,
+                                visual_cues_path=str(cues_json_path)
+                                if (
+                                    job_channel_key not in ("homeless", "mafia")
+                                    and cues_json_path.exists()
+                                )
+                                else None,
+                                channel_key=job_channel_key,
                             )
 
                             # Kiểm định nghiêm ngặt tính toàn vẹn & thời lượng của file MP4 vừa xuất

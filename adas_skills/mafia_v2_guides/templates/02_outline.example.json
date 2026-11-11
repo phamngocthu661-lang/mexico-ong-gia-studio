@@ -1,0 +1,74 @@
+{
+  "title": "The Maid Noticed a Missing Receipt—Then the Mafia Boss Asked Her to Stay",
+  "primary_dna": "C",
+  "content_family": "Hidden Competence Reveal",
+  "story_core": {
+    "premise": "Maid notices a discrepancy in a household record",
+    "central_conflict": "She is blamed for missing supplies while records conflict",
+    "heroine_agency": "She independently verifies physical evidence with authorized access",
+    "core_reversal": "Trusted staff member has been falsifying ordinary inventory totals",
+    "major_payoff": "Her evidence leads to a fair accounting and protected future"
+  },
+  "beats": [
+    {
+      "number": 1,
+      "name": "Beat 1 — PLACEHOLDER",
+      "cause": "Cause 1 is established by earlier events",
+      "action": "Beat 1 has a deliberate action",
+      "consequence": "Beat 1 changes the situation",
+      "heroine_contribution": "Heroine verifies evidence in Beat 1",
+      "transition": "Transition after Beat 1 leads into next beat"
+    },
+    {
+      "number": 2,
+      "name": "Beat 2 — PLACEHOLDER",
+      "cause": "Cause 2 is established by earlier events",
+      "action": "Beat 2 has a deliberate action",
+      "consequence": "Beat 2 changes the situation",
+      "heroine_contribution": "Heroine verifies evidence in Beat 2",
+      "transition": "Transition after Beat 2 leads into next beat"
+    },
+    {
+      "number": 3,
+      "name": "Beat 3 — PLACEHOLDER",
+      "cause": "Cause 3 is established by earlier events",
+      "action": "Beat 3 has a deliberate action",
+      "consequence": "Beat 3 changes the situation",
+      "heroine_contribution": "Heroine verifies evidence in Beat 3",
+      "transition": "Transition after Beat 3 leads into next beat"
+    },
+    {
+      "number": 4,
+      "name": "Beat 4 — PLACEHOLDER",
+      "cause": "Cause 4 is established by earlier events",
+      "action": "Beat 4 has a deliberate action",
+      "consequence": "Beat 4 changes the situation",
+      "heroine_contribution": "Heroine verifies evidence in Beat 4",
+      "transition": "Transition after Beat 4 leads into next beat"
+    },
+    {
+      "number": 5,
+      "name": "Beat 5 — PLACEHOLDER",
+      "cause": "Cause 5 is established by earlier events",
+      "action": "Beat 5 has a deliberate action",
+      "consequence": "Beat 5 changes the situation",
+      "heroine_contribution": "Heroine verifies evidence in Beat 5",
+      "transition": "Transition after Beat 5 leads into next beat"
+    }
+  ],
+  "open_loops": [
+    {
+      "id": "L01",
+      "opened_at": 1,
+      "closed_at": 5,
+      "payoff": "Reason for missing record established"
+    }
+  ],
+  "evidence_chain": [
+    {
+      "id": "E01",
+      "setup": "Receipt is found in lawful location",
+      "payoff": "Receipt is cross-checked with independent records"
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 {
-  "version": "V2.0.0",
-  "build_number": 200,
-  "released_at": "2026-11-11 00:03:58",
+  "version": "V2.1.0",
+  "build_number": 210,
+  "released_at": "2026-11-11 10:30:00",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.0.0 (Build #200): Sửa triệt để lỗi Render Video trên máy khách 'list' object has no attribute 'keys', tự động chia phụ đề Karaoke 2 dòng (10 từ/52 ký tự) và hỗ trợ chế độ Dùng Tiêu Đề Gốc."
+  "changelog": "V2.1.0 (Build #210): Sửa triệt để lỗi Render Video 'list' object has no attribute 'keys' ngay từ file pretrained_models/OmniVoice/tokenizer_config.json (chuyển extra_special_tokens sang additional_special_tokens), tích hợp đầy đủ 3 Key Kênh (Mexico Ông Già + Homeless US + Mafia US) kèm 3 màn hình Preview độc lập và chạy trộn lô Đa Key tự động."
 }

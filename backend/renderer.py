@@ -1933,10 +1933,64 @@ def parse_time_to_seconds(time_str: str) -> float:
 
 
 # ==============================================================================
-# QUẢN LÝ CẤU HÌNH BỐ CỤC PREVIEW & LAYER GREEN (`config/video_layout_config.json`)
+# QUẢN LÝ CẤU HÌNH BỐ CỤC PREVIEW & LAYER GREEN THEO TỪNG KEY (`video_layout_<key>.json`)
 # ==============================================================================
-def get_default_video_layout_config(root_dir: Optional[Path] = None) -> Dict[str, Any]:
+def _resolve_layout_channel_key(
+    channel_key: Optional[str] = None, root_dir: Optional[Path] = None
+) -> str:
+    if channel_key and str(channel_key).strip():
+        raw = str(channel_key).strip().lower()
+        if raw in ("homeless", "hl", "us_homeless", "homeless_us"):
+            return "homeless"
+        if raw in ("mafia", "mf", "mafia_us", "mafia_maid", "nguoi_hau", "en_mafia", "us_mafia"):
+            return "mafia"
+        return "padre_mx"
+    try:
+        from backend.logger_service import LicenseManager, normalize_channel_key
+
+        root = Path(root_dir) if root_dir else get_root_dir()
+        return normalize_channel_key(LicenseManager(root).get_active_channel_key())
+    except Exception:
+        return "padre_mx"
+
+
+def _normalize_green_layers_bounds(
+    layers: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Cho phép lớp Video/Ảnh Green (`Kho_Green`) kéo phóng to vượt khung (tới 3840x2160)
+    và kéo dịch một phần ra ngoài khung 1920x1080 (tọa độ âm hoặc > 1920/1080)
+    để đặt các video green có viền rộng sát mép màn hình.
+    Khi nướng cache / render, phần thừa ngoài khung 1920x1080 sẽ tự động được cắt bỏ (crop).
+    """
+    out: List[Dict[str, Any]] = []
+    for idx, lyr in enumerate(layers or []):
+        if not isinstance(lyr, dict):
+            continue
+        item = dict(lyr)
+        w = max(40, min(3840, int(round(float(item.get("width", 300) or 300)))))
+        h = max(40, min(2160, int(round(float(item.get("height", 150) or 150)))))
+        # Giữ ít nhất 40px còn nằm trong vùng nhìn thấy để tránh kéo mất hút hoàn toàn
+        x = max(-w + 40, min(1880, int(round(float(item.get("x", 0) or 0)))))
+        y = max(-h + 40, min(1040, int(round(float(item.get("y", 0) or 0)))))
+        item["x"] = x
+        item["y"] = y
+        item["width"] = w
+        item["height"] = h
+        item["opacity"] = round(
+            max(0.05, min(1.0, float(item.get("opacity", 1.0) or 1.0))), 2
+        )
+        item["zIndex"] = int(item.get("zIndex", (idx + 1) * 10) or ((idx + 1) * 10))
+        out.append(item)
+    return out
+
+
+def get_default_video_layout_config(
+    root_dir: Optional[Path] = None, channel_key: Optional[str] = None
+) -> Dict[str, Any]:
     root = Path(root_dir) if root_dir else get_root_dir()
+    ch_key = _resolve_layout_channel_key(channel_key, root)
+    no_green_char = ch_key in ("homeless", "mafia")
     kho_green = root / "Kho_Green"
     default_layers: List[Dict[str, Any]] = []
 
@@ -2001,7 +2055,13 @@ def get_default_video_layout_config(root_dir: Optional[Path] = None) -> Dict[str
             }
         )
 
+    sub_x = 280 if no_green_char else 30
+    sub_w = 1360
+    sub_y = 790 if no_green_char else 900
+    sub_h = 220 if no_green_char else 90
+
     return {
+        "channel_key": ch_key,
         "canvas": {"width": 1920, "height": 1080},
         "stock_background": {
             "brightness": -0.12,
@@ -2011,7 +2071,7 @@ def get_default_video_layout_config(root_dir: Optional[Path] = None) -> Dict[str
         },
         "green_layers": default_layers,
         "script_green_character": {
-            "enabled": True,
+            "enabled": False if no_green_char else True,
             "x": 1410,
             "y": 300,
             "width": 490,
@@ -2025,12 +2085,12 @@ def get_default_video_layout_config(root_dir: Optional[Path] = None) -> Dict[str
         },
         "karaoke_subtitle": {
             "enabled": True,
-            "x": 30,
-            "y": 900,
-            "width": 1360,
-            "height": 90,
-            "centerX": 710,
-            "centerY": 945,
+            "x": sub_x,
+            "y": sub_y,
+            "width": sub_w,
+            "height": sub_h,
+            "centerX": int(round(sub_x + sub_w / 2.0)),
+            "centerY": int(round(sub_y + sub_h / 2.0)),
             "fontSize": 68,
             "font_size": 68,
             "textColor": "#FFFF00",
@@ -2077,14 +2137,49 @@ def _normalize_karaoke_subtitle_cfg(sub_cfg: Dict[str, Any]) -> Dict[str, Any]:
     return sub_cfg
 
 
-def load_video_layout_config(root_dir: Optional[Path] = None) -> Dict[str, Any]:
+def load_video_layout_config(
+    root_dir: Optional[Path] = None, channel_key: Optional[str] = None
+) -> Dict[str, Any]:
     root = Path(root_dir) if root_dir else get_root_dir()
-    cfg_file = root / "config" / "video_layout_config.json"
-    default_cfg = get_default_video_layout_config(root)
-    if cfg_file.exists():
+    ch_key = _resolve_layout_channel_key(channel_key, root)
+    cfg_dir = root / "config"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    key_cfg_file = cfg_dir / f"video_layout_{ch_key}.json"
+    legacy_cfg_file = cfg_dir / "video_layout_config.json"
+    preset_cfg_file = root / "assets" / "default_layouts" / f"video_layout_{ch_key}.json"
+    if not preset_cfg_file.exists() and (root / "app" / "assets" / "default_layouts" / f"video_layout_{ch_key}.json").exists():
+        preset_cfg_file = root / "app" / "assets" / "default_layouts" / f"video_layout_{ch_key}.json"
+
+    # Tự động đồng bộ bố cục chuẩn đã cấu hình sẵn từ assets/default_layouts khi máy khách mới cập nhật lên Build >= 210
+    if preset_cfg_file.exists():
         try:
-            saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+            need_preset_sync = not key_cfg_file.exists()
+            if not need_preset_sync:
+                cur_saved = json.loads(key_cfg_file.read_text(encoding="utf-8"))
+                if not isinstance(cur_saved, dict) or int(cur_saved.get("_preset_version", 0) or 0) < 210:
+                    need_preset_sync = True
+            if need_preset_sync:
+                shutil.copy2(str(preset_cfg_file), str(key_cfg_file))
+                if ch_key == "padre_mx":
+                    shutil.copy2(str(preset_cfg_file), str(legacy_cfg_file))
+        except Exception:
+            pass
+
+    default_cfg = get_default_video_layout_config(root, channel_key=ch_key)
+    cfg_to_read: Optional[Path] = None
+    if key_cfg_file.exists():
+        cfg_to_read = key_cfg_file
+    elif preset_cfg_file.exists():
+        cfg_to_read = preset_cfg_file
+    elif ch_key == "padre_mx" and legacy_cfg_file.exists():
+        cfg_to_read = legacy_cfg_file
+
+    if cfg_to_read and cfg_to_read.exists():
+        try:
+            saved = json.loads(cfg_to_read.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
+                if "_preset_version" in saved:
+                    default_cfg["_preset_version"] = int(saved.get("_preset_version") or 210)
                 for section in (
                     "canvas",
                     "stock_background",
@@ -2106,10 +2201,28 @@ def load_video_layout_config(root_dir: Optional[Path] = None) -> Dict[str, Any]:
                 elif isinstance(saved.get("green_video_layers"), list):
                     default_cfg["green_layers"] = saved["green_video_layers"]
         except Exception as e:
-            print(f"[Renderer] Lưu ý khi đọc video_layout_config.json: {e}")
+            print(f"[Renderer] Lưu ý khi đọc {cfg_to_read.name}: {e}")
+    elif ch_key in ("homeless", "mafia") and legacy_cfg_file.exists():
+        # Khởi tạo lần đầu cho key homeless / mafia: kế thừa danh sách green_layers từ Kho_Green nếu đã bật,
+        # nhưng tắt hẳn script_green_character và giữ sub căn giữa.
+        try:
+            legacy_saved = json.loads(legacy_cfg_file.read_text(encoding="utf-8"))
+            if isinstance(legacy_saved, dict):
+                if isinstance(legacy_saved.get("green_layers"), list):
+                    default_cfg["green_layers"] = legacy_saved["green_layers"]
+                elif isinstance(legacy_saved.get("green_video_layers"), list):
+                    default_cfg["green_layers"] = legacy_saved["green_video_layers"]
+        except Exception:
+            pass
+
+    default_cfg["channel_key"] = ch_key
+    default_cfg["green_layers"] = _normalize_green_layers_bounds(
+        default_cfg.get("green_layers") or []
+    )
 
     # Bắt buộc quy tắc:
     # 1. Ảnh Green Kịch Bản luôn sát đáy dưới cùng (y = 1080 - height) và Opacity mặc định 0.9
+    # 2. Với key `homeless` / `mafia`: KHÔNG dùng Ảnh Green Kịch Bản (`enabled = False`)
     char_cfg = default_cfg["script_green_character"]
     char_h = max(120, min(1080, int(char_cfg.get("height", 780))))
     char_w = max(100, min(1200, int(char_cfg.get("width", 490))))
@@ -2121,24 +2234,44 @@ def load_video_layout_config(root_dir: Optional[Path] = None) -> Dict[str, Any]:
         max(0.1, min(1.0, float(char_cfg.get("opacity", 0.90)))), 2
     )
     char_cfg["zIndex"] = 500
+    if ch_key in ("homeless", "mafia"):
+        char_cfg["enabled"] = False
+
     _normalize_karaoke_subtitle_cfg(default_cfg["karaoke_subtitle"])
     # Đồng bộ cả 2 tên khóa để tương thích 100% giữa Frontend Preview và FFmpeg Renderer
     default_cfg["green_video_layers"] = default_cfg["green_layers"]
     default_cfg["script_character_green"] = default_cfg["script_green_character"]
     default_cfg["subtitle_karaoke"] = default_cfg["karaoke_subtitle"]
     default_cfg["stock_darken"] = default_cfg["stock_background"]
+
+    if not key_cfg_file.exists():
+        try:
+            key_cfg_file.write_text(
+                json.dumps(default_cfg, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
     return default_cfg
 
 
 def save_video_layout_config(
-    config_data: Dict[str, Any], root_dir: Optional[Path] = None
+    config_data: Dict[str, Any],
+    root_dir: Optional[Path] = None,
+    channel_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     root = Path(root_dir) if root_dir else get_root_dir()
+    eff_key = _resolve_layout_channel_key(
+        channel_key
+        or (config_data.get("channel_key") if isinstance(config_data, dict) else None),
+        root,
+    )
     cfg_dir = root / "config"
     cfg_dir.mkdir(parents=True, exist_ok=True)
-    cfg_file = cfg_dir / "video_layout_config.json"
+    key_cfg_file = cfg_dir / f"video_layout_{eff_key}.json"
+    legacy_cfg_file = cfg_dir / "video_layout_config.json"
 
-    merged = load_video_layout_config(root)
+    merged = load_video_layout_config(root, channel_key=eff_key)
     for section in (
         "canvas",
         "stock_background",
@@ -2163,6 +2296,11 @@ def save_video_layout_config(
     elif isinstance(config_data.get("green_layers"), list):
         merged["green_layers"] = config_data["green_layers"]
 
+    merged["channel_key"] = eff_key
+    merged["green_layers"] = _normalize_green_layers_bounds(
+        merged.get("green_layers") or []
+    )
+
     # Đảm bảo Ảnh Green Kịch Bản sát đáy dưới cùng & Sub Karaoke ở lớp cao nhất
     char_cfg = merged["script_green_character"]
     char_h = max(120, min(1080, int(char_cfg.get("height", 780))))
@@ -2170,16 +2308,27 @@ def save_video_layout_config(
     if char_cfg.get("snapBottom", True):
         char_cfg["y"] = 1080 - char_h
     char_cfg["zIndex"] = 500
+    if eff_key in ("homeless", "mafia"):
+        char_cfg["enabled"] = False
+
     _normalize_karaoke_subtitle_cfg(merged["karaoke_subtitle"])
 
+    merged["_preset_version"] = max(210, int(merged.get("_preset_version", 210) or 210))
     merged["green_video_layers"] = merged["green_layers"]
     merged["script_character_green"] = merged["script_green_character"]
     merged["subtitle_karaoke"] = merged["karaoke_subtitle"]
     merged["stock_darken"] = merged["stock_background"]
 
-    cfg_file.write_text(
-        json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    payload_json = json.dumps(merged, ensure_ascii=False, indent=2)
+    key_cfg_file.write_text(payload_json, encoding="utf-8")
+    if eff_key == "padre_mx":
+        legacy_cfg_file.write_text(payload_json, encoding="utf-8")
+    try:
+        preset_dir = root / "assets" / "default_layouts"
+        if preset_dir.exists():
+            (preset_dir / f"video_layout_{eff_key}.json").write_text(payload_json, encoding="utf-8")
+    except Exception:
+        pass
     return merged
 
 
@@ -2375,11 +2524,50 @@ def build_or_get_fixed_green_layers_cache(
     if not active_layers:
         return None
 
-    # Sắp xếp từ lớp thấp lên lớp cao theo zIndex
+    # Sắp xếp từ lớp thấp lên lớp cao theo zIndex và tính toán vùng giao cắt hiển thị (Strict Viewport Crop 1920x1080)
     active_layers.sort(key=lambda x: int(x.get("zIndex", 10)))
+    scale_x = target_w / 1920.0
+    scale_y = target_h / 1080.0
 
+    visible_layers: List[Dict[str, Any]] = []
+    for lyr in active_layers:
+        lx = int(round(float(lyr.get("x", 0)) * scale_x))
+        ly = int(round(float(lyr.get("y", 0)) * scale_y))
+        lw = max(16, (int(round(float(lyr.get("width", 300)) * scale_x)) // 2) * 2)
+        lh = max(16, (int(round(float(lyr.get("height", 150)) * scale_y)) // 2) * 2)
+
+        vis_x1 = max(0, lx)
+        vis_y1 = max(0, ly)
+        vis_x2 = min(target_w, lx + lw)
+        vis_y2 = min(target_h, ly + lh)
+        vis_w = ((vis_x2 - vis_x1) // 2) * 2
+        vis_h = ((vis_y2 - vis_y1) // 2) * 2
+        if vis_w < 8 or vis_h < 8:
+            continue
+
+        crop_x = max(0, min(lw - vis_w, vis_x1 - lx))
+        crop_y = max(0, min(lh - vis_h, vis_y1 - ly))
+        v_item = dict(lyr)
+        v_item["_lx"] = lx
+        v_item["_ly"] = ly
+        v_item["_lw"] = lw
+        v_item["_lh"] = lh
+        v_item["_vis_x1"] = vis_x1
+        v_item["_vis_y1"] = vis_y1
+        v_item["_vis_w"] = vis_w
+        v_item["_vis_h"] = vis_h
+        v_item["_crop_x"] = crop_x
+        v_item["_crop_y"] = crop_y
+        visible_layers.append(v_item)
+
+    if not visible_layers:
+        return None
+
+    ch_key_tag = str(layout_cfg.get("channel_key") or "padre_mx").strip().lower()
     sig_payload = json.dumps(
         {
+            "channel_key": ch_key_tag,
+            "crop_mode": "strict_viewport_v2",
             "res": f"{target_w}x{target_h}",
             "fps": work_fps,
             "dur": cache_duration_sec,
@@ -2391,6 +2579,12 @@ def build_or_get_fixed_green_layers_cache(
                     "y": int(x.get("y", 0)),
                     "w": int(x.get("width", 300)),
                     "h": int(x.get("height", 150)),
+                    "vis_x1": x["_vis_x1"],
+                    "vis_y1": x["_vis_y1"],
+                    "vis_w": x["_vis_w"],
+                    "vis_h": x["_vis_h"],
+                    "crop_x": x["_crop_x"],
+                    "crop_y": x["_crop_y"],
                     "op": round(float(x.get("opacity", 1.0)), 2),
                     "z": int(x.get("zIndex", 10)),
                     "ck": bool(x.get("chromaKey", True)),
@@ -2398,7 +2592,7 @@ def build_or_get_fixed_green_layers_cache(
                     "sim": round(float(x.get("similarity", 0.28)), 2),
                     "bld": round(float(x.get("blend", 0.08)), 2),
                 }
-                for x in active_layers
+                for x in visible_layers
             ],
         },
         sort_keys=True,
@@ -2406,7 +2600,7 @@ def build_or_get_fixed_green_layers_cache(
     sig_hash = hashlib.sha256(sig_payload.encode("utf-8")).hexdigest()[:14]
     cached_nut = (
         cache_dir
-        / f"fixed_green_layers_{target_w}x{target_h}_{work_fps}fps_{sig_hash}.nut"
+        / f"fixed_green_layers_{ch_key_tag}_{target_w}x{target_h}_{work_fps}fps_{sig_hash}.nut"
     )
     if cached_nut.exists() and cached_nut.stat().st_size > 50_000:
         return str(cached_nut)
@@ -2416,8 +2610,6 @@ def build_or_get_fixed_green_layers_cache(
             return str(cached_nut)
 
         tmp_nut = cached_nut.with_suffix(".tmp.nut")
-        scale_x = target_w / 1920.0
-        scale_y = target_h / 1080.0
 
         cmd: List[str] = [
             _FFMPEG_BIN,
@@ -2434,7 +2626,7 @@ def build_or_get_fixed_green_layers_cache(
         filter_parts: List[str] = ["[0:v]format=yuva420p[base0]"]
         cur_label = "[base0]"
 
-        for idx, lyr in enumerate(active_layers, start=1):
+        for idx, lyr in enumerate(visible_layers, start=1):
             abs_p = lyr["abs_path"]
             ext = os.path.splitext(abs_p)[1].lower()
             is_img = ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp")
@@ -2454,10 +2646,15 @@ def build_or_get_fixed_green_layers_cache(
                     ]
                 )
 
-            lx = int(round(float(lyr.get("x", 0)) * scale_x))
-            ly = int(round(float(lyr.get("y", 0)) * scale_y))
-            lw = max(16, (int(round(float(lyr.get("width", 300)) * scale_x)) // 2) * 2)
-            lh = max(16, (int(round(float(lyr.get("height", 150)) * scale_y)) // 2) * 2)
+            lw = lyr["_lw"]
+            lh = lyr["_lh"]
+            vis_x1 = lyr["_vis_x1"]
+            vis_y1 = lyr["_vis_y1"]
+            vis_w = lyr["_vis_w"]
+            vis_h = lyr["_vis_h"]
+            crop_x = lyr["_crop_x"]
+            crop_y = lyr["_crop_y"]
+
             opacity = max(0.05, min(1.0, float(lyr.get("opacity", 1.0))))
             use_ck = bool(lyr.get("chromaKey", not is_img))
             key_hex = (
@@ -2467,9 +2664,11 @@ def build_or_get_fixed_green_layers_cache(
             sim = max(0.05, min(0.70, float(lyr.get("similarity", 0.28))))
             bld = max(0.0, min(0.40, float(lyr.get("blend", 0.08))))
 
+            # Cắt (crop) đúng phần nằm trong khung hình 1920x1080 trước khi tách nền & đè lớp -> loại bỏ 100% phần thừa ngoài khung!
             chain = [
                 f"fps={work_fps}",
                 f"scale={lw}:{lh}:flags=fast_bilinear",
+                f"crop={vis_w}:{vis_h}:{crop_x}:{crop_y}",
                 "format=rgba",
             ]
             if use_ck:
@@ -2483,7 +2682,8 @@ def build_or_get_fixed_green_layers_cache(
             next_base = f"[base{idx}]"
             filter_parts.append(f"[{idx}:v]{','.join(chain)}{lyr_label}")
             filter_parts.append(
-                f"{cur_label}{lyr_label}overlay=x={lx}:y={ly}:shortest=1:format=auto,format=yuva420p{next_base}"
+                f"{cur_label}{lyr_label}overlay=x={vis_x1}:y={vis_y1}:shortest=1:format=auto,"
+                f"crop={target_w}:{target_h}:0:0,format=yuva420p{next_base}"
             )
             cur_label = next_base
 
@@ -2677,6 +2877,7 @@ def render_drama_nhat_video(
     use_ssd_staging: Optional[bool] = None,
     green_screen_image_path: Optional[str] = None,
     visual_cues_path: Optional[str] = None,
+    channel_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     start_time = time.time()
     root_dir = get_root_dir()
@@ -2693,10 +2894,14 @@ def render_drama_nhat_video(
     if dur <= 0:
         raise ValueError(f"Không thể đo thời lượng audio: {audio_path}")
 
-    # Nạp cấu hình bố cục đã lưu từ màn hình Preview
-    layout_cfg = load_video_layout_config(root_dir)
+    # Nạp cấu hình bố cục đã lưu từ màn hình Preview theo đúng Key của dự án (`padre_mx`, `homeless`, hoặc `mafia`)
+    eff_channel_key = _resolve_layout_channel_key(channel_key, root_dir)
+    layout_cfg = load_video_layout_config(root_dir, channel_key=eff_channel_key)
     bg_cfg = layout_cfg.get("stock_background") or {}
-    char_cfg = layout_cfg.get("script_green_character") or {}
+    char_cfg = dict(layout_cfg.get("script_green_character") or {})
+    if eff_channel_key in ("homeless", "mafia"):
+        char_cfg["enabled"] = False
+        green_screen_image_path = None
     sub_cfg = layout_cfg.get("karaoke_subtitle") or {}
 
     # Chỉ làm tối nhẹ theo cấu hình (mặc định brightness = -0.12, contrast = 1.05, saturation = 0.92)
@@ -2723,8 +2928,10 @@ def render_drama_nhat_video(
     base_stem = os.path.splitext(os.path.basename(output_path))[0]
     proj_prefix = re.sub(r"_master$", "", base_stem, flags=re.IGNORECASE)
 
-    # Tự động dò tìm Ảnh Green Theo Kịch Bản (`THUMBNAIL-NENXANH.png` / `{ma_id}_THUMBNAIL_NENXANH.png`)
-    if not green_screen_image_path or not os.path.exists(green_screen_image_path):
+    # Tự động dò tìm Ảnh Green Theo Kịch Bản (`THUMBNAIL-NENXANH.png`) — BỎ QUA nếu Key là `homeless` hoặc `mafia`
+    if eff_channel_key not in ("homeless", "mafia") and (
+        not green_screen_image_path or not os.path.exists(green_screen_image_path)
+    ):
         out_p = Path(out_dir)
         audio_p = Path(audio_path).resolve()
         proj_root_from_audio = (
@@ -3258,6 +3465,8 @@ def render_drama_nhat_video(
         "render_time": cost,
         "resolution": f"{target_w}x{target_h}",
         "fps": fps,
+        "channel_key": eff_channel_key,
+        "used_script_green_char": bool(char_cutout_png),
     }
 
 

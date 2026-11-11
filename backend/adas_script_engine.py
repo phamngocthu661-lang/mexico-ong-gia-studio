@@ -3733,13 +3733,58 @@ def _infer_relationship_from_text(
     return "Người cha già Mexico (65–78 tuổi, ngôi kể 'yo') và con cái trong gia đình"
 
 
-def parse_idea_input_block(
-    raw_text: str, custom_id: Optional[str] = None
-) -> Dict[str, Any]:
+def _detect_channel_key_and_strip_tag(
+    raw_text: str, explicit_channel_key: Optional[str] = None
+) -> Tuple[str, str]:
     """
-    Bóc tách đoạn văn bản đầu vào của người dùng (Hỗ trợ cả Tây Ban Nha Mexico es-MX, tiếng Việt, tiếng Anh và tiếng Nhật).
+    Nhận diện `channel_key` (`padre_mx`, `homeless`, hoặc `mafia`) từ tiền tố dòng `[HL]`, `[HOMELESS]`, `[MF]`, `[MAFIA]`, `[MX]`, `[MXC]`, `[PADRE]`
+    hoặc từ `explicit_channel_key` / Key đang kích hoạt trong `LicenseManager`.
+    Trả về `(channel_key, cleaned_text)`.
     """
     text = (raw_text or "").strip()
+    m_tag = re.match(
+        r"^\s*\[\s*(?P<tag>HL|HOMELESS|HOMELESS_US|US_HOMELESS|MF|MAFIA|MAFIA_US|MAFIA_MAID|US_MAFIA|MX|MXC|MEXICO|PADRE|PADRE_MX)\s*\]\s*[-—–:：]?\s*",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if m_tag:
+        tag_up = m_tag.group("tag").upper()
+        cleaned = text[m_tag.end() :].strip()
+        if tag_up in ("HL", "HOMELESS", "HOMELESS_US", "US_HOMELESS"):
+            return "homeless", cleaned
+        if tag_up in ("MF", "MAFIA", "MAFIA_US", "MAFIA_MAID", "US_MAFIA"):
+            return "mafia", cleaned
+        return "padre_mx", cleaned
+
+    if explicit_channel_key and str(explicit_channel_key).strip():
+        raw_k = str(explicit_channel_key).strip().lower()
+        if raw_k in ("homeless", "hl", "us_homeless", "homeless_us"):
+            return "homeless", text
+        if raw_k in ("mafia", "mf", "mafia_us", "mafia_maid", "nguoi_hau", "en_mafia", "us_mafia"):
+            return "mafia", text
+        return "padre_mx", text
+
+    try:
+        from backend.logger_service import LicenseManager, normalize_channel_key
+
+        return normalize_channel_key(LicenseManager(ROOT_DIR).get_active_channel_key()), text
+    except Exception:
+        return "padre_mx", text
+
+
+def parse_idea_input_block(
+    raw_text: str,
+    custom_id: Optional[str] = None,
+    channel_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Bóc tách đoạn văn bản đầu vào của người dùng (Hỗ trợ cả Tây Ban Nha Mexico es-MX, tiếng Anh Homeless US, tiếng Anh Mafia × Maid US, tiếng Việt và tiếng Nhật).
+    """
+    eff_channel_key, text = _detect_channel_key_and_strip_tag(
+        raw_text, explicit_channel_key=channel_key
+    )
+    is_homeless = eff_channel_key == "homeless"
+    is_mafia = eff_channel_key == "mafia"
     raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
     expanded_lines: List[str] = []
@@ -3818,6 +3863,15 @@ def parse_idea_input_block(
         draft_title_ja = (
             clean_single_title_line(draft_title_ja) or draft_title_ja.strip()
         )
+    # Nếu trong dòng tiêu đề có gắn tag [HL] / [MF] / [MX] thì tự động nhận diện và làm sạch tag
+    det_key_from_title, cleaned_dt = _detect_channel_key_and_strip_tag(
+        draft_title_ja, explicit_channel_key=eff_channel_key
+    )
+    if cleaned_dt != draft_title_ja:
+        eff_channel_key = det_key_from_title
+        is_homeless = eff_channel_key == "homeless"
+        is_mafia = eff_channel_key == "mafia"
+        draft_title_ja = cleaned_dt
 
     vi_line = _pick_exact_or_contains("vi", "vn", "dịch ý", "05.")
     summary_raw = _pick_exact_or_contains(
@@ -3984,17 +4038,52 @@ def parse_idea_input_block(
 
     return {
         "ma_id": ma_id,
+        "channel_key": eff_channel_key,
         "raw_input_text": text,
         "draft_title_ja": draft_title_ja,
         "locked_title": "",  # Sẽ được tự động cập nhật sau khi chạy STEP 1/2
         "dich_y_tieu_de_vi": dich_y_vi,
-        "summary_vi": summary_vi,
-        "relationship": relationship,
+        "summary_vi": (
+            f"Triển khai câu chuyện Homeless × Abandoned Property × Hidden Legacy (HOMELESS V3.0 — 7 Part, 70k–80k ký tự en-US) bám sát ý tưởng: {draft_title_ja}"
+            if (is_homeless and not summary_raw and not vi_line and draft_title_ja)
+            else (
+                f"Triển khai câu chuyện Mafia Boss × Maid/Waitress/Underestimated Woman (MAFIA V2.0 — 7 Part, en-US) bám sát ý tưởng: {draft_title_ja}"
+                if (is_mafia and not summary_raw and not vi_line and draft_title_ja)
+                else summary_vi
+            )
+        ),
+        "relationship": (
+            "Người vô gia cư / Cựu binh / Người thừa kế bị ruồng bỏ — Gia đình/Xã hội coi thường & Di sản ẩn giấu"
+            if (is_homeless and "Người cha già Mexico" in relationship)
+            else (
+                "Ông trùm Mafia quyền lực (Mafia Boss) × Cô hầu gái / Phục vụ / Nữ nhân viên bị xem thường nhưng có năng lực xuất chúng (Underestimated Woman)"
+                if (is_mafia and "Người cha già Mexico" in relationship)
+                else relationship
+            )
+        ),
         "nhom_chu_de": nhom_chu_de,
-        "boi_canh_su_kien": boi_canh,
+        "boi_canh_su_kien": (
+            "Căn nhà/Điền trang bỏ hoang tại Mỹ (Abandoned Property / Hidden Estate in the US)"
+            if (is_homeless and "Mexico" in boi_canh)
+            else (
+                "Dinh thự/Penthouse của Ông trùm Mafia & Phòng họp cao cấp tại Mỹ (Mafia Estate / Penthouse / Boardroom in the US)"
+                if (is_mafia and "Mexico" in boi_canh)
+                else boi_canh
+            )
+        ),
         "conflict": conflict,
         "cau_hoi_can_tra_loi": cau_hoi,
-        "proof_object": proof_object,
+        "proof_object": (
+            evidence_line
+            or "Original property deed, hidden county tax ledger, architectural blueprint, and sealed trust archive"
+            if is_homeless
+            else (
+                evidence_line
+                or "Security footage, encrypted financial ledger, medical/forensic record, and signed syndicate contract"
+                if is_mafia
+                else proof_object
+            )
+        ),
         "three_reveals_raw": reveal_line or f"{rev1} → {rev2} → {rev3}",
         "reveal_1": rev1,
         "reveal_2": rev2,
@@ -4008,34 +4097,84 @@ def parse_idea_input_block(
             "17.",
             "cơ chế",
             "mechanism",
-            default="PATRIARCH_LEGAL_REVERSAL_MX (Vật chứng công chứng Mexico đảo ngược sự phản bội gia đình)",
+            default=(
+                "HOMELESS_ABANDONED_PROPERTY_HIDDEN_LEGACY_US (Khôi phục căn nhà bỏ hoang & mở khóa di sản pháp lý ẩn giấu)"
+                if is_homeless
+                else (
+                    "MAFIA_BOSS_UNDERESTIMATED_WOMAN_EMOTIONAL_JUSTICE_US (Năng lực thật & vật chứng của nữ chính lật ngược sự sỉ nhục dưới sự bảo vệ của Ông trùm Mafia)"
+                    if is_mafia
+                    else "PATRIARCH_LEGAL_REVERSAL_MX (Vật chứng công chứng Mexico đảo ngược sự phản bội gia đình)"
+                )
+            ),
         ),
-        "tu_khoa_goi_y": tu_khoa_goi_y,
+        "tu_khoa_goi_y": (
+            keyword_line
+            or "homeless story, abandoned house, hidden legacy, emotional storytelling, quiet restoration, justice"
+            if is_homeless
+            else (
+                keyword_line
+                or "mafia boss story, mafia romance, underestimated maid, emotional justice, billionaire mafia, waitress story"
+                if is_mafia
+                else tu_khoa_goi_y
+            )
+        ),
         "ly_do_viet_dai": _pick_exact_or_contains(
             "19.",
             "căn cứ",
-            default=f"Capacity = {longform_cap}. Cấu trúc 7 Part (70.000–80.000 ký tự) với chuỗi nhân quả 3 lớp ({rev1} -> {rev2} -> {rev3}).",
+            default=f"Capacity = {longform_cap}. Cấu trúc 7 Part với chuỗi nhân quả 3 lớp ({rev1} -> {rev2} -> {rev3}).",
         ),
         "luu_y_logic": _pick_exact_or_contains(
             "20.",
             "lưu ý",
-            default="Đảm bảo tính xác thực của thủ tục pháp lý Mexico (Notario Público, Escritura Pública, Usufructo Vitalicio, đồng Peso MXN).",
+            default=(
+                "Đảm bảo tính xác thực vật lý của quá trình sửa chữa nhà bỏ hoang, thuế bất động sản Mỹ (County Recorder, Property Deed, Trust) và đơn vị USD ($)."
+                if is_homeless
+                else (
+                    "Đảm bảo tính xác thực tâm lý, chuỗi bằng chứng/hồ sơ tài chính-an ninh tại Mỹ, chemistry giữa Mafia Boss và nữ chính, ngôn ngữ American English (en-US) và YouTube-safe."
+                    if is_mafia
+                    else "Đảm bảo tính xác thực của thủ tục pháp lý Mexico (Notario Público, Escritura Pública, Usufructo Vitalicio, đồng Peso MXN)."
+                )
+            ),
         ),
         "goc_thumbnail": _pick_exact_or_contains(
             "22.",
             "góc thumbnail",
-            default="Layout 80/20: Bên trái 80% nền trắng chữ IN HOA Tây Ban Nha + Banner đỏ; Bên phải 20% chân dung người cha già Mexico (kèm bản nền xanh khổ dọc 9:16 #00FF00).",
+            default=(
+                "16:9 Photorealistic American Homeless & Abandoned Property dramatic scene (1 ảnh THUMBNAIL.png 16:9 duy nhất, KHÔNG dùng ảnh nhân vật nền xanh)."
+                if is_homeless
+                else (
+                    "16:9 Photorealistic American Mafia Boss × Maid/Waitress dramatic confrontation scene (1 ảnh THUMBNAIL.png 16:9 duy nhất, KHÔNG dùng ảnh nhân vật nền xanh)."
+                    if is_mafia
+                    else "Layout 80/20: Bên trái 80% nền trắng chữ IN HOA Tây Ban Nha + Banner đỏ; Bên phải 20% chân dung người cha già Mexico (kèm bản nền xanh khổ dọc 9:16 #00FF00)."
+                )
+            ),
         ),
         "research_source": _pick_exact_or_contains(
             "23.",
             "nguồn gốc",
             "research_source",
-            default=f"PADRE MX V4.0 ({ma_id} — Keyword: {tu_khoa_goi_y}).",
+            default=f"{'HOMELESS V3.0' if is_homeless else ('MAFIA V2.0' if is_mafia else 'PADRE MX V4.0')} ({ma_id} — Keyword: {tu_khoa_goi_y}).",
         ),
-        "dinh_vi_batch": DEFAULT_BATCH_POSITIONING,
+        "dinh_vi_batch": (
+            "Kênh YouTube American English Storytelling — HOMELESS × ABANDONED PROPERTY × HIDDEN LEGACY V3.0 (70.000–80.000 ký tự, 7 Parts, en-US)."
+            if is_homeless
+            else (
+                "Kênh YouTube American English Storytelling — MAFIA BOSS × MAID/WAITRESS/UNDERESTIMATED WOMAN V2.0 (7 Parts, en-US, Emotional Justice)."
+                if is_mafia
+                else DEFAULT_BATCH_POSITIONING
+            )
+        ),
         "tham_chieu_motif": DEFAULT_MOTIF_REFERENCES,
         "status": "SAVED_READY",
-        "current_step": "CHƯA CHẠY (Sẵn sàng chạy PADRE MX V4.0)",
+        "current_step": (
+            "CHƯA CHẠY (Sẵn sàng chạy HOMELESS V3.0 — en-US)"
+            if is_homeless
+            else (
+                "CHƯA CHẠY (Sẵn sàng chạy MAFIA V2.0 — en-US)"
+                if is_mafia
+                else "CHƯA CHẠY (Sẵn sàng chạy PADRE MX V4.0)"
+            )
+        ),
         "pure_char_count": 0,
         "audit_score": 0,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -4133,7 +4272,72 @@ def _extract_originality_signature_from_step2(
 def build_step2_prompt_from_idea(
     idea: Dict[str, Any], custom_template: Optional[str] = None
 ) -> str:
-    """Điền đầy đủ thông tin ý tưởng đã lưu vào mẫu Prompt STEP 1/2 (kèm tự động nhúng SKILL 01 PADRE MX V4.0 & Lịch sử chống trùng lặp)."""
+    """Điền đầy đủ thông tin ý tưởng đã lưu vào mẫu Prompt STEP 1/2 (Hỗ trợ cả `padre_mx` V4.0 và `homeless` V3.0)."""
+    ch_key = str((idea or {}).get("channel_key") or "padre_mx").strip().lower()
+    if ch_key == "mafia":
+        skill01_p = ROOT_DIR / "adas_skills" / "01_title_mafia" / "SKILL.md"
+        skill01_md = (
+            skill01_p.read_text(encoding="utf-8-sig").strip()
+            if skill01_p.exists()
+            else ""
+        )
+        ma_id = idea.get("ma_id", "MF_001")
+        draft_title = idea.get("draft_title_ja", "")
+        summary_vi = idea.get("dich_y_tieu_de_vi") or idea.get("summary_vi", "")
+        return f"""[NEW CHAT #1 — SKILL 01 MAFIA × MAID V2.0 (`viet-lai-tieu-de-mafia-nguoi-hau`)] CHẠY NGAY STEP 1 (VIẾT LẠI TIÊU ĐỀ VIRAL MỸ `en-US` & KHÓA `LOCKED_TITLE` + THUMBNAIL CONCEPT) CHO MÃ {ma_id}
+- MÃ DỰ ÁN: {ma_id}
+- CHANNEL_KEY: mafia (American English Storytelling: Mafia Boss × Maid/Waitress/Secretary/Nurse/Underestimated Woman)
+- TIÊU ĐỀ GỐC / Ý TƯỞNG ĐẦU VÀO: {draft_title}
+- TÓM TẮT / GHI CHÚ: {summary_vi}
+
+========== HƯỚNG DẪN CHUYÊN SÂU SKILL 01 (`01_title_mafia/SKILL.md`) ==========
+{skill01_md}
+===============================================================================
+
+YÊU CẦU THỰC THI NGAY TRỰC TIẾP TRÊN KHUNG CHAT (TUYỆT ĐỐI KHÔNG BẬT PYTHON / CODE INTERPRETER):
+1. Phân tích DNA cốt lõi từ tiêu đề/ý tưởng đầu vào (chọn Archetype A = Archives/Institutional Justice, B = Mafia Romance/Obsession, hoặc C = Hidden Heart/Child/Sacrifice; giữ ~60% cấu trúc click DNA đã chứng minh hiệu quả, sáng tạo mới ~40% biến số nhân vật/bối cảnh/năng lực ẩn giấu/bằng chứng để tạo câu chuyện nguyên bản 100%).
+2. Tạo chính xác **5 ứng viên tiêu đề tiếng Anh Mỹ (`Candidate 1` .. `Candidate 5`, `en-US`)**, mỗi tiêu đề dài **65–100 ký tự** (TUYỆT ĐỐI <= 100 ký tự), chấm điểm nghiêm ngặt trên thang `/100` kèm bản dịch nghĩa tiếng Việt.
+3. Chọn ứng viên xuất sắc nhất và xuất chính xác khối khóa tiêu đề (BẮT BUỘC đúng nhãn để hệ thống tự động bóc tách sang STEP 2 Outline):
+   `CURRENT_FINAL_TITLE: <winning English title <= 100 chars>`
+   `LOCKED_TITLE: <winning English title <= 100 chars>`
+   `LOCKED_TITLE_CHAR_LEN: <char count>`
+   `VIETNAMESE_TRANSLATION: <bản dịch tiếng Việt>`
+   `LOCKED_TITLE_PROMISE: <core Mafia × Underestimated Woman story promise & emotional justice payoff>`
+   `TITLE_LOCKED: YES`
+4. Xuất `ORIGINALITY_SIGNATURE` (5 trường: `CENTRAL_INJUSTICE`, `LEVERAGE`, `EVIDENCE_MECHANISM`, `ANTAGONIST_COST`, `EARNED_PAYOFF`) và `STEP2_HANDOFF` để bàn giao sang STEP 2 (`viet-gian-y-nguoi-hau` V2.0 — 7 Parts, `en-US`). Không viết kịch bản ở bước này."""
+
+    if ch_key == "homeless":
+        skill01_p = ROOT_DIR / "adas_skills" / "01_title_homeless" / "SKILL.md"
+        skill01_md = (
+            skill01_p.read_text(encoding="utf-8-sig").strip()
+            if skill01_p.exists()
+            else ""
+        )
+        ma_id = idea.get("ma_id", "HL_001")
+        draft_title = idea.get("draft_title_ja", "")
+        summary_vi = idea.get("dich_y_tieu_de_vi") or idea.get("summary_vi", "")
+        return f"""[NEW CHAT #1 — SKILL 01 HOMELESS V3.0 (`viral-title-rewriter`)] CHẠY NGAY STEP 1 (VIẾT LẠI TIÊU ĐỀ VIRAL MỸ `en-US` & KHÓA `LOCKED_TITLE` + THUMBNAIL CONCEPT) CHO MÃ {ma_id}
+- MÃ DỰ ÁN: {ma_id}
+- CHANNEL_KEY: homeless (American English Storytelling: Homeless × Abandoned Property × Hidden Legacy)
+- TIÊU ĐỀ GỐC / Ý TƯỞNG ĐẦU VÀO: {draft_title}
+- TÓM TẮT / GHI CHÚ: {summary_vi}
+
+========== HƯỚNG DẪN CHUYÊN SÂU SKILL 01 (`01_title_homeless/SKILL.md`) ==========
+{skill01_md}
+==================================================================================
+
+YÊU CẦU THỰC THI NGAY TRỰC TIẾP TRÊN KHUNG CHAT (TUYỆT ĐỐI KHÔNG BẬT PYTHON / CODE INTERPRETER):
+1. Phân tích DNA cốt lõi từ tiêu đề/ý tưởng đầu vào (giữ ~60% cấu trúc click DNA đã chứng minh hiệu quả, sáng tạo mới ~40% biến số nhân vật/bất động sản bỏ hoang/con số/di sản ẩn giấu để tạo câu chuyện nguyên bản 100%).
+2. Tạo chính xác **5 ứng viên tiêu đề tiếng Anh Mỹ (`Candidate 1` .. `Candidate 5`, `en-US`)**, mỗi tiêu đề dài **65–100 ký tự** (TUYỆT ĐỐI <= 100 ký tự), chấm điểm nghiêm ngặt trên thang `/100` (mục tiêu đạt `98–100/100`) kèm bản dịch nghĩa tiếng Việt.
+3. Chọn ứng viên xuất sắc nhất và xuất chính xác khối khóa tiêu đề (BẮT BUỘC đúng nhãn để hệ thống tự động bóc tách sang STEP 2 Outline):
+   `CURRENT_FINAL_TITLE: <winning English title <= 100 chars>`
+   `LOCKED_TITLE: <winning English title <= 100 chars>`
+   `LOCKED_TITLE_CHAR_LEN: <char count>`
+   `VIETNAMESE_TRANSLATION: <bản dịch tiếng Việt>`
+   `LOCKED_TITLE_PROMISE: <core story promise & hidden legacy payoff>`
+   `TITLE_LOCKED: YES`
+4. Xuất `ORIGINALITY_SIGNATURE` (5 trường: `CENTRAL_INJUSTICE`, `LEVERAGE`, `EVIDENCE_MECHANISM`, `ANTAGONIST_COST`, `EARNED_PAYOFF`) và `STEP3_HANDOFF` để bàn giao sang STEP 2 (`Viet_Gian_Y_Homeless_v2.4` — 7 Parts, 70.000–80.000 ký tự `en-US`). Không viết kịch bản ở bước này."""
+
     tpl = (custom_template or DEFAULT_STEP2_PROMPT_TEMPLATE).strip()
     # Nếu file step2_prompt_template.txt cũ trên ổ cứng vẫn là bản tiếng Nhật hoặc V3.0 cũ, tự động nâng cấp lên mẫu PADRE MX V4.0
     if (
@@ -5822,13 +6026,50 @@ class ADASScriptEngine:
 
         return False, "", 0
 
+    def _get_idea_channel_key(
+        self, ma_id: str = "", idea: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Xác định `channel_key` (`padre_mx` hoặc `homeless`) của 1 dự án cụ thể."""
+        from backend.logger_service import get_license_manager, normalize_channel_key
+
+        if isinstance(idea, dict) and idea.get("channel_key"):
+            return normalize_channel_key(idea.get("channel_key"))
+        if ma_id:
+            for base_d in (
+                self.projects_dir / str(ma_id),
+                self._get_effective_project_dir(str(ma_id)),
+            ):
+                info_p = base_d / "idea_info.json"
+                if info_p.exists():
+                    try:
+                        info_d = json.loads(info_p.read_text(encoding="utf-8"))
+                        if isinstance(info_d, dict) and info_d.get("channel_key"):
+                            return normalize_channel_key(info_d.get("channel_key"))
+                    except Exception:
+                        pass
+            try:
+                for it in self.load_saved_ideas():
+                    if str(it.get("ma_id", "")).strip() == str(ma_id).strip():
+                        if it.get("channel_key"):
+                            return normalize_channel_key(it.get("channel_key"))
+            except Exception:
+                pass
+        try:
+            return normalize_channel_key(get_license_manager().get_active_channel_key())
+        except Exception:
+            return "padre_mx"
+
     def has_thumbnail_and_seo_on_disk(self, ma_id: str) -> Tuple[bool, bool, str]:
         """
-        Kiểm tra và tự động đồng bộ bộ 2 file Thumbnail (`THUMBNAIL.png` + `THUMBNAIL-NENXANH.png`) + SEO của dự án `ma_id`
+        Kiểm tra và tự động đồng bộ bộ Thumbnail (`THUMBNAIL.png` + `THUMBNAIL-NENXANH.png` cho `padre_mx`,
+        hoặc chỉ `THUMBNAIL.png` cho `homeless`) + SEO của dự án `ma_id`
         (trên cả `projects_dir` và `final_video_dir`).
-        Nếu đã có `THUMBNAIL.png` nhưng thiếu `THUMBNAIL-NENXANH.png`, tự động tách nền tạo ngay `THUMBNAIL-NENXANH.png` khớp tọa độ!
         Trả về `(has_thumbnail, has_seo, thumb_path_str)`.
         """
+        is_homeless_proj = self._get_idea_channel_key(ma_id=ma_id) in (
+            "homeless",
+            "mafia",
+        )
         proj_dir = self._get_effective_project_dir(ma_id)
         f_dir = getattr(self, "final_video_dir", None)
         final_proj_dir = (Path(f_dir) / ma_id) if f_dir else proj_dir
@@ -5886,52 +6127,54 @@ class ADASScriptEngine:
             except Exception:
                 pass
 
-            # Kiểm tra ảnh nền xanh THUMBNAIL-NENXANH.png khổ dọc 9:16 do ChatGPT tạo (tuyệt đối KHÔNG cắt local từ THUMBNAIL.png)
-            try:
-                from backend.renderer import (
-                    _is_green_plate_clean_and_large,
-                    ensure_project_script_green_images,
-                )
+            # Với key `padre_mx`: Kiểm tra ảnh nền xanh THUMBNAIL-NENXANH.png khổ dọc 9:16 do ChatGPT tạo.
+            # Với key `homeless`: KHÔNG dùng ảnh nền xanh kịch bản (bỏ qua hoàn toàn).
+            if not is_homeless_proj:
+                try:
+                    from backend.renderer import (
+                        _is_green_plate_clean_and_large,
+                        ensure_project_script_green_images,
+                    )
 
-                for g_cand in (
-                    target_green,
-                    proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                    renders_dir / "THUMBNAIL-NENXANH.png",
-                    renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                    final_renders_dir / "THUMBNAIL-NENXANH.png",
-                    final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                    final_proj_dir / "THUMBNAIL-NENXANH.png",
-                ):
-                    if g_cand.exists() and not _is_green_plate_clean_and_large(g_cand):
-                        try:
-                            g_cand.unlink()
-                        except Exception:
-                            pass
+                    for g_cand in (
+                        target_green,
+                        proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                        renders_dir / "THUMBNAIL-NENXANH.png",
+                        renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                        final_renders_dir / "THUMBNAIL-NENXANH.png",
+                        final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                        final_proj_dir / "THUMBNAIL-NENXANH.png",
+                    ):
+                        if g_cand.exists() and not _is_green_plate_clean_and_large(g_cand):
+                            try:
+                                g_cand.unlink()
+                            except Exception:
+                                pass
 
-                valid_green: Optional[Path] = None
-                for g_cand in (
-                    target_green,
-                    proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                    renders_dir / "THUMBNAIL-NENXANH.png",
-                    renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                    final_renders_dir / "THUMBNAIL-NENXANH.png",
-                    final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                    final_proj_dir / "THUMBNAIL-NENXANH.png",
-                ):
-                    if g_cand.exists() and _is_green_plate_clean_and_large(g_cand):
-                        valid_green = g_cand
-                        break
+                    valid_green: Optional[Path] = None
+                    for g_cand in (
+                        target_green,
+                        proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                        renders_dir / "THUMBNAIL-NENXANH.png",
+                        renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                        final_renders_dir / "THUMBNAIL-NENXANH.png",
+                        final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
+                        final_proj_dir / "THUMBNAIL-NENXANH.png",
+                    ):
+                        if g_cand.exists() and _is_green_plate_clean_and_large(g_cand):
+                            valid_green = g_cand
+                            break
 
-                if valid_green is not None:
-                    if not target_green.exists():
-                        shutil.copy2(valid_green, target_green)
-                    part1_chk = proj_dir / "script_green_images" / "green_part_01.png"
-                    if not part1_chk.exists():
-                        ensure_project_script_green_images(
-                            proj_dir=proj_dir, renders_dir=proj_dir, proj_name=ma_id
-                        )
-            except Exception:
-                pass
+                    if valid_green is not None:
+                        if not target_green.exists():
+                            shutil.copy2(valid_green, target_green)
+                        part1_chk = proj_dir / "script_green_images" / "green_part_01.png"
+                        if not part1_chk.exists():
+                            ensure_project_script_green_images(
+                                proj_dir=proj_dir, renders_dir=proj_dir, proj_name=ma_id
+                            )
+                except Exception:
+                    pass
 
         master_seo = proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt"
         seo_candidates = [
@@ -7000,12 +7243,14 @@ class ADASScriptEngine:
         raw_text: str,
         custom_id: Optional[str] = None,
         use_original_title: bool = False,
+        channel_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Phân tích danh sách tiêu đề người dùng dán (MỖI TIÊU ĐỀ 1 DÒNG),
         tự động bỏ qua mọi Mã đầu dòng và gán Mã dự án theo Số Thứ Tự lũy tiến vĩnh viễn:
         - Mã luôn tăng lên tiếp nối từ mốc lớn nhất đã lưu (kể cả sau khi xóa tiêu đề cũ).
         - Lưu lại mã vào bộ đếm bền vững, tuyệt đối không bao giờ trùng mã nào với mã nào.
+        - Hỗ trợ gắn `channel_key` (`padre_mx` hoặc `homeless`) theo từng dòng (`[MX]` / `[HL]`) hoặc theo key đang chọn.
         """
         blocks = split_raw_text_into_idea_blocks(raw_text)
         if not blocks:
@@ -7034,7 +7279,9 @@ class ADASScriptEngine:
             max_stt = max(max_stt, next_num)
             next_num += 1
 
-            parsed = parse_idea_input_block(block_str, custom_id=assigned_id)
+            parsed = parse_idea_input_block(
+                block_str, custom_id=assigned_id, channel_key=channel_key
+            )
             parsed["use_original_title"] = bool(use_original_title)
             if use_original_title and parsed.get("draft_title_ja"):
                 parsed["locked_title"] = parsed["draft_title_ja"]
@@ -7137,14 +7384,82 @@ class ADASScriptEngine:
         raw_text: str,
         custom_id: Optional[str] = None,
         use_original_title: bool = False,
+        channel_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Phân tích khối văn bản người dùng dán vào và lưu vào danh sách."""
         items = self.add_or_update_ideas_bulk_from_raw(
-            raw_text, custom_id=custom_id, use_original_title=use_original_title
+            raw_text,
+            custom_id=custom_id,
+            use_original_title=use_original_title,
+            channel_key=channel_key,
         )
         return (
-            items[0] if items else parse_idea_input_block(raw_text, custom_id=custom_id)
+            items[0]
+            if items
+            else parse_idea_input_block(
+                raw_text, custom_id=custom_id, channel_key=channel_key
+            )
         )
+
+    def set_ideas_channel_key(
+        self,
+        channel_key: str,
+        ma_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Đổi `channel_key` (`padre_mx` hoặc `homeless`) cho 1 hoặc nhiều mã dự án trong Kho Dự Án."""
+        from backend.logger_service import normalize_channel_key
+
+        norm_ck = normalize_channel_key(channel_key)
+        target_set = (
+            {str(x).strip() for x in ma_ids if str(x).strip()}
+            if ma_ids is not None
+            else None
+        )
+        with self.ideas_io_lock:
+            ideas = self.load_saved_ideas()
+            updated_ids: List[str] = []
+            for it in ideas:
+                mid = str(it.get("ma_id", "")).strip()
+                if not mid:
+                    continue
+                if target_set is not None and mid not in target_set:
+                    continue
+                it["channel_key"] = norm_ck
+                proj_dir = self.projects_dir / mid
+                proj_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    (proj_dir / "idea_info.json").write_text(
+                        json.dumps(it, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    if not it.get("has_script"):
+                        if it.get("use_original_title") and it.get("draft_title_ja"):
+                            (proj_dir / "step2_prompt_ready.txt").write_text(
+                                self._build_step3_prompt(
+                                    mid,
+                                    it["draft_title_ja"],
+                                    step2_context="",
+                                    in_same_chat=False,
+                                ),
+                                encoding="utf-8",
+                            )
+                        else:
+                            (proj_dir / "step2_prompt_ready.txt").write_text(
+                                build_step2_prompt_from_idea(
+                                    it, self.get_step2_template()
+                                ),
+                                encoding="utf-8",
+                            )
+                except Exception:
+                    pass
+                updated_ids.append(mid)
+            if updated_ids:
+                self.save_ideas_list(ideas)
+                log_info(
+                    "SCRIPT",
+                    f"🔑 Đã cập nhật Kênh (`channel_key={norm_ck}`) cho {len(updated_ids)} mã dự án: {updated_ids}",
+                )
+            return ideas
 
     def set_ideas_title_mode(
         self,
@@ -7395,10 +7710,92 @@ class ADASScriptEngine:
         step2_out: str,
     ) -> str:
         """
-        Tạo gói SEO & Thumbnail 80/20 chuẩn PADRE MX V3.0 (`es-MX`) từ dữ liệu Step 1/2 + Idea khi chạy ở chế độ
+        Tạo gói SEO & Thumbnail từ dữ liệu Step 1/2 + Idea khi chạy ở chế độ
         bỏ qua Chrome (đã có sẵn kịch bản) hoặc khi Step 6 bị quá thời gian chờ.
-        Luôn nhúng sẵn khối chữ 80/20 và <THUMBNAIL_PROMPT_1> + <THUMBNAIL_GREEN_PROMPT_1> để STEP 7 tạo đủ 2 ảnh (`THUMBNAIL.png` & `THUMBNAIL-NENXANH.png`).
+        - Nếu `channel_key == "homeless"`: xuất gói SEO chuẩn `HOMELESS V3.0` (`en-US`, 1 ảnh `THUMBNAIL.png` 16:9 không dùng ảnh nền xanh).
+        - Nếu `channel_key == "padre_mx"`: xuất gói SEO & Thumbnail 80/20 chuẩn `PADRE MX V3.0` (`es-MX`).
         """
+        ck_seo = self._get_idea_channel_key(ma_id=ma_id, idea=idea)
+        if ck_seo == "mafia":
+            kw_en = (
+                idea.get("keywords_ja")
+                or "mafia boss story, mafia romance, underestimated maid, emotional justice, waitress story, billionaire mafia"
+            )
+            summary_vi = idea.get("summary_vi") or ""
+            evidence = (
+                idea.get("proof_object")
+                or "encrypted security footage and signed syndicate ledger"
+            )
+            setting = (
+                idea.get("boi_canh_su_kien")
+                or "a luxury mafia estate and private penthouse in the US"
+            )
+            return (
+                f"ID: {ma_id}\n"
+                f"COMPLETED_STEP: STEP 6 — MAFIA × MAID V2.0 SEO & 16:9 THUMBNAIL PACK (NO GREEN SCREEN PORTRAIT)\n"
+                f"CURRENT_FINAL_TITLE:\n{locked_title}\n\n"
+                f"SUPPORTING_TITLES_EN_US:\n"
+                f"1. {locked_title[:95]}\n"
+                f"2. They Humiliated the Quiet Maid Until the Feared Mafia Boss Walked Into the Room\n\n"
+                f"YOUTUBE_DESCRIPTION_EN_US:\n"
+                f"{locked_title}\n\n"
+                f"Everyone in ({setting}) underestimated the quiet woman in the uniform, never realizing the extraordinary skill and truth she carried ({evidence}). "
+                f"When the most feared Mafia Boss stepped in and uncovered what really happened, those who humiliated her faced a reckoning they never saw coming.\n"
+                f"Listen to this full 7-part American emotional justice & Mafia storytelling audio drama until the very end.\n\n"
+                f"▼ Subscribe to the channel, leave your thoughts in the comments, and share this story.\n"
+                f"#MafiaStory #MafiaRomance #EmotionalJustice #UnderestimatedWoman #Storytime\n\n"
+                f"YOUTUBE_TAGS_EN_US:\n"
+                f"{kw_en}, mafia boss story, mafia romance story, maid and mafia boss, underestimated woman, emotional justice story, american audio drama, billionaire romance, revenge story\n\n"
+                f"VIETNAMESE_SUMMARY:\n{summary_vi}\n\n"
+                f"<THUMBNAIL_PROMPT_1>\n"
+                f"Generate a brand-new standalone 16:9 horizontal YouTube thumbnail (size 1536x1024) for an American Mafia Boss × Maid/Waitress emotional justice story.\n"
+                f"- Photorealistic cinematic scene in {setting}: a powerful, sharply dressed Mafia Boss in a tailored dark suit standing protectively beside a composed young maid/waitress holding ({evidence}), while an arrogant socialite or manager looks on in shock.\n"
+                f"- High-contrast bold uppercase English hook text (3-5 words) in bright Yellow and White with heavy black stroke in the upper-left corner.\n"
+                f"- Dramatic luxury lighting, 8k photorealistic DSLR quality, intense emotional tension.\n"
+                f"</THUMBNAIL_PROMPT_1>\n\n"
+                f"PURE_CHARACTER_COUNT: {total_pure:,} ký tự (~{round(total_pure / 820)} phút giọng đọc en-US)\n"
+            )
+
+        if ck_seo == "homeless":
+            kw_en = (
+                idea.get("keywords_ja")
+                or "homeless story, abandoned house, hidden legacy, emotional storytelling, life lessons, kindness rewarded"
+            )
+            summary_vi = idea.get("summary_vi") or ""
+            evidence = (
+                idea.get("proof_object")
+                or "sealed county property deed and notarized estate trust"
+            )
+            setting = (
+                idea.get("boi_canh_su_kien")
+                or "an abandoned American house and county clerk office"
+            )
+            return (
+                f"ID: {ma_id}\n"
+                f"COMPLETED_STEP: STEP 6 — HOMELESS STORY V3.0 SEO & 16:9 THUMBNAIL PACK (NO GREEN SCREEN PORTRAIT)\n"
+                f"CURRENT_FINAL_TITLE:\n{locked_title}\n\n"
+                f"SUPPORTING_TITLES_EN_US:\n"
+                f"1. {locked_title[:95]}\n"
+                f"2. Everyone Thought the Old Homeless Man Had Nothing Until the County Clerk Opened the Safe\n\n"
+                f"YOUTUBE_DESCRIPTION_EN_US:\n"
+                f"{locked_title}\n\n"
+                f"For years, everyone walked past an elderly homeless man without realizing the quiet sacrifice and truth he carried inside an old weather-worn folder. "
+                f"When a buried legal record ({evidence}) finally came to light in ({setting}), the people who looked down on him learned a lesson they would never forget.\n"
+                f"Listen to this full 7-part American emotional story of dignity, resilience, and hidden legacy until the very end.\n\n"
+                f"▼ Subscribe to the channel, leave your thoughts in the comments, and share this story.\n"
+                f"#HomelessStory #AbandonedProperty #HiddenLegacy #EmotionalStory #LifeLessons\n\n"
+                f"YOUTUBE_TAGS_EN_US:\n"
+                f"{kw_en}, homeless story, abandoned house story, hidden legacy, emotional storytelling, kindness rewarded, american family drama, life lessons story, billionaire in disguise, county deed reveal\n\n"
+                f"VIETNAMESE_SUMMARY:\n{summary_vi}\n\n"
+                f"<THUMBNAIL_PROMPT_1>\n"
+                f"Generate a brand-new standalone 16:9 horizontal YouTube thumbnail (size 1536x1024) for an American Homeless & Abandoned Property emotional storytelling video.\n"
+                f"- Photorealistic kinematic scene in {setting}: an elderly weathered homeless man in a worn coat holding a sealed legal document ({evidence}) while a shocked property owner or attorney looks on in disbelief.\n"
+                f"- High-contrast bold uppercase English hook text (3-5 words) in bright Yellow and White with heavy black stroke in the upper-left corner.\n"
+                f"- Natural dramatic lighting, 8k photorealistic DSLR quality, high emotional tension.\n"
+                f"</THUMBNAIL_PROMPT_1>\n\n"
+                f"PURE_CHARACTER_COUNT: {total_pure:,} ký tự (~{round(total_pure / 820)} phút giọng đọc en-US)\n"
+            )
+
         kw_raw = (
             idea.get("keywords_ja")
             or "historias de reflexión, drama familiar méxico, padre anciano, justicia familiar, herencia"
@@ -7625,7 +8022,7 @@ class ADASScriptEngine:
     # ĐỌC NGUYÊN VĂN SKILL.MD TỪ THƯ MỤC ADAS_SKILLS & TẠO PROMPT STEP 3..6 (PADRE MX V4.0)
     # ==========================================================================
     def _load_skill_markdown(self, skill_folder: str) -> str:
-        """Đọc nguyên văn 100% nội dung file SKILL.md của Agent PADRE MX V4.0 tương ứng."""
+        """Đọc nguyên văn 100% nội dung file SKILL.md của Agent (`padre_mx` V4.0 hoặc `homeless` V3.0) tương ứng."""
         alias_map = {
             "01_tieu_de_padre_mx": ["01_tieu_de_padre_mx"],
             "02_dan_y_padre_mx": ["02_gian_y_padre_mx", "02_dan_y_padre_mx"],
@@ -7633,6 +8030,11 @@ class ADASScriptEngine:
             "03_viet_kich_ban_padre_mx": ["03_viet_kich_ban_padre_mx"],
             "04_kiem_dinh_kich_ban_padre_mx": ["04_kiem_dinh_kich_ban_padre_mx"],
             "05_seo_thumbnail_padre_mx": ["05_seo_thumbnail_padre_mx"],
+            "01_title_homeless": ["01_title_homeless"],
+            "02_outline_homeless": ["02_outline_homeless"],
+            "03_writer_homeless": ["03_writer_homeless"],
+            "04_auditor_homeless": ["04_auditor_homeless"],
+            "05_seo_homeless": ["05_seo_homeless"],
         }
         folders = alias_map.get(skill_folder, [skill_folder])
         for folder in folders:
@@ -7649,7 +8051,7 @@ class ADASScriptEngine:
         return ""
 
     def _load_skill_reference_text(self, skill_folder: str, rel_path: str) -> str:
-        """Đọc file tài liệu tham chiếu (ví dụ `references/PADRE_MX_CREATIVE_DNA_V4.md`) trong thư mục Skill V4.0."""
+        """Đọc file tài liệu tham chiếu (ví dụ `references/PADRE_MX_CREATIVE_DNA_V4.md` hoặc `references/plot_devices_and_red_herrings.md`) trong thư mục Skill."""
         alias_map = {
             "01_tieu_de_padre_mx": ["01_tieu_de_padre_mx"],
             "02_dan_y_padre_mx": ["02_gian_y_padre_mx", "02_dan_y_padre_mx"],
@@ -7657,6 +8059,11 @@ class ADASScriptEngine:
             "03_viet_kich_ban_padre_mx": ["03_viet_kich_ban_padre_mx"],
             "04_kiem_dinh_kich_ban_padre_mx": ["04_kiem_dinh_kich_ban_padre_mx"],
             "05_seo_thumbnail_padre_mx": ["05_seo_thumbnail_padre_mx"],
+            "01_title_homeless": ["01_title_homeless"],
+            "02_outline_homeless": ["02_outline_homeless"],
+            "03_writer_homeless": ["03_writer_homeless"],
+            "04_auditor_homeless": ["04_auditor_homeless"],
+            "05_seo_homeless": ["05_seo_homeless"],
         }
         folders = alias_map.get(skill_folder, [skill_folder])
         for folder in folders:
@@ -7892,6 +8299,106 @@ class ADASScriptEngine:
         step2_context: str = "",
         in_same_chat: bool = False,
     ) -> str:
+        ck_s3 = self._get_idea_channel_key(ma_id=ma_id)
+        if ck_s3 == "mafia":
+            skill_md = self._load_skill_markdown("02_outline_mafia")
+            ref_contract = self._load_skill_reference_text(
+                "02_outline_mafia", "references/V2_0_INTEGRATION_CONTRACT.md"
+            )
+            ref_block = (
+                f"\n\n========== V2.0 INTEGRATION CONTRACT (`V2_0_INTEGRATION_CONTRACT.md`) ==========\n{ref_contract}\n================================================================================"
+                if ref_contract
+                else ""
+            )
+            skill_block = (
+                f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 02 (MAFIA × MAID STORY OUTLINE V2.0) ==========\n{skill_md}\n====================================================================================="
+                if skill_md
+                else ""
+            )
+            ctx_block = (
+                ""
+                if in_same_chat
+                else (
+                    f"\n\n========== DỮ LIỆU ĐẦU RA & HANDOFF TỪ STEP 1 ==========\n{step2_context[-8000:]}\n========================================================"
+                    if step2_context
+                    else ""
+                )
+            )
+            header_intro = (
+                f"[NEW CHAT #1 — TIẾP TỤC CHẠY SKILL 02 NGAY TRÊN CÙNG ĐOẠN CHAT VỚI SKILL 01]\n"
+                f"Chạy STEP 2 (7-PART MAFIA × MAID STORY OUTLINE — `viet-gian-y-nguoi-hau` V2.0) cho mã {ma_id} theo đúng tiêu đề tiếng Anh đã khóa từ STEP 1 ở trên."
+                if in_same_chat
+                else (
+                    f"[NEW CHAT #1 — CHẠY TRỰC TIẾP SKILL 02 (GIÀN Ý 7 PHẦN MAFIA × MAID) TỪ TIÊU ĐỀ GỐC ĐÃ KHÓA (BỎ QUA SKILL 01)]\n"
+                    f"Chạy trực tiếp STEP 2 (7-PART MAFIA × MAID STORY OUTLINE — `viet-gian-y-nguoi-hau` V2.0) cho mã {ma_id} từ TIÊU ĐỀ GỐC ĐÃ KHÓA dưới đây.\n"
+                    f"QUY TẮC BẮT BUỘC: Giữ nguyên 100% tiêu đề gốc này làm CURRENT_FINAL_TITLE / LOCKED_TITLE xuyên suốt Giàn ý 7 Phần, Kịch bản và SEO, tuyệt đối không viết lại hay thay đổi tiêu đề!"
+                )
+            )
+            return f"""{header_intro}
+CURRENT_FINAL_TITLE: {locked_title}{ctx_block}{skill_block}{ref_block}
+
+YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (AMERICAN ENGLISH `en-US` — 7 PARTS `[PART 1]`..`[PART 7]` • MAFIA BOSS × MAID/WAITRESS/UNDERESTIMATED WOMAN V2.0):
+1. CẤU TRÚC 7 PHẦN & 3-STAGE CONTRACT (`[PART 1]`..`[PART 7]` bằng `en-US`):
+   - STAGE A (`[PART 1]` + `[PART 2]`): Thiết lập sự bất công/sỉ nhục ban đầu, năng lực thầm lặng của nữ chính và cuộc chạm trán định mệnh với Mafia Boss.
+   - STAGE B (`[PART 3]` + `[PART 4]` + `[PART 5]`): Phát triển chiều sâu quan hệ/bảo vệ ngầm, điều tra bằng chứng vật lý/tài chính/y tế và đẩy xung đột lên đỉnh điểm.
+   - STAGE C (`[PART 6]` + `[PART 7]`): Lật ngửa toàn bộ bằng chứng, trừng trị kẻ phản bội/kiêu ngạo và cái kết trọn vẹn cảm xúc (Emotional Justice & Romance/Dignity Payoff).
+2. Xuất đầy đủ theo chuẩn `MAFIA × MAID V2.0`:
+   - `PREMISE_DECONSTRUCTION` & `ARCHETYPE_LOCK` (Archetype A = Archives/Institutional Justice, B = Mafia Romance, C = Hidden Heart/Sacrifice).
+   - `CANON_CONTINUITY_HANDOFF` & `STATE_LEDGERS` (Bảng Nhân vật + Tuổi + Vai trò; Địa điểm tại Mỹ; Tài sản/Số tiền USD; Vật chứng vật lý/Camera/Hồ sơ/Hợp đồng).
+   - `TIMELINE_AGE_LEDGER` & `CAUSAL_EVIDENCE_CHAIN` (Kiểm toán toán học tuổi nhân vật, mốc thời gian, số tiền USD không mâu thuẫn; tối thiểu 3 cặp gieo-gặt `seed_part` < `payoff_part`).
+   - Thiết kế chi tiết 7 Phần `[PART 1]` đến `[PART 7]` (Mỗi Part gồm các cảnh cụ thể, `Dramatic Role`, `Causal Chain`, `Physical Evidence/Discovery`, `Retention Cliffhanger`, `Target Character Budget`).
+   - Chốt `APPROVED_FOR_DRAFTING: YES`. Không viết văn bản kịch bản ở bước này."""
+
+        if ck_s3 == "homeless":
+            skill_md = self._load_skill_markdown("02_outline_homeless")
+            ref_plot = self._load_skill_reference_text(
+                "02_outline_homeless", "references/plot_devices_and_red_herrings.md"
+            )
+            ref_block = (
+                f"\n\n========== PLOT DEVICES & RED HERRINGS (`plot_devices_and_red_herrings.md`) ==========\n{ref_plot}\n======================================================================================"
+                if ref_plot
+                else ""
+            )
+            skill_block = (
+                f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 02 (HOMELESS STORY OUTLINE V2.4 / V3.0) ==========\n{skill_md}\n========================================================================================"
+                if skill_md
+                else ""
+            )
+            ctx_block = (
+                ""
+                if in_same_chat
+                else (
+                    f"\n\n========== DỮ LIỆU ĐẦU RA & HANDOFF TỪ STEP 1 ==========\n{step2_context[-8000:]}\n========================================================"
+                    if step2_context
+                    else ""
+                )
+            )
+            header_intro = (
+                f"[NEW CHAT #1 — TIẾP TỤC CHẠY SKILL 02 NGAY TRÊN CÙNG ĐOẠN CHAT VỚI SKILL 01]\n"
+                f"Chạy STEP 2 (7-PART HOMELESS & ABANDONED PROPERTY STORY OUTLINE — `viet-gian-y-homeless` V2.4 / V3.0) cho mã {ma_id} theo đúng tiêu đề tiếng Anh đã khóa từ STEP 1 ở trên."
+                if in_same_chat
+                else (
+                    f"[NEW CHAT #1 — CHẠY TRỰC TIẾP SKILL 02 (GIÀN Ý 7 PHẦN HOMELESS) TỪ TIÊU ĐỀ GỐC ĐÃ KHÓA (BỎ QUA SKILL 01)]\n"
+                    f"Chạy trực tiếp STEP 2 (7-PART HOMELESS & ABANDONED PROPERTY STORY OUTLINE — `viet-gian-y-homeless` V2.4 / V3.0) cho mã {ma_id} từ TIÊU ĐỀ GỐC ĐÃ KHÓA dưới đây.\n"
+                    f"QUY TẮC BẮT BUỘC: Giữ nguyên 100% tiêu đề gốc này làm CURRENT_FINAL_TITLE / LOCKED_TITLE xuyên suốt Giàn ý 7 Phần, Kịch bản và SEO, tuyệt đối không viết lại hay thay đổi tiêu đề!"
+                )
+            )
+            return f"""{header_intro}
+CURRENT_FINAL_TITLE: {locked_title}{ctx_block}{skill_block}{ref_block}
+
+YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (AMERICAN ENGLISH `en-US` — 7 PARTS `[PART 1]`..`[PART 7]` • HOMELESS × ABANDONED PROPERTY × HIDDEN LEGACY V3.0):
+1. HARD FINAL LENGTH & 3-STAGE CONTRACT (70.000–80.000 ký tự body `en-US`):
+   - STAGE A (`[PART 1]` + `[PART 2]`): 20.000–23.000 ký tự (Target: 21.500; mỗi Part >= 9.500 ký tự).
+   - STAGE B (`[PART 3]` + `[PART 4]` + `[PART 5]`): 30.000–34.000 ký tự (Target: 32.000; mỗi Part >= 10.000 ký tự).
+   - STAGE C (`[PART 6]` + `[PART 7]`): 20.000–23.000 ký tự (Target: 21.500; mỗi Part >= 9.500 ký tự).
+   - TỔNG TOÀN KỊCH BẢN (7 Parts): 70.000–80.000 ký tự (~75.000 ký tự đích).
+2. Xuất đầy đủ theo chuẩn `HOMELESS STORY V3.0`:
+   - `PREMISE_DECONSTRUCTION` & `EARLY_RETENTION_SURVIVAL_CONTRACT` (90 giây đầu tiên phải có đối đầu trực diện, hành động vật lý và mỏ neo tò mò).
+   - `CANON_CONTINUITY_HANDOFF` & `STATE_LEDGERS` (Bảng Nhân vật + Tuổi + Quan hệ; Địa điểm tại Mỹ; Tài sản/Căn nhà bỏ hoang/Số tiền USD; Vật chứng vật lý/Hồ sơ quận/Di chúc/Chìa khóa/Két sắt).
+   - `TIMELINE_AGE_LEDGER` & `CAUSAL_EVIDENCE_CHAIN` (Kiểm toán toán học tuổi nhân vật, mốc năm tháng, số tiền USD không mâu thuẫn; tối thiểu 3 cặp gieo-gặt `seed_part` < `payoff_part`).
+   - Thiết kế chi tiết 7 Phần `[PART 1]` đến `[PART 7]` (Mỗi Part gồm các cảnh cụ thể, `Dramatic Role`, `Causal Chain`, `Physical Evidence/Discovery`, `Retention Cliffhanger`, `Target Character Budget`).
+   - Chốt `APPROVED_FOR_DRAFTING: YES`. Không viết văn bản kịch bản ở bước này."""
+
         skill_md = self._load_skill_markdown("02_gian_y_padre_mx")
         creative_dna_md = self._load_skill_reference_text(
             "02_gian_y_padre_mx", "references/PADRE_MX_CREATIVE_DNA_V4.md"
@@ -7982,12 +8489,72 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
         prev_part_tail: str = "",
         in_same_writer_chat: bool = False,
     ) -> str:
+        ck_s4 = self._get_idea_channel_key(ma_id=ma_id)
+        is_homeless = ck_s4 == "homeless"
+        is_mafia = ck_s4 == "mafia"
+        skill_folder_s4 = (
+            "03_writer_homeless"
+            if is_homeless
+            else ("03_writer_mafia" if is_mafia else "03_viet_kich_ban_padre_mx")
+        )
         skill_md = (
             ""
             if in_same_writer_chat
-            else self._load_skill_markdown("03_viet_kich_ban_padre_mx")
+            else self._load_skill_markdown(skill_folder_s4)
         )
         compact_s3 = self._extract_compact_step3_for_part(step3_context, part_letter)
+        if is_homeless or is_mafia:
+            niche_label = (
+                "MAFIA BOSS × MAID/WAITRESS STORY SCRIPT WRITER V2.0 (`viet-kich-ban-nguoi-hau-tu-gian-y`)"
+                if is_mafia
+                else "HOMELESS STORY SCRIPT WRITER V2.0 / V3.0 (`viet-kich-ban-homeless`)"
+            )
+            skill_block = (
+                f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 03 ({niche_label}) ==========\n{skill_md}\n=============================================================================================="
+                if (skill_md and compact_s3)
+                else ""
+            )
+            ctx_block = (
+                f"\n\n========== NHẮC LẠI DÀN Ý TRỌNG TÂM CỦA STAGE {part_letter.upper()} (HOMELESS 7-PART OUTLINE) ==========\n{compact_s3[-10000:]}\n=========================================================================="
+                if in_same_writer_chat and compact_s3
+                else (
+                    f"\n\n========== DÀN Ý 7 PHẦN & CANON CONTINUITY TỪ BƯỚC TRƯỚC ==========\n{compact_s3}\n==================================================================="
+                    if compact_s3
+                    else ""
+                )
+            )
+            prev_block = (
+                f"\n\n========== ĐOẠN KẾT CỦA STAGE TRƯỚC (ĐỂ NỐI MẠCH TRUYỆN LIỀN MẠCH 100%, TUYỆT ĐỐI KHÔNG LẶP LẠI) ==========\n"
+                f"«...{prev_part_tail[-450:]}»\n"
+                f"==========================================================================================================="
+                if prev_part_tail
+                else ""
+            )
+            p_up = part_letter.upper()
+            if p_up == "A":
+                stage_desc = "STAGE A — Write complete `[PART 1]` and `[PART 2]` in American English (`en-US`) (Each Part >= 9,500 chars; Stage A Total: 20,000–23,000 chars)"
+                headings_rule = "MUST begin with standalone line `[PART 1]`, write all of Part 1 (>= 10,000 chars), then put standalone line `[PART 2]` and write all of Part 2 (>= 10,000 chars)."
+                ledger_rule = "Strictly enforce `CANON_CONTINUITY_HANDOFF` (`STAGE A`): Lock exact character names, ages, USD amounts, US locations, and physical clues/hidden legacy items without premature reveal."
+            elif p_up == "B":
+                stage_desc = "STAGE B — Continue seamlessly with complete `[PART 3]`, `[PART 4]`, and `[PART 5]` in American English (`en-US`) (Each Part >= 9,500 chars; Stage B Total: 30,000–34,000 chars)"
+                headings_rule = "MUST begin with standalone line `[PART 3]`, write all of Part 3 (>= 10,500 chars), then standalone line `[PART 4]` (>= 10,500 chars) and `[PART 5]` (>= 10,500 chars)."
+                ledger_rule = "Strictly enforce `CANON_CONTINUITY_HANDOFF` (`STAGE A` -> `STAGE B`): Preserve 100% of character names, ages, USD amounts, property details, and escalate the investigation/discovery and confrontation through `[PART 5]`."
+            else:
+                stage_desc = "STAGE C — Continue seamlessly with complete `[PART 6]` and `[PART 7]` in American English (`en-US`) (Each Part >= 9,500 chars; Stage C Total: 20,000–23,000 chars)"
+                headings_rule = "MUST begin with standalone line `[PART 6]`, write all of Part 6 (>= 10,500 chars), then standalone line `[PART 7]` (>= 10,500 chars) bringing the story to a deeply satisfying resolution."
+                ledger_rule = "Strictly enforce `CANON_CONTINUITY_HANDOFF` (`STAGE B` -> `STAGE C`): Pay off 100% of planted clues, deeds, and hidden legacy items in `[PART 6]` and deliver emotional justice and quiet dignity in `[PART 7]`."
+
+            return f"""[NEW CHAT #2 — SKILL 03 STAGE {p_up}] CHẠY NGAY STEP 3 ({stage_desc}) CHO MÃ {ma_id}
+CURRENT_FINAL_TITLE: {locked_title}{ctx_block}{prev_block}{skill_block}
+
+QUY TẮC BẮT BUỘC (`viet-kich-ban-homeless` V2.0 / V3.0 — TIẾNG ANH MỸ `en-US`):
+1. NGÔN NGỮ & GIỌNG KỂ: Viết 100% bằng tiếng Anh Mỹ (`en-US`) chuẩn mực, giàu hình ảnh điện ảnh, cảm xúc chân thực, tự nhiên để đọc Voice TTS.
+2. NHÃN PHẦN BẮT BUỘC: {headings_rule}
+3. SỔ CÁI LIÊN TỤC (`CANON_CONTINUITY`): {ledger_rule}
+4. ⚠️ CẤM TUYỆT ĐỐI RÒ RỈ TIÊU ĐỀ & METADATA: Ngoài các dòng nhãn phần độc lập (`[PART 1]`..`[PART 7]`), TUYỆT ĐỐI KHÔNG in lại dòng `CURRENT_FINAL_TITLE:`, `LOCKED_TITLE:`, `STAGE_A_COUNT_GATE:`, `Scene 1:`, hay ghi chú đạo diễn vào trong văn bản truyện.
+5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự, mỗi Part trong Stage >= 9.500 ký tự).
+6. Triển khai chi tiết từng cảnh theo đúng Dàn ý 7 Phần bằng hành động vật lý cụ thể, đối thoại giàu kịch tính, chi tiết tài sản/hồ sơ pháp lý tại Mỹ. TUYỆT ĐỐI KHÔNG tóm tắt, không nhảy cóc thời gian, không lặp lại đoạn văn.
+7. ⚠️ QUY TẮC TỐC ĐỘ & HIỂN THỊ: TUYỆT ĐỐI KHÔNG bật công cụ Python / Code Interpreter, KHÔNG đóng gói thành file tải về (.txt/.md/.docx). BẮT BUỘC in trực tiếp toàn bộ 100% văn bản kịch bản tiếng Anh Mỹ (`en-US`) ra khung chat ngay lập tức."""
         skill_block = (
             f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 03 (PADRE MX SCRIPT WRITER V4.0) ==========\n{skill_md}\n==================================================================================="
             if (skill_md and compact_s3)
@@ -8044,6 +8611,7 @@ QUY TẮC BẮT BUỘC (`padre-mx-script-writer` V4.0.0 — TIẾNG TÂY BAN NHA
         target_c: int,
         last_tail_ja: str,
         step3_context: str = "",
+        ma_id: str = "",
     ) -> str:
         needed = max(2000, target_c - current_pure)
         p_up = part_letter.upper()
@@ -8063,6 +8631,16 @@ QUY TẮC BẮT BUỘC (`padre-mx-script-writer` V4.0.0 — TIẾNG TÂY BAN NHA
             if step3_context
             else ""
         )
+        if self._get_idea_channel_key(ma_id=ma_id) in ("homeless", "mafia"):
+            return f"""[KIỂM TRA ĐỘ DÀI CỨNG — STAGE {p_up} ({expected_parts_str})]
+- Số ký tự hiện tại của STAGE {p_up} mới đạt: {current_pure:,} ký tự.
+- Ngưỡng bắt buộc của STAGE {p_up}: {min_c:,}–{max_c:,} ký tự (Còn thiếu khoảng {needed:,} ký tự để đạt đích {target_c:,}; mỗi Part phải >= 9.500 ký tự).{ctx_reminder}
+YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG ANH MỸ (`en-US`):
+1. Hãy viết TIẾP NỐI NGAY LẬP TỨC từ đoạn kết vừa rồi:
+   «...{last_tail_ja}»
+2. Triển khai tiếp các diễn biến còn lại của {expected_parts_str} theo đúng dàn ý (nếu chưa mở sang Part tiếp theo thuộc Stage {p_up} thì nhớ đặt dòng nhãn `[PART X]` độc lập rồi viết đầy đủ Part đó; nếu đã ở Part cuối của Stage {p_up} thì mở rộng chiều sâu tình huống, bằng chứng vật lý/pháp lý, đối thoại trực diện và diễn biến tâm lý nhân vật).
+3. TUYỆT ĐỐI KHÔNG bật công cụ Python/Code Interpreter, KHÔNG tạo file tải về, KHÔNG lặp lại những đoạn đã viết ở trên, KHÔNG nhảy sang Stage tiếp theo. Chỉ xuất trực tiếp 100% văn bản tự sự và đối thoại tiếng Anh Mỹ (`en-US`) ra khung chat nối tiếp cho đủ thêm tối thiểu {needed:,} ký tự."""
+
         return f"""[KIỂM TRA ĐỘ DÀI CỨNG — STAGE {p_up} ({expected_parts_str})]
 - Số ký tự hiện tại của STAGE {p_up} mới đạt: {current_pure:,} ký tự.
 - Ngưỡng bắt buộc của STAGE {p_up}: {min_c:,}–{max_c:,} ký tự (Còn thiếu khoảng {needed:,} ký tự để đạt đích {target_c:,}; mỗi Part phải >= 8.500 ký tự).{ctx_reminder}
@@ -8085,7 +8663,54 @@ YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG TÂY BAN NHA MEXICO (
         part_c_text: str = "",
         step3_context: str = "",
     ) -> str:
-        skill_md = self._load_skill_markdown("04_kiem_dinh_kich_ban_padre_mx")
+        ck_s5 = self._get_idea_channel_key(ma_id=ma_id)
+        is_homeless = ck_s5 == "homeless"
+        is_mafia = ck_s5 == "mafia"
+        skill_md = self._load_skill_markdown(
+            "04_auditor_homeless"
+            if is_homeless
+            else (
+                "04_auditor_mafia" if is_mafia else "04_kiem_dinh_kich_ban_padre_mx"
+            )
+        )
+        if is_homeless or is_mafia:
+            skill_block = (
+                f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 04 (HOMELESS STORY FORENSIC QA V2.0 / V3.0 — ROUND 1 LOGIC & CONTINUITY AUDIT) ==========\n{skill_md}\n==============================================================================================================================="
+                if skill_md
+                else ""
+            )
+            arch_excerpt = (
+                f"\n\n========== TÓM TẮT 7-PART OUTLINE & CANON CONTINUITY LEDGER ==========\n{step3_context[:4500]}\n======================================================================"
+                if step3_context
+                else ""
+            )
+            script_payload = ""
+            if part_a_text or part_b_text or part_c_text:
+                script_payload = (
+                    f"\n\n========== TOÀN BỘ KỊCH BẢN 7 PHẦN (`en-US`) CẦN KIỂM ĐỊNH VÒNG 1 (LOGIC / CONTINUITY / ORTHOGRAPHY) ==========\n"
+                    f"--- [BẮT ĐẦU STAGE A: PART 1 & PART 2 ({count_a:,} chars)] ---\n{part_a_text}\n--- [KẾT THÚC STAGE A] ---\n\n"
+                    f"--- [BẮT ĐẦU STAGE B: PART 3, PART 4 & PART 5 ({count_b:,} chars)] ---\n{part_b_text}\n--- [KẾT THÚC STAGE B] ---\n\n"
+                    f"--- [BẮT ĐẦU STAGE C: PART 6 & PART 7 ({count_c:,} chars)] ---\n{part_c_text}\n--- [KẾT THÚC STAGE C] ---\n"
+                    f"================================================================================================================"
+                )
+            return f"""CHẠY NGAY STEP 4 (VÒNG 1 — FORENSIC LOGIC, CONTINUITY LEDGER, PROPERTY/LEGAL REALISM & `en-US` ORTHOGRAPHY AUDIT + REPAIR 1) CHO MÃ {ma_id}
+- CURRENT_FINAL_TITLE: {locked_title}
+- Đếm ký tự xác thực bởi hệ thống Python bên ngoài:
+  + STAGE A (`[PART 1]`–`[PART 2]`): {count_a:,} chars
+  + STAGE B (`[PART 3]`–`[PART 5]`): {count_b:,} chars
+  + STAGE C (`[PART 6]`–`[PART 7]`): {count_c:,} chars
+  + TOTAL (`[PART 1]`–`[PART 7]`): {total_count:,} chars
+  + AUDIT_ROUND: ROUND 1 (FORENSIC LOGIC, CONTINUITY, US PROPERTY/ESTATE PLAUSIBILITY & `en-US` SPELLING){arch_excerpt}{skill_block}{script_payload}
+
+⚠️ YÊU CẦU KIỂM ĐỊNH ĐỘC LẬP VÒNG 1 & SỬA LỖI LOGIC (REPAIR 1 — `kiem-tra-kich-ban-homeless` V2.0 / V3.0):
+1. Bạn là Giám khảo Kiểm định Độc lập Vòng 1 (`kiem-tra-kich-ban-homeless` V2.0 / V3.0). Hãy kiểm tra toàn bộ 7 Phần (`[PART 1]`..`[PART 7]`):
+   - Tính nhân-quả, tính liên tục của tên nhân vật, toán học tuổi tác/năm tháng, số tiền (USD), địa điểm tại Mỹ, chuỗi vật chứng (`setup_payoff_map`) và tính hợp lý của hồ sơ bất động sản/di sản tại Mỹ.
+   - Chính tả & ngữ pháp tiếng Anh Mỹ (`en-US`), không rò rỉ tiêu đề hay ghi chú đạo diễn.
+2. Xuất báo cáo kiểm định Vòng 1 và danh mục vùng lỗi cần sửa (đóng băng bảo vệ 100% các đoạn văn đã đạt chuẩn).
+3. NẾU PHÁT HIỆN BẤT KỲ STAGE NÀO (A, B hoặc C) CÓ LỖI LOGIC, MÂU THUẪN TUỔI/TIỀN/THỜI GIAN, LỖI CHÍNH TẢ `en-US` HOẶC RÒ RỈ METADATA:
+   - Thực hiện ngay **REPAIR 1**: Xuất bản đã sửa hoàn chỉnh của Stage đó trong cặp thẻ `<REWRITE_PART_A>...</REWRITE_PART_A>`, `<REWRITE_PART_B>...</REWRITE_PART_B>`, hoặc `<REWRITE_PART_C>...</REWRITE_PART_C>` (giữ nguyên các dòng nhãn `[PART 1]`..`[PART 7]` và bảo toàn độ dài chuẩn của từng Stage).
+4. NẾU CẢ 3 STAGE ĐỀU ĐẠT CHUẨN LOGIC & CHÍNH TẢ 100%:
+   - Không cần mở thẻ `<REWRITE_PART_...>`, chốt `ROUND1_LOGIC_STATUS: PASS_CLEAN`! TUYỆT ĐỐI KHÔNG bật Python/Code Interpreter."""
         skill_block = (
             f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 04 (PADRE MX INDEPENDENT QA V4.0 — ROUND 1 FORENSIC LOGIC AUDIT) ==========\n{skill_md}\n================================================================================================================="
             if skill_md
@@ -8184,6 +8809,79 @@ CHẠY NGAY STEP 5 (VÒNG 2 — HOLISTIC FULL-SCRIPT QUALITY, PASS ZONE FREEZE, 
         step2_context: str = "",
         script_excerpt: str = "",
     ) -> str:
+        ck_s6 = self._get_idea_channel_key(ma_id=ma_id)
+        if ck_s6 == "mafia":
+            skill_md = self._load_skill_markdown("05_seo_mafia")
+            skill_block = (
+                f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 05 (MAFIA × MAID SEO, THUMBNAIL & 8-SECOND HOOK V2.0) ==========\n{skill_md}\n======================================================================================================"
+                if skill_md
+                else ""
+            )
+            step2_tail = step2_context[-12000:] if step2_context else ""
+            ctx_block = (
+                f"\n\n========== DỮ LIỆU TIÊU ĐỀ TỪ STEP 1/2 ==========\n{step2_tail}\n================================================="
+                if step2_tail
+                else ""
+            )
+            script_block = (
+                f"\n\n========== TRÍCH ĐOẠN MỞ ĐẦU & CAO TRÀO KỊCH BẢN ĐÃ KHÓA ==========\n{script_excerpt[:3000]}\n==================================================================="
+                if script_excerpt
+                else ""
+            )
+            return f"""CHẠY NGAY STEP 6 (TRÊN ĐOẠN CHAT SEO MỚI HOÀN TOÀN) — SEO YOUTUBE `en-US` & 1 ẢNH THUMBNAIL 16:9 (`THUMBNAIL.png` — KHÔNG DÙNG ẢNH NỀN XANH) (`viet-seo-nguoi-hau` V2.0) CHO MÃ {ma_id}
+- FULL_SCRIPT_CHAR_COUNT_VERIFIED: {total_count:,} chars (7 PARTS `[PART 1]`..`[PART 7]` — PASS)
+- RELEASE_DECISION: READY (ĐÃ QUA KIỂM ĐỊNH ĐỘC LẬP LOGIC & QUALITY)
+- CURRENT_FINAL_TITLE (Giữ nguyên 100% verbatim): {locked_title}{ctx_block}{script_block}{skill_block}
+
+⚠️ LỆNH XUẤT BẢN TRÊN ĐOẠN CHAT SEO MỚI (FORCE_PUBLISH_PACK = TRUE):
+BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YOUTUBE MAFIA × MAID US (`en-US`) gồm đầy đủ 6 mục sau (không dùng Code Interpreter):
+1. `PRIMARY_LOCKED_TITLE`: Giữ nguyên 100% `CURRENT_FINAL_TITLE` (kèm bản dịch nghĩa tiếng Việt bên dưới).
+2. `SUPPORTING_TITLES_EN_US`: Đúng 2 tiêu đề phụ tiếng Anh Mỹ (`<= 100` ký tự) bám sát sự thật trong câu chuyện.
+3. `YOUTUBE_DESCRIPTION_EN_US`: Mô tả video tiếng Anh Mỹ chuẩn SEO (3 đoạn văn giàu cảm xúc không tiết lộ kết cục + câu hỏi thảo luận + lời kêu gọi đăng ký kênh).
+4. `HASHTAGS_EN_US`: 3–5 hashtags chuẩn (`#MafiaRomance #MafiaStory #EmotionalJustice #MaidAndBoss ...`).
+5. `TAGS_CSV_EN_US`: 25–35 từ khóa tiếng Anh Mỹ phân cách bằng dấu phẩy.
+6. `THUMBNAIL_PROMPT` (BẮT BUỘC XUẤT THẺ `<THUMBNAIL_PROMPT_1>` ĐỂ VẼ 1 BỨC ẢNH `THUMBNAIL.png` 16:9 DUY NHẤT — KHÔNG TẠO ẢNH NỀN XANH):
+   - `<THUMBNAIL_PROMPT_1>`: Prompt tiếng Anh chi tiết để công cụ tạo ảnh (size `1536x1024`, bố cục 16:9 `1920x1080`) vẽ bức ảnh `THUMBNAIL.png` điện ảnh chân thực (Photorealistic American Mafia Boss × Maid/Waitress Emotional Drama):
+     + Khung cảnh & Nhân vật: Nữ chính trong trang phục giản dị (maid/waitress/nurse/archivist) ánh mắt kiên cường đứng cạnh hoặc được bảo vệ bởi người đàn ông quyền lực mặc suit tối màu sang trọng (Mafia Boss / CEO), đối diện kẻ phản diện đang bàng hoàng trước bằng chứng sự thật.
+     + Chữ trên Thumbnail: Tối đa 3–5 từ tiếng Anh IN HOA ngắn gọn, cực kỳ nổi bật (màu Vàng/Trắng viền Đen đậm) ở góc trái trên.
+   - `</THUMBNAIL_PROMPT_1>`"""
+
+        if ck_s6 == "homeless":
+            skill_md = self._load_skill_markdown("05_seo_homeless")
+            skill_block = (
+                f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 05 (HOMELESS STORY SEO, THUMBNAIL & OMNI TRAILER V2.1 / V3.0) ==========\n{skill_md}\n=============================================================================================================="
+                if skill_md
+                else ""
+            )
+            step2_tail = step2_context[-12000:] if step2_context else ""
+            ctx_block = (
+                f"\n\n========== DỮ LIỆU TIÊU ĐỀ TỪ STEP 1/2 ==========\n{step2_tail}\n================================================="
+                if step2_tail
+                else ""
+            )
+            script_block = (
+                f"\n\n========== TRÍCH ĐOẠN MỞ ĐẦU & CAO TRÀO KỊCH BẢN ĐÃ KHÓA ==========\n{script_excerpt[:3000]}\n==================================================================="
+                if script_excerpt
+                else ""
+            )
+            return f"""CHẠY NGAY STEP 6 (TRÊN ĐOẠN CHAT SEO MỚI HOÀN TOÀN) — SEO YOUTUBE `en-US` & 1 ẢNH THUMBNAIL 16:9 (`THUMBNAIL.png` — KHÔNG DÙNG ẢNH NỀN XANH) (`seo-homeless-story` V2.1 / V3.0) CHO MÃ {ma_id}
+- FULL_SCRIPT_CHAR_COUNT_VERIFIED: {total_count:,} chars (7 PARTS `[PART 1]`..`[PART 7]` — PASS 70.000–80.000)
+- RELEASE_DECISION: READY (ĐÃ QUA KIỂM ĐỊNH ĐỘC LẬP LOGIC & QUALITY)
+- CURRENT_FINAL_TITLE (Giữ nguyên 100% verbatim): {locked_title}{ctx_block}{script_block}{skill_block}
+
+⚠️ LỆNH XUẤT BẢN TRÊN ĐOẠN CHAT SEO MỚI (FORCE_PUBLISH_PACK = TRUE):
+BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YOUTUBE HOMELESS US (`en-US`) gồm đầy đủ 6 mục sau (không dùng Code Interpreter):
+1. `PRIMARY_LOCKED_TITLE`: Giữ nguyên 100% `CURRENT_FINAL_TITLE` (kèm bản dịch nghĩa tiếng Việt bên dưới).
+2. `SUPPORTING_TITLES_EN_US`: Đúng 2 tiêu đề phụ tiếng Anh Mỹ (`<= 100` ký tự) bám sát sự thật trong câu chuyện.
+3. `YOUTUBE_DESCRIPTION_EN_US`: Mô tả video tiếng Anh Mỹ chuẩn SEO (3 đoạn văn giàu cảm xúc không tiết lộ kết cục + câu hỏi thảo luận + lời kêu gọi đăng ký kênh).
+4. `HASHTAGS_EN_US`: 3–5 hashtags chuẩn (`#HomelessStory #AbandonedProperty #HiddenLegacy #EmotionalStory ...`).
+5. `TAGS_CSV_EN_US`: 25–35 từ khóa tiếng Anh Mỹ phân cách bằng dấu phẩy.
+6. `THUMBNAIL_PROMPT` (BẮT BUỘC XUẤT THẺ `<THUMBNAIL_PROMPT_1>` ĐỂ VẼ 1 BỨC ẢNH `THUMBNAIL.png` 16:9 DUY NHẤT — KHÔNG TẠO ẢNH NỀN XANH):
+   - `<THUMBNAIL_PROMPT_1>`: Prompt tiếng Anh chi tiết để công cụ tạo ảnh (size `1536x1024`, bố cục 16:9 `1920x1080`) vẽ bức ảnh `THUMBNAIL.png` điện ảnh chân thực (Photorealistic American Homeless & Abandoned Property Drama):
+     + Khung cảnh & Nhân vật: Nhân vật người đàn ông/cựu chiến binh vô gia cư khắc khổ, ánh mắt sâu lắng nhưng đĩnh đạc đứng trước căn nhà bỏ hoang / văn phòng quận hoặc cầm vật chứng pháp lý quyết định đối diện với nhân vật phản diện/luật sư đang sững sờ.
+     + Chữ trên Thumbnail: Tối đa 3–5 từ tiếng Anh IN HOA ngắn gọn, cực kỳ nổi bật (màu Vàng/Trắng viền Đen đậm) ở góc trái trên.
+   - `</THUMBNAIL_PROMPT_1>`"""
+
         skill_md = self._load_skill_markdown("05_seo_thumbnail_padre_mx")
         skill_block = (
             f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 05 (PADRE MX SEO & 80/20 + 9:16 GREEN THUMBNAIL PAIR V4.0) ==========\n{skill_md}\n============================================================================================================"
@@ -8449,7 +9147,76 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         locked_title: str,
         idea: Dict[str, Any],
     ) -> List[str]:
-        """Bóc tách Prompt tạo Thumbnail chuẩn 80/20 PADRE MX V3.0 từ STEP 6 (hoặc tự động tổng hợp từ 6 dòng chữ Tây Ban Nha IN HOA)."""
+        """Bóc tách Prompt tạo Thumbnail từ STEP 6 (`homeless` 16:9 photorealistic không dùng green screen, hoặc `padre_mx` 80/20)."""
+        ma_id_str = str((idea or {}).get("ma_id") or "")
+        ck_thumb = self._get_idea_channel_key(ma_id=ma_id_str, idea=idea)
+        if ck_thumb in ("homeless", "mafia"):
+            is_mf = ck_thumb == "mafia"
+            prompts_hl: List[str] = []
+            for idx in (1, 2, 3):
+                m = re.search(
+                    rf"<THUMBNAIL_PROMPT_{idx}>([\s\S]*?)</THUMBNAIL_PROMPT_{idx}>",
+                    step6_text or "",
+                    flags=re.IGNORECASE,
+                )
+                if m and len(m.group(1).strip()) > 50:
+                    prompts_hl.append(
+                        self._sanitize_raw_thumbnail_prompt(m.group(1).strip())
+                    )
+            safe_title_ctx = self._sanitize_raw_thumbnail_prompt(locked_title or "")
+            default_proof = (
+                "encrypted security footage and syndicate ledger"
+                if is_mf
+                else "sealed county property deed"
+            )
+            default_setting = (
+                "luxury American mafia estate and penthouse"
+                if is_mf
+                else "abandoned American house"
+            )
+            safe_proof = (
+                self._sanitize_raw_thumbnail_prompt(
+                    str(idea.get("proof_object") or default_proof)
+                )
+                or default_proof
+            )
+            safe_setting = (
+                self._sanitize_raw_thumbnail_prompt(
+                    str(idea.get("boi_canh_su_kien") or default_setting)
+                )
+                or default_setting
+            )
+            hl_variants = (
+                [
+                    f"Photorealistic 16:9 cinematic YouTube thumbnail (size 1536x1024) inside {safe_setting}: a powerful Mafia Boss in a tailored dark suit standing protectively beside a composed maid/waitress holding {safe_proof} while a humiliated socialite looks on in shock. Bold 3-word uppercase yellow/white hook text in the top-left corner.",
+                    f"Dramatic 16:9 American Mafia romance & emotional justice YouTube thumbnail (size 1536x1024) in {safe_setting}: an underestimated young woman in a maid uniform calm and dignified as the feared Mafia Boss reveals {safe_proof} to a stunned room. High-contrast bold English hook text in top-left.",
+                    f"High-CTR 16:9 photorealistic YouTube thumbnail (size 1536x1024) at {safe_setting}: intense confrontation between a ruthless Mafia Boss defending the quiet maid holding {safe_proof} and an arrogant antagonist frozen in disbelief. Bold uppercase English hook text in top-left.",
+                ]
+                if is_mf
+                else [
+                    f"Photorealistic 16:9 cinematic YouTube thumbnail (size 1536x1024) set in front of {safe_setting}: an elderly weathered homeless man in a worn winter coat holding {safe_proof} while a stunned homeowner and county clerk look at the document in shock. Bold 3-word uppercase yellow/white hook text in the top-left corner.",
+                    f"Dramatic 16:9 American storytelling YouTube thumbnail (size 1536x1024) inside {safe_setting}: an older homeless veteran opening a dusty steel lockbox revealing {safe_proof}, with an arrogant buyer standing frozen in disbelief in the background. High-contrast bold English hook text in top-left.",
+                    f"High-CTR 16:9 photorealistic YouTube thumbnail (size 1536x1024) outside {safe_setting}: close-up emotional confrontation between a dignified elderly homeless man holding {safe_proof} and a shocked family member or attorney. Bold uppercase English hook text in top-left.",
+                ]
+            )
+            while len(prompts_hl) < 3:
+                prompts_hl.append(
+                    f"Story Context: {safe_title_ctx}\nVisual Scene: {hl_variants[len(prompts_hl)]}"
+                )
+            story_genre_lbl = (
+                "an American Mafia Boss × Maid/Waitress emotional justice story"
+                if is_mf
+                else "an American Homeless & Abandoned Property emotional story"
+            )
+            return [
+                (
+                    f"Call the image generation tool immediately to create a brand-new standalone horizontal 16:9 YouTube thumbnail image (size 1536x1024) for {story_genre_lbl}:\n\n"
+                    f"{p}\n\n"
+                    "Strict rule: Generate the horizontal 16:9 photorealistic thumbnail image directly right now without asking any questions."
+                )
+                for p in prompts_hl[:3]
+            ]
+
         six_lines = self._extract_six_lines_from_outputs(
             step6_text,
             step2_text,
@@ -8865,6 +9632,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         target_file = proj_dir / "THUMBNAIL.png"
         green_file = proj_dir / "THUMBNAIL-NENXANH.png"
+        is_homeless_proj = self._get_idea_channel_key(ma_id=ma_id, idea=idea) in (
+            "homeless",
+            "mafia",
+        )
 
         def _save_matched_pair(
             thumb_1080p_bytes: bytes,
@@ -8872,6 +9643,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         ) -> List[Path]:
             target_file.write_bytes(thumb_1080p_bytes)
             out_list = [target_file]
+            if is_homeless_proj:
+                log_info(
+                    "SCRIPT",
+                    f"[{ma_id}] 🖼️ [HOMELESS KEY] Đã lưu THUMBNAIL.png (16:9 1920x1080) — Bỏ qua ảnh nhân vật nền xanh theo đúng cấu hình key Homeless!",
+                    project_id=ma_id,
+                )
+                return out_list
             try:
                 from backend.renderer import (
                     _is_green_plate_clean_and_large,
@@ -9043,9 +9821,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
 
             if is_qa_pass:
-                # Lượt 2: BẮT BUỘC dùng ChatGPT vẽ ảnh khổ dọc 9:16 nền xanh #00FF00 không text,
+                if is_homeless_proj:
+                    saved_paths = _save_matched_pair(
+                        img_bytes, chatgpt_green_9_16_bytes=None
+                    )
+                    self._update_idea_record(ma_id, has_thumbnail=True)
+                    self._emit(
+                        message=f"[{ma_id}] ✅ Ảnh THUMBNAIL.png (16:9 Homeless US — Không dùng ảnh nền xanh) ĐẠT CHUẨN QA -> Đã lưu vào {renders_dir}!"
+                    )
+                    break
+                # Lượt 2 (chỉ dành cho padre_mx): BẮT BUỘC dùng ChatGPT vẽ ảnh khổ dọc 9:16 nền xanh #00FF00 không text,
                 # lấy vùng nhân vật ông già bên phải của THUMBNAIL.png làm ảnh tham chiếu (mặt & trang phục).
-                # Nếu tab hiện tại không vẽ được thì tự động mở tab mới (start_fresh_chat) kèm ảnh tham chiếu để vẽ!
                 chatgpt_green_9_16 = (
                     self._generate_chatgpt_9_16_green_from_reference_sync(
                         session=session,
@@ -9114,6 +9900,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             except Exception:
                 pass
         if target_thumb.exists() and target_thumb.stat().st_size > 20000:
+            if self._get_idea_channel_key(ma_id=ma_id) in ("homeless", "mafia"):
+                self._update_idea_record(ma_id, has_thumbnail=True)
+                return [str(target_thumb)]
             if not _is_green_plate_clean_and_large(target_green):
                 session_gr = None
                 try:
@@ -9433,6 +10222,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     target_c=target_chars,
                     last_tail_ja=tail_ja,
                     step3_context=step3_context if need_fresh_recovery else "",
+                    ma_id=ma_id,
                 )
 
             cont_resp = session.send_prompt_and_wait(
@@ -9509,11 +10299,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             return True
 
         vcfg = video_settings or {}
+        job_channel_key = self._get_idea_channel_key(ma_id=ma_id)
         job_payload = [
             {
                 "name": ma_id,
                 "script_text": script_text,
                 "seo_text": seo_text,
+                "channel_key": job_channel_key,
             }
         ]
         self._update_idea_record(
@@ -10811,6 +11603,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     "name": mid,
                     "script_text": sc_text,
                     "seo_text": seo_text,
+                    "channel_key": self._get_idea_channel_key(ma_id=mid, idea=idea),
                 }
             )
 

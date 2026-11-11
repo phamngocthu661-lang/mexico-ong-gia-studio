@@ -1,0 +1,55 @@
+{
+  "script_sha256": "REPLACE_FROM_state.json",
+  "title_sha256": "REPLACE_FROM_state.json",
+  "outline_sha256": "REPLACE_FROM_state.json/artifacts/outline",
+  "continuity_sha256": "REPLACE_FROM_state.json/artifacts/continuity",
+  "audit_passes": [
+    {
+      "type": "READ_1",
+      "parts": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "summary": "Logic and causal flow assessed for every Part"
+    },
+    {
+      "type": "READ_2",
+      "parts": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "summary": "Prose, safety, retention and production rules assessed"
+    }
+  ],
+  "part_anchors": [
+    {
+      "part": 1,
+      "quote": "REPLACE_WITH_10+_CHARACTERS_EXACTLY_FROM_PART_1"
+    },
+    {
+      "part": 2,
+      "quote": "REPLACE_WITH_10+_CHARACTERS_EXACTLY_FROM_PART_2"
+    },
+    {
+      "part": 3,
+      "quote": "REPLACE_WITH_10+_CHARACTERS_EXACTLY_FROM_PART_3"
+    },
+    {
+      "part": 4,
+      "quote": "REPLACE_WITH_10+_CHARACTERS_EXACTLY_FROM_PART_4"
+    },
+    {
+      "part": 5,
+      "quote": "REPLACE_WITH_10+_CHARACTERS_EXACTLY_FROM_PART_5"
+    }
+  ],
+  "findings": [],
+  "score": 100,
+  "editorial_note": "100 means no known actionable defects only after real editorial review"
+}

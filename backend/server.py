@@ -190,6 +190,14 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         raw_text: str
         custom_id: Optional[str] = None
         use_original_title: bool = False
+        channel_key: Optional[str] = None
+
+    class SwitchChannelKeyRequest(BaseModel):
+        channel_key: str
+
+    class SetIdeasChannelKeyRequest(BaseModel):
+        channel_key: str
+        ma_ids: Optional[list[str]] = None
 
     class SetIdeaTitleModeRequest(BaseModel):
         use_original_title: bool = False
@@ -578,6 +586,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             req.raw_text,
             custom_id=req.custom_id,
             use_original_title=bool(req.use_original_title),
+            channel_key=req.channel_key,
         )
         first_idea = saved_list[0]
         if req.use_original_title:
@@ -901,7 +910,57 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail=res.get("message", "Key không hợp lệ!")
             )
+        active_ck = str(res.get("channel_key") or "padre_mx").strip().lower()
+        if active_ck == "homeless":
+            save_voice_config(
+                {
+                    "selected_preset_id": "homeless",
+                    "ref_wav": "homeless",
+                    "language": "en",
+                },
+                base_dir,
+            )
         return res
+
+    @app.post("/api/license/switch-key")
+    def switch_active_license_key(req: SwitchChannelKeyRequest):
+        res = license_mgr.set_active_channel_key(req.channel_key)
+        active_ck = str(res.get("channel_key") or "padre_mx").strip().lower()
+        if active_ck == "homeless":
+            save_voice_config(
+                {
+                    "selected_preset_id": "homeless",
+                    "ref_wav": "homeless",
+                    "language": "en",
+                },
+                base_dir,
+            )
+        else:
+            save_voice_config(
+                {
+                    "selected_preset_id": "04_mx_don_ernesto_trung_tri_mexico_clone",
+                    "ref_wav": "04_mx_don_ernesto_trung_tri_mexico_clone",
+                    "language": "es",
+                },
+                base_dir,
+            )
+        return {
+            "success": True,
+            **res,
+            "voice_status": api_voice_engine_status(),
+            "video_layout": load_video_layout_config(base_dir, channel_key=active_ck),
+        }
+
+    @app.post("/api/adas/ideas/channel-key")
+    def api_adas_set_ideas_channel_key(req: SetIdeasChannelKeyRequest):
+        updated = adas_engine.set_ideas_channel_key(
+            channel_key=req.channel_key, ma_ids=req.ma_ids
+        )
+        return {
+            "success": True,
+            "channel_key": req.channel_key,
+            "ideas": updated,
+        }
 
     @app.post("/api/browse-directory")
     def browse_directory(req: BrowseDirRequest):
@@ -1256,17 +1315,27 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
         }
 
     @app.get("/api/video-layout")
-    def api_get_video_layout():
-        cfg = load_video_layout_config(base_dir)
+    def api_get_video_layout(channel_key: Optional[str] = None):
+        from .renderer import _resolve_layout_channel_key
+
+        eff_ck = _resolve_layout_channel_key(channel_key, base_dir)
+        cfg = load_video_layout_config(base_dir, channel_key=eff_ck)
         return {
             "success": True,
+            "channel_key": eff_ck,
             "layout": cfg,
             "green_library": api_get_green_library()["items"],
         }
 
     @app.post("/api/video-layout")
-    def api_save_video_layout(payload: Dict[str, Any]):
-        saved = save_video_layout_config(payload, base_dir)
+    def api_save_video_layout(
+        payload: Dict[str, Any], channel_key: Optional[str] = None
+    ):
+        from .renderer import _resolve_layout_channel_key
+
+        raw_ck = channel_key or (payload or {}).get("channel_key")
+        eff_ck = _resolve_layout_channel_key(raw_ck, base_dir)
+        saved = save_video_layout_config(payload, base_dir, channel_key=eff_ck)
 
         # Tự động tạo / cập nhật Cache lớp Video Green cố định trong nền để tiết kiệm thời gian Render
         def _prebake_green_cache():
@@ -1284,12 +1353,12 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
                     if cache_file:
                         log_info(
                             "RENDER",
-                            f"💾 Đã lưu cấu hình Preview & đóng gói sẵn Cache lớp Video Green cố định: {Path(cache_file).name}",
+                            f"💾 [Preview Key={eff_ck}] Đã lưu cấu hình Preview & đóng gói sẵn Cache lớp Video Green cố định (Đã cắt gọn chuẩn 1920x1080): {Path(cache_file).name}",
                         )
                     else:
                         log_info(
                             "RENDER",
-                            "💾 Đã lưu cấu hình Preview (Không có lớp Video Green cố định nào bật).",
+                            f"💾 [Preview Key={eff_ck}] Đã lưu cấu hình Preview (Không có lớp Video Green cố định nào bật).",
                         )
             except Exception as e:
                 log_warn("RENDER", f"⚠️ Không thể tạo trước Cache lớp Video Green: {e}")
@@ -1297,8 +1366,27 @@ if ($f.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {{
         threading.Thread(target=_prebake_green_cache, daemon=True).start()
         return {
             "success": True,
-            "message": "Đã lưu vị trí, kích thước, độ mờ (Opacity) & thứ tự tách lớp Video Green!",
+            "channel_key": eff_ck,
+            "message": f"Đã lưu cấu hình Preview riêng cho Key [{eff_ck.upper()}] (Tự động cắt gọn phần thừa ngoài khung 1920x1080 khi Render)!",
             "layout": saved,
+        }
+
+    @app.post("/api/video-layout/reset")
+    def api_reset_video_layout(payload: Optional[Dict[str, Any]] = None):
+        from .renderer import (
+            _resolve_layout_channel_key,
+            get_default_video_layout_config,
+        )
+
+        raw_ck = (payload or {}).get("channel_key")
+        eff_ck = _resolve_layout_channel_key(raw_ck, base_dir)
+        default_cfg = get_default_video_layout_config(base_dir, channel_key=eff_ck)
+        saved = save_video_layout_config(default_cfg, base_dir, channel_key=eff_ck)
+        return {
+            "success": True,
+            "channel_key": eff_ck,
+            "layout": saved,
+            "message": f"Đã khôi phục bố cục Preview mặc định cho Key [{eff_ck.upper()}]!",
         }
 
     class BrowseFileRequest(BaseModel):
