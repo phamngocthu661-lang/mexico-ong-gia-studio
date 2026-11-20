@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import requests
 from websockets.sync.client import connect as ws_connect
@@ -2902,6 +2902,82 @@ class ChatGPTWebSession:
             f"Quá thời gian chờ ({timeout_sec}s) phản hồi từ ChatGPT trên {self.cfg['label']} tại bước {step_label} -> Tạm dừng {self.cfg['label']} 30 phút và chuyển sang nick khác!",
         )
 
+    @staticmethod
+    def _prepare_ref_image_signature(
+        reference_image_b64: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not reference_image_b64 or len(reference_image_b64) < 100:
+            return None
+        try:
+            import base64
+            import hashlib
+            import io
+
+            import numpy as np
+            from PIL import Image
+
+            raw = base64.b64decode(reference_image_b64)
+            sha256_hex = hashlib.sha256(raw).hexdigest()
+            with Image.open(io.BytesIO(raw)) as im:
+                size = im.size
+                arr64 = np.asarray(
+                    im.convert("RGB").resize((64, 64), Image.Resampling.BILINEAR),
+                    dtype=np.float32,
+                )
+            return {"sha256": sha256_hex, "size": size, "arr64": arr64}
+        except Exception:
+            return None
+
+    @staticmethod
+    def _validate_harvested_image_b64(
+        b64_data: str,
+        ref_sig: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Kiểm tra ảnh Base64 vừa thu từ ChatGPT Web trước khi chấp nhận:
+        1. Phải là ảnh thật hợp lệ (KHÔNG phải ảnh loading placeholder 4 khối xanh nền đen hoặc khung đen trống).
+        2. Nếu có ảnh tham chiếu gửi kèm -> tuyệt đối KHÔNG được trùng / thu nhầm chính ảnh tham chiếu vừa upload.
+        """
+        if not b64_data:
+            return False, "EMPTY_B64"
+        try:
+            import base64
+            import hashlib
+            import io
+
+            import numpy as np
+            from PIL import Image
+
+            from backend.renderer import is_chatgpt_placeholder_image_bytes
+
+            raw = base64.b64decode(b64_data)
+            is_ph, ph_reason = is_chatgpt_placeholder_image_bytes(raw)
+            if is_ph:
+                return False, ph_reason
+
+            if ref_sig:
+                if hashlib.sha256(raw).hexdigest() == ref_sig["sha256"]:
+                    return False, "SAME_SHA_AS_REFERENCE_IMAGE"
+                with Image.open(io.BytesIO(raw)) as im:
+                    cw, ch = im.size
+                    rw, rh = ref_sig["size"]
+                    cand_ratio = cw / max(1, ch)
+                    ref_ratio = rw / max(1, rh)
+                    if abs(cand_ratio - ref_ratio) < 0.05:
+                        arr64 = np.asarray(
+                            im.convert("RGB").resize((64, 64), Image.Resampling.BILINEAR),
+                            dtype=np.float32,
+                        )
+                        mad = float(np.mean(np.abs(arr64 - ref_sig["arr64"])))
+                        if mad < 12.0:
+                            return (
+                                False,
+                                f"ECHOED_REFERENCE_IMAGE (mad={mad:.2f}, size={cw}x{ch})",
+                            )
+            return True, ""
+        except Exception as exc:
+            return False, f"INVALID_IMAGE ({exc})"
+
     def generate_image_and_harvest_base64(
         self,
         prompt_text: str,
@@ -2915,7 +2991,7 @@ class ChatGPTWebSession:
         """
         Gửi lệnh tạo ảnh Thumbnail (hoặc kèm ảnh tham chiếu `reference_image_b64`) vào ChatGPT Web,
         chờ công cụ tạo ảnh (GPT-4o / DALL-E) vẽ xong ảnh thực tế và thu hoạch ảnh chất lượng gốc về dưới dạng Base64 PNG
-        (kết hợp Tầng 1 Backend API asset_pointer + Tầng 2 DOM <img> / Canvas).
+        (ưu tiên Tầng 1 Backend API asset_pointer + fallback Tầng 2 DOM <img> lọc sạch placeholder/SVG/blur).
         """
         if not self.ws_url:
             if not self.open_session_tab(force_new_chat=True):
@@ -2923,14 +2999,21 @@ class ChatGPTWebSession:
                     f"Không thể kết nối tới khung chat ChatGPT trên {self.cfg['label']}."
                 )
 
+        ref_sig = self._prepare_ref_image_signature(reference_image_b64)
         img_stamp = f"img_seen_{int(time.time() * 1000)}"
-        # Đóng dấu toàn bộ ảnh và lượt trả lời cũ trước khi gửi lệnh tạo ảnh mới
+        # Đóng dấu toàn bộ ảnh và lượt trả lời cũ + reset danh sách ảnh placeholder/bị loại cho phiên này
         _cdp_eval_js(
             self.ws_url,
             f"""
             (() => {{
                 const stamp = {json.dumps(img_stamp)};
-                document.querySelectorAll('img').forEach(im => im.setAttribute('data-studio-img-seen', stamp));
+                window.__studioRejectedImgSrcs = [];
+                window.__studioPreImgSrcs = [];
+                document.querySelectorAll('img').forEach(im => {{
+                    im.setAttribute('data-studio-img-seen', stamp);
+                    const s = im.currentSrc || im.src || '';
+                    if (s) window.__studioPreImgSrcs.push(s);
+                }});
                 document.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"], article[data-turn="assistant"], div[data-turn="assistant"]').forEach(n => n.setAttribute('data-studio-turn-seen', stamp));
                 return true;
             }})()
@@ -2949,6 +3032,7 @@ class ChatGPTWebSession:
             const text = {escaped_prompt_json};
             const refB64 = {escaped_ref_b64_json};
             const refName = {escaped_ref_name_json};
+            const stamp = {json.dumps(img_stamp)};
             document.querySelectorAll('button[aria-label="Remove pasted text attachment"]').forEach(b => b.click());
             const el = document.querySelector(
                 '#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [data-composer-markdown], div[role="textbox"][contenteditable="true"], main textarea'
@@ -2991,8 +3075,12 @@ class ChatGPTWebSession:
                         if (!uploading && w >= 5) break;
                     }}
                     // Đánh dấu mọi thẻ <img> của ảnh đính kèm để bộ thu hoạch không lấy nhầm ảnh tham chiếu
-                    document.querySelectorAll('form img, [data-message-author-role="user"] img, article[data-turn="user"] img').forEach(im => {{
-                        im.setAttribute('data-studio-img-seen', {json.dumps(img_stamp)});
+                    document.querySelectorAll('form img, [data-message-author-role="user"] img, article[data-turn="user"] img, div[data-turn="user"] img, [data-testid*="user"] img').forEach(im => {{
+                        im.setAttribute('data-studio-img-seen', stamp);
+                        const s = im.currentSrc || im.src || '';
+                        if (s && Array.isArray(window.__studioRejectedImgSrcs) && !window.__studioRejectedImgSrcs.includes(s)) {{
+                            window.__studioRejectedImgSrcs.push(s);
+                        }}
                     }});
                 }} catch (eRef) {{}}
             }}
@@ -3055,8 +3143,13 @@ class ChatGPTWebSession:
                     el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }}));
                 }}
             }}
-            document.querySelectorAll('[data-message-author-role="user"] img, article[data-turn="user"] img, div[data-turn="user"] img').forEach(im => {{
-                im.setAttribute('data-studio-img-seen', {json.dumps(img_stamp)});
+            await new Promise(r => setTimeout(r, 300));
+            document.querySelectorAll('form img, [data-message-author-role="user"] img, article[data-turn="user"] img, div[data-turn="user"] img, [data-turn="user"] img, [data-testid*="user"] img').forEach(im => {{
+                im.setAttribute('data-studio-img-seen', stamp);
+                const s = im.currentSrc || im.src || '';
+                if (s && Array.isArray(window.__studioRejectedImgSrcs) && !window.__studioRejectedImgSrcs.includes(s)) {{
+                    window.__studioRejectedImgSrcs.push(s);
+                }}
             }});
             return {{ ok: sentConfirmed }};
         }})()
@@ -3069,187 +3162,245 @@ class ChatGPTWebSession:
         idle_after_stream_ticks = 0
         retried_text_nudge = False
 
-        poll_img_js = f"""
-        (() => {{
-            const stamp = {json.dumps(img_stamp)};
-            const turnStates = Array.from(document.querySelectorAll('[data-talvt-turn-state]')).map(e => e.getAttribute('data-talvt-turn-state'));
+        _filter_img_js_fn = """
+            const userImgSrcs = new Set(Array.from(document.querySelectorAll(
+                'form img, [data-message-author-role="user"] img, article[data-turn="user"] img, div[data-turn="user"] img, [data-turn="user"] img, [data-testid*="user"] img'
+            )).map(x => x.currentSrc || x.src || '').filter(Boolean));
+            const preSrcs = new Set(Array.isArray(window.__studioPreImgSrcs) ? window.__studioPreImgSrcs : []);
+            const rejectedSrcs = new Set(Array.isArray(window.__studioRejectedImgSrcs) ? window.__studioRejectedImgSrcs : []);
+            const isValidGeneratedDomImg = (im) => {
+                if (!im) return false;
+                if (im.getAttribute('data-studio-img-seen') === stamp) return false;
+                if (im.closest('[data-message-author-role="user"], article[data-turn="user"], div[data-turn="user"], [data-turn="user"], [data-testid*="user"], form, nav, aside, header, footer')) return false;
+                const src = im.currentSrc || im.src || '';
+                if (!src || src.length < 15) return false;
+                if (userImgSrcs.has(src) || preSrcs.has(src) || rejectedSrcs.has(src)) return false;
+                // Loại bỏ SVG, icon, UI assets tĩnh trên oaistatic.com (ảnh AI sinh ra luôn ở estuary / oaiusercontent / files / blob / raster dataURL)
+                if (/^data:image\\/svg|\\.svg(\\?|#|$)/i.test(src)) return false;
+                if (/oaistatic\\.com/i.test(src)) return false;
+                const alt = (im.getAttribute('alt') || '').toLowerCase();
+                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar') || alt.includes('uploaded') || alt.includes('tải lên') || alt.includes('logo') || alt.includes('icon')) return false;
+                const cs = window.getComputedStyle(im);
+                if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.85) return false;
+                // Loại bỏ tuyệt đối ảnh loading shimmer/placeholder bị CSS làm mờ blur(...)
+                if ((cs.filter || '').toLowerCase().includes('blur')) return false;
+                if (im.getAttribute('aria-hidden') === 'true') return false;
+                if (im.closest('[aria-hidden="true"], [role="progressbar"], [aria-busy="true"], [class*="placeholder" i], [class*="shimmer" i], [class*="skeleton" i], [data-testid*="placeholder" i], [data-testid*="loading" i]')) return false;
+                const boxWrap = im.parentElement && im.parentElement.parentElement ? im.parentElement.parentElement : im.parentElement;
+                if (boxWrap && boxWrap.querySelector('[role="progressbar"], [aria-busy="true"], svg.animate-spin')) return false;
+                const nw = im.naturalWidth || 0;
+                const nh = im.naturalHeight || 0;
+                const rect = im.getBoundingClientRect();
+                return Boolean(im.complete && nw >= 256 && nh >= 256 && rect.width >= 100 && rect.height >= 100);
+            };
+        """
+
+        poll_img_js = (
+            "(() => {\n"
+            + f"const stamp = {json.dumps(img_stamp)};\n"
+            + _filter_img_js_fn
+            + """
+            const turnStates = Array.from(document.querySelectorAll('[data-turn-state], [data-talvt-turn-state]')).map(e => e.getAttribute('data-turn-state') || e.getAttribute('data-talvt-turn-state'));
             const hasIncompleteTurn = turnStates.some(s => s && s !== 'complete');
             const stopBtn = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Dừng" i], .result-streaming');
             const isStreaming = Boolean(stopBtn || hasIncompleteTurn);
 
             const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
-            const newImgs = allImgs.filter(im => {{
-                if (im.getAttribute('data-studio-img-seen') === stamp) return false;
-                if (im.closest('[data-message-author-role="user"], article[data-turn="user"], div[data-turn="user"], form')) return false;
-                const alt = (im.getAttribute('alt') || '').toLowerCase();
-                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar') || alt.includes('uploaded')) return false;
-                const nw = im.naturalWidth || 0;
-                const nh = im.naturalHeight || 0;
-                const src = im.currentSrc || im.src || '';
-                return im.complete && nw >= 250 && nh >= 250 && src.length > 10;
-            }});
+            const newImgs = allImgs.filter(isValidGeneratedDomImg);
 
-            if (newImgs.length > 0) {{
-                try {{ newImgs[newImgs.length - 1].scrollIntoView({{ block: 'center' }}); }} catch (e) {{}}
-            }}
+            if (newImgs.length > 0) {
+                try { newImgs[newImgs.length - 1].scrollIntoView({ block: 'center' }); } catch (e) {}
+            }
 
             let latestText = '';
             let isCreatingImgText = false;
             const turns = Array.from(document.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"], article[data-turn="assistant"], div[data-turn="assistant"]'));
             const newTurns = turns.filter(n => n.getAttribute('data-studio-turn-seen') !== stamp);
-            if (newTurns.length > 0) {{
+            if (newTurns.length > 0) {
                 latestText = newTurns.map(n => (n.innerText || '').trim()).join('\\n').trim();
-                if (newImgs.length === 0) {{
+                if (newImgs.length === 0) {
                     const lastTurn = newTurns[newTurns.length - 1];
                     const lastLow = (lastTurn.innerText || '').slice(-400).toLowerCase();
                     const hasImgSpinner = Boolean(lastTurn.querySelector('[role="progressbar"], svg.animate-spin, [data-testid*="image-gen"]'));
-                    isCreatingImgText = hasImgSpinner || lastLow.includes('creating image') || lastLow.includes('đang tạo hình ảnh') || lastLow.includes('generating image');
-                }}
-            }}
+                    isCreatingImgText = hasImgSpinner || lastLow.includes('creating image') || lastLow.includes('đang tạo hình ảnh') || lastLow.includes('generating image') || lastLow.includes('getting started');
+                }
+            }
             let alertText = '';
-            try {{
+            try {
                 const alertNodes = Array.from(document.querySelectorAll('[role="alert"], .toast-root, [data-testid*="limit"], [data-testid*="rate"], [class*="rate-limit"]'));
-                if (alertNodes.length > 0) {{
+                if (alertNodes.length > 0) {
                     alertText = alertNodes.map(a => (a.innerText || '').trim()).filter(Boolean).join(' | ').slice(0, 400);
-                }}
-            }} catch (e) {{}}
+                }
+            } catch (e) {}
 
-            return {{
+            return {
                 isStreaming: isStreaming,
                 isCreatingImgText: isCreatingImgText,
                 newImgCount: newImgs.length,
                 latestText: latestText,
                 alertText: alertText
-            }};
-        }})()
+            };
+        })()
         """
+        )
 
-        harvest_img_js = f"""
-        (async () => {{
-            const stamp = {json.dumps(img_stamp)};
-            const blobToDataUrl = (blob) => new Promise((resolve) => {{
+        harvest_img_js = (
+            "(async () => {\n"
+            + f"const stamp = {json.dumps(img_stamp)};\n"
+            + _filter_img_js_fn
+            + """
+            const blobToDataUrl = (blob) => new Promise((resolve) => {
                 const reader = new FileReader();
                 reader.onloadend = () => resolve(reader.result || '');
                 reader.onerror = () => resolve('');
                 reader.readAsDataURL(blob);
-            }});
+            });
 
-            // Tầng 1: Thu hoạch trực tiếp từ thẻ <img> của Assistant đã tải xong trên giao diện
+            // Tầng 1 (ƯU TIÊN CAO NHẤT): Thu hoạch ảnh gốc từ Backend API (/backend-api/conversation/ -> asset_pointer của assistant/tool -> download_url / estuary)
+            try {
+                const mUrl = window.location.pathname.match(/\\/c\\/([0-9a-fA-F\\-]{16,})/);
+                if (mUrl && mUrl[1]) {
+                    const convId = mUrl[1];
+                    if (!window.__studioAccessToken) {
+                        const sr = await fetch('/api/auth/session', { credentials: 'include' });
+                        if (sr.ok) {
+                            const sd = await sr.json();
+                            if (sd && sd.accessToken) window.__studioAccessToken = sd.accessToken;
+                        }
+                    }
+                    if (window.__studioAccessToken) {
+                        const cr = await fetch('/backend-api/conversation/' + convId, {
+                            credentials: 'include',
+                            headers: { 'Authorization': 'Bearer ' + window.__studioAccessToken, 'Accept': 'application/json' }
+                        });
+                        if (cr.ok) {
+                            const conv = await cr.json();
+                            const mapping = conv.mapping || {};
+                            let cur = conv.current_node;
+                            const seen = new Set();
+                            let foundPointer = '';
+                            let w = 1024, h = 1536;
+                            while (cur && !seen.has(cur) && mapping[cur]) {
+                                seen.add(cur);
+                                const msg = mapping[cur].message;
+                                const role = (msg && msg.author && msg.author.role) ? msg.author.role : '';
+                                if (role === 'user') {
+                                    // Tuyệt đối không quét ngược qua tin nhắn user để không bao giờ lấy nhầm ảnh tham chiếu
+                                    break;
+                                }
+                                if (msg && msg.status !== 'in_progress' && (role === 'assistant' || role === 'tool') && msg.content && Array.isArray(msg.content.parts)) {
+                                    for (const pt of msg.content.parts) {
+                                        if (pt && typeof pt === 'object' && pt.asset_pointer) {
+                                            foundPointer = pt.asset_pointer;
+                                            w = pt.width || w;
+                                            h = pt.height || h;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (foundPointer) break;
+                                cur = mapping[cur].parent;
+                            }
+                            if (foundPointer && !rejectedSrcs.has(foundPointer)) {
+                                const fileId = foundPointer.replace('sediment://', '').replace('file-service://', '').trim();
+                                let downloadedBlob = null;
+                                try {
+                                    const dlResp = await fetch('/backend-api/files/download/' + fileId + '?inline=false', {
+                                        credentials: 'include',
+                                        headers: { 'Authorization': 'Bearer ' + window.__studioAccessToken }
+                                    });
+                                    if (dlResp.ok) {
+                                        const dlJson = await dlResp.json();
+                                        const dlUrl = dlJson.download_url || '';
+                                        if (dlUrl) {
+                                            const imgResp = await fetch(dlUrl);
+                                            if (imgResp.ok) {
+                                                const b = await imgResp.blob();
+                                                if (b && b.size > 4000 && !(b.type || '').includes('svg')) {
+                                                    downloadedBlob = b;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (eDl) {}
+                                if (!downloadedBlob) {
+                                    try {
+                                        const estResp = await fetch('/backend-api/estuary/content?id=' + encodeURIComponent(fileId), {
+                                            credentials: 'include',
+                                            headers: { 'Authorization': 'Bearer ' + window.__studioAccessToken }
+                                        });
+                                        if (estResp.ok) {
+                                            const b2 = await estResp.blob();
+                                            if (b2 && b2.size > 4000 && !(b2.type || '').includes('svg')) {
+                                                downloadedBlob = b2;
+                                            }
+                                        }
+                                    } catch (eEst) {}
+                                }
+                                if (downloadedBlob) {
+                                    const dUrl = await blobToDataUrl(downloadedBlob);
+                                    if (dUrl && dUrl.includes('base64,')) {
+                                        return { ok: true, b64: dUrl.split('base64,')[1], width: w, height: h, source: 'backend_api', img_src: foundPointer };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) {}
+
+            // Tầng 2 (Fallback DOM): Chỉ nhận <img> đã qua lọc sạch SVG / oaistatic / CSS blur / spinner / userImgSrcs
             const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
-            const newImgs = allImgs.filter(im => {{
-                if (im.getAttribute('data-studio-img-seen') === stamp) return false;
-                if (im.closest('[data-message-author-role="user"], article[data-turn="user"], div[data-turn="user"], form')) return false;
-                const alt = (im.getAttribute('alt') || '').toLowerCase();
-                if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar') || alt.includes('uploaded')) return false;
-                const nw = im.naturalWidth || 0;
-                const nh = im.naturalHeight || 0;
-                return im.complete && nw >= 250 && nh >= 250;
-            }});
+            const newImgs = allImgs.filter(isValidGeneratedDomImg);
 
-            if (newImgs.length > 0) {{
-                const targetImg = newImgs[newImgs.length - 1];
+            if (newImgs.length > 0) {
+                const authImgs = newImgs.filter(im => /estuary\\/content|oaiusercontent\\.com|backend-api\\/files/i.test(im.currentSrc || im.src || ''));
+                const targetImg = authImgs.length > 0 ? authImgs[authImgs.length - 1] : newImgs[newImgs.length - 1];
                 const src = targetImg.currentSrc || targetImg.src || '';
                 const nw = targetImg.naturalWidth || 1024;
                 const nh = targetImg.naturalHeight || 1536;
-                try {{
-                    const r = await fetch(src, {{ credentials: 'include' }});
-                    if (r.ok) {{
+                try {
+                    const r = await fetch(src, { credentials: 'include' });
+                    if (r.ok) {
                         const b = await r.blob();
-                        if (b && b.size > 4000) {{
+                        if (b && b.size > 4000 && !(b.type || '').includes('svg')) {
                             const dUrl = await blobToDataUrl(b);
-                            if (dUrl && dUrl.includes('base64,')) {{
-                                return {{ ok: true, b64: dUrl.split('base64,')[1], width: nw, height: nh, source: 'dom_fetch' }};
-                            }}
-                        }}
-                    }}
-                }} catch (e) {{}}
-                try {{
+                            if (dUrl && dUrl.includes('base64,')) {
+                                return { ok: true, b64: dUrl.split('base64,')[1], width: nw, height: nh, source: 'dom_fetch', img_src: src };
+                            }
+                        }
+                    }
+                } catch (e) {}
+                try {
                     const canvas = document.createElement('canvas');
                     canvas.width = nw;
                     canvas.height = nh;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(targetImg, 0, 0);
                     const dUrl = canvas.toDataURL('image/png');
-                    if (dUrl && dUrl.includes('base64,')) {{
-                        return {{ ok: true, b64: dUrl.split('base64,')[1], width: nw, height: nh, source: 'dom_canvas' }};
-                    }}
-                }} catch (e) {{}}
-            }}
+                    if (dUrl && dUrl.includes('base64,')) {
+                        return { ok: true, b64: dUrl.split('base64,')[1], width: nw, height: nh, source: 'dom_canvas', img_src: src };
+                    }
+                } catch (e) {}
+            }
 
-            // Tầng 2: Thu hoạch từ Backend API (/backend-api/conversation/ -> asset_pointer của assistant/tool -> /backend-api/files/download/)
-            try {{
-                const mUrl = window.location.pathname.match(/\\/c\\/([0-9a-fA-F\\-]{{16,}})/);
-                if (mUrl && mUrl[1]) {{
-                    const convId = mUrl[1];
-                    if (!window.__studioAccessToken) {{
-                        const sr = await fetch('/api/auth/session', {{ credentials: 'include' }});
-                        if (sr.ok) {{
-                            const sd = await sr.json();
-                            if (sd && sd.accessToken) window.__studioAccessToken = sd.accessToken;
-                        }}
-                    }}
-                    if (window.__studioAccessToken) {{
-                        const cr = await fetch('/backend-api/conversation/' + convId, {{
-                            credentials: 'include',
-                            headers: {{ 'Authorization': 'Bearer ' + window.__studioAccessToken, 'Accept': 'application/json' }}
-                        }});
-                        if (cr.ok) {{
-                            const conv = await cr.json();
-                            const mapping = conv.mapping || {{}};
-                            let cur = conv.current_node;
-                            const seen = new Set();
-                            let foundPointer = '';
-                            let w = 1024, h = 1536;
-                            while (cur && !seen.has(cur) && mapping[cur]) {{
-                                seen.add(cur);
-                                const msg = mapping[cur].message;
-                                const role = (msg && msg.author && msg.author.role) ? msg.author.role : '';
-                                if (role === 'user') {{
-                                    // Không quét ngược qua tin nhắn user vừa gửi để tránh lấy nhầm ảnh tham chiếu hoặc ảnh cũ
-                                    break;
-                                }}
-                                if (msg && (role === 'assistant' || role === 'tool') && msg.content && Array.isArray(msg.content.parts)) {{
-                                    for (const pt of msg.content.parts) {{
-                                        if (pt && typeof pt === 'object' && pt.asset_pointer) {{
-                                            foundPointer = pt.asset_pointer;
-                                            w = pt.width || w;
-                                            h = pt.height || h;
-                                            break;
-                                        }}
-                                    }}
-                                }}
-                                if (foundPointer) break;
-                                cur = mapping[cur].parent;
-                            }}
-                            if (foundPointer) {{
-                                const fileId = foundPointer.replace('sediment://', '').replace('file-service://', '').trim();
-                                const dlResp = await fetch('/backend-api/files/download/' + fileId + '?inline=false', {{
-                                    credentials: 'include',
-                                    headers: {{ 'Authorization': 'Bearer ' + window.__studioAccessToken }}
-                                }});
-                                if (dlResp.ok) {{
-                                    const dlJson = await dlResp.json();
-                                    const dlUrl = dlJson.download_url || '';
-                                    if (dlUrl) {{
-                                        const imgResp = await fetch(dlUrl);
-                                        if (imgResp.ok) {{
-                                            const b = await imgResp.blob();
-                                            const dUrl = await blobToDataUrl(b);
-                                            if (dUrl && dUrl.includes('base64,')) {{
-                                                return {{ ok: true, b64: dUrl.split('base64,')[1], width: w, height: h, source: 'backend_api' }};
-                                            }}
-                                        }}
-                                    }}
-                                }}
-                            }}
-                        }}
-                    }}
-                }}
-            }} catch (e) {{}}
-
-            return {{ ok: false }};
-        }})()
+            return { ok: false };
+        })()
         """
+        )
+
+        def _reject_bad_harv_src(bad_src: str):
+            if not bad_src:
+                return
+            try:
+                _cdp_eval_js(
+                    self.ws_url,
+                    f"(() => {{ window.__studioRejectedImgSrcs = window.__studioRejectedImgSrcs || []; const s = {json.dumps(bad_src)}; if (!window.__studioRejectedImgSrcs.includes(s)) window.__studioRejectedImgSrcs.push(s); return true; }})()",
+                    await_promise=False,
+                    timeout=3.0,
+                )
+            except Exception:
+                pass
 
         while time.time() - start_t < timeout_sec:
             if should_stop_cb and should_stop_cb():
@@ -3298,14 +3449,24 @@ class ChatGPTWebSession:
                     self.ws_url, harvest_img_js, await_promise=True, timeout=25.0
                 )
                 if isinstance(harv, dict) and harv.get("ok") and harv.get("b64"):
-                    return {
-                        "success": True,
-                        "b64_data": harv["b64"],
-                        "width": int(harv.get("width") or 1024),
-                        "height": int(harv.get("height") or 1024),
-                        "source": harv.get("source", "dom"),
-                        "assistant_text": latest_text,
-                    }
+                    ok_img, reject_reason = self._validate_harvested_image_b64(
+                        harv["b64"], ref_sig=ref_sig
+                    )
+                    if ok_img:
+                        return {
+                            "success": True,
+                            "b64_data": harv["b64"],
+                            "width": int(harv.get("width") or 1024),
+                            "height": int(harv.get("height") or 1024),
+                            "source": harv.get("source", "dom"),
+                            "assistant_text": latest_text,
+                        }
+                    log_warn(
+                        "SCRIPT",
+                        f"[CHATGPT IMG] Đã chặn ảnh lỗi/placeholder ({reject_reason}, source={harv.get('source')}) -> Tiếp tục chờ ảnh thật...",
+                    )
+                    _reject_bad_harv_src(str(harv.get("img_src") or ""))
+                    continue
 
             if (
                 not is_streaming
@@ -3319,14 +3480,25 @@ class ChatGPTWebSession:
                         self.ws_url, harvest_img_js, await_promise=True, timeout=25.0
                     )
                     if isinstance(harv, dict) and harv.get("ok") and harv.get("b64"):
-                        return {
-                            "success": True,
-                            "b64_data": harv["b64"],
-                            "width": int(harv.get("width") or 1024),
-                            "height": int(harv.get("height") or 1024),
-                            "source": harv.get("source", "api"),
-                            "assistant_text": latest_text,
-                        }
+                        ok_img, reject_reason = self._validate_harvested_image_b64(
+                            harv["b64"], ref_sig=ref_sig
+                        )
+                        if ok_img:
+                            return {
+                                "success": True,
+                                "b64_data": harv["b64"],
+                                "width": int(harv.get("width") or 1024),
+                                "height": int(harv.get("height") or 1024),
+                                "source": harv.get("source", "api"),
+                                "assistant_text": latest_text,
+                            }
+                        log_warn(
+                            "SCRIPT",
+                            f"[CHATGPT IMG] API/DOM trả về ảnh placeholder ({reject_reason}) -> Tiếp tục chờ...",
+                        )
+                        _reject_bad_harv_src(str(harv.get("img_src") or ""))
+                        idle_after_stream_ticks = 0
+                        continue
                     if (
                         idle_after_stream_ticks >= 6
                         and latest_text
@@ -6225,8 +6397,10 @@ class ADASScriptEngine:
             final_renders_dir / f"{ma_id}_THUMBNAIL_1.png",
             final_renders_dir / "THUMBNAIL.png",
         ]
+        from backend.renderer import is_valid_generated_thumbnail_file
+
         for tc in thumb_candidates:
-            if tc.exists() and tc.stat().st_size > 4_000:
+            if is_valid_generated_thumbnail_file(tc):
                 found_thumb = tc
                 break
 
@@ -6239,7 +6413,7 @@ class ADASScriptEngine:
                         up_img = img_f.name.upper()
                         if "NENXANH" in up_img or "GREEN" in up_img or "CROP" in up_img:
                             continue
-                        if img_f.stat().st_size > 4_000:
+                        if is_valid_generated_thumbnail_file(img_f):
                             found_thumb = img_f
                             break
                     if found_thumb:
@@ -6251,8 +6425,9 @@ class ADASScriptEngine:
         if found_thumb is not None:
             if (self.projects_dir / ma_id).exists():
                 try:
-                    if not target_thumb_std.exists():
-                        shutil.copy2(found_thumb, target_thumb_std)
+                    if not is_valid_generated_thumbnail_file(target_thumb_std):
+                        if found_thumb.resolve() != target_thumb_std.resolve():
+                            shutil.copy2(found_thumb, target_thumb_std)
                     found_thumb = target_thumb_std
                 except Exception:
                     pass
@@ -9573,7 +9748,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             _write_green_plate_stamp,
             compose_chatgpt_9_16_green_portrait_to_plate,
             ensure_project_script_green_images,
+            is_chatgpt_placeholder_image_bytes,
         )
+
+        is_ref_ph, ref_ph_reason = is_chatgpt_placeholder_image_bytes(thumb_1080p_bytes)
+        if is_ref_ph:
+            log_warn(
+                "SCRIPT",
+                f"[{ma_id}] ⛔ Từ chối lấy ảnh THUMBNAIL.png lỗi/placeholder làm tham chiếu ({ref_ph_reason}) -> Dừng vẽ nền xanh!",
+                project_id=ma_id,
+            )
+            return None
 
         proj_dir.mkdir(parents=True, exist_ok=True)
         existing_g = proj_dir / "THUMBNAIL-NENXANH.png"
@@ -9644,7 +9829,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             if green_res.get("success") and green_res.get("b64_data"):
                 try:
                     raw_green_bytes = base64.b64decode(green_res["b64_data"])
-                    if len(raw_green_bytes) > 4_000:
+                    is_g_ph, g_ph_reason = is_chatgpt_placeholder_image_bytes(raw_green_bytes)
+                    if len(raw_green_bytes) > 4_000 and not is_g_ph:
                         plate_9_16_bytes = compose_chatgpt_9_16_green_portrait_to_plate(
                             raw_green_bytes, part_index=1
                         )
@@ -9840,14 +10026,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
             saved_paths: List[Path] = []
 
+            from backend.renderer import is_valid_generated_thumbnail_file
+
             target_file = proj_dir / "THUMBNAIL.png"
             green_file = proj_dir / "THUMBNAIL-NENXANH.png"
             if (
-                not target_file.exists()
+                not is_valid_generated_thumbnail_file(target_file)
                 and renders_dir
                 and Path(renders_dir) != proj_dir
-                and (Path(renders_dir) / "THUMBNAIL.png").exists()
-                and (Path(renders_dir) / "THUMBNAIL.png").stat().st_size > 4_000
+                and is_valid_generated_thumbnail_file(Path(renders_dir) / "THUMBNAIL.png")
             ):
                 try:
                     shutil.copy2(Path(renders_dir) / "THUMBNAIL.png", target_file)
@@ -9962,7 +10149,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     )
                 return out_list
 
-            if target_file.exists() and target_file.stat().st_size > 4_000:
+            if is_valid_generated_thumbnail_file(target_file):
                 saved_paths = _save_matched_pair(
                     target_file.read_bytes(), green_already_attempted=False
                 )
@@ -10047,7 +10234,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     continue
 
                 try:
+                    from backend.renderer import is_chatgpt_placeholder_image_bytes
+
                     raw_img_bytes = base64.b64decode(img_res["b64_data"])
+                    is_t_ph, t_ph_reason = is_chatgpt_placeholder_image_bytes(raw_img_bytes)
+                    if is_t_ph:
+                        log_warn(
+                            "SCRIPT",
+                            f"[{ma_id}] ⚠️ Ảnh Thumbnail lượt {attempt} bị nhận diện là ảnh placeholder/lỗi ({t_ph_reason}) -> Thử lại!",
+                            project_id=ma_id,
+                        )
+                        continue
                     img_bytes = self._normalize_thumbnail_to_16_9_1080p(raw_img_bytes)
                 except Exception:
                     continue
@@ -10105,7 +10302,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         Đảm bảo dự án `ma_id` có ĐÚNG 1 ảnh `THUMBNAIL.png` (và ĐÚNG 1 ảnh `THUMBNAIL-NENXANH.png` 9:16 nếu là `padre_mx`).
         Nếu đã có `THUMBNAIL.png` nhưng thiếu `THUMBNAIL-NENXANH.png` (cho `padre_mx`) -> chỉ tạo đúng ảnh nền xanh 9:16, không vẽ lại `THUMBNAIL.png`.
         """
-        from backend.renderer import _is_green_plate_clean_and_large
+        from backend.renderer import (
+            _is_green_plate_clean_and_large,
+            is_valid_generated_thumbnail_file,
+        )
 
         with self._get_project_thumb_lock(ma_id):
             self._thumb_session_attempted_ids.add(ma_id)
@@ -10118,20 +10318,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
 
             target_thumb = proj_dir / "THUMBNAIL.png"
-            if not target_thumb.exists():
+            if not is_valid_generated_thumbnail_file(target_thumb):
                 for th_cand in (
                     proj_dir / f"{ma_id}_THUMBNAIL.png",
                     proj_dir / f"{ma_id}_THUMBNAIL_1.png",
                     renders_dir / "THUMBNAIL.png",
                     renders_dir / f"{ma_id}_THUMBNAIL_1.png",
                 ):
-                    if th_cand.exists() and th_cand.stat().st_size > 4_000:
+                    if is_valid_generated_thumbnail_file(th_cand):
                         shutil.copy2(th_cand, target_thumb)
                         break
             target_green = proj_dir / "THUMBNAIL-NENXANH.png"
             if (
-                not target_green.exists()
-                and (renders_dir / "THUMBNAIL-NENXANH.png").exists()
+                not _is_green_plate_clean_and_large(target_green)
+                and _is_green_plate_clean_and_large(renders_dir / "THUMBNAIL-NENXANH.png")
             ):
                 try:
                     shutil.copy2(renders_dir / "THUMBNAIL-NENXANH.png", target_green)
@@ -10139,13 +10339,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     pass
 
             def _current_thumb_result() -> List[str]:
-                if not (target_thumb.exists() and target_thumb.stat().st_size > 4_000):
+                if not is_valid_generated_thumbnail_file(target_thumb):
                     return []
-                if not is_homeless_proj and target_green.exists():
+                if not is_homeless_proj and _is_green_plate_clean_and_large(target_green):
                     return [str(target_thumb), str(target_green)]
                 return [str(target_thumb)]
 
-            if target_thumb.exists() and target_thumb.stat().st_size > 4_000:
+            if is_valid_generated_thumbnail_file(target_thumb):
                 if is_homeless_proj:
                     self._update_idea_record(ma_id, has_thumbnail=True)
                     return [str(target_thumb)]
@@ -10227,8 +10427,14 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             for round_idx in range(max_rounds):
                 if self.should_stop:
                     break
-                if target_thumb.exists() and target_thumb.stat().st_size > 4_000:
-                    self._update_idea_record(ma_id, has_thumbnail=True)
+                if is_valid_generated_thumbnail_file(target_thumb):
+                    self._update_idea_record(
+                        ma_id,
+                        has_thumbnail=(
+                            is_homeless_proj
+                            or _is_green_plate_clean_and_large(target_green)
+                        ),
+                    )
                     return _current_thumb_result()
 
                 use_exclude = (
@@ -13022,7 +13228,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 proj_dir.mkdir(parents=True, exist_ok=True)
                 renders_dir = proj_dir / "renders"
 
-                from backend.renderer import _is_green_plate_clean_and_large
+                from backend.renderer import (
+                    _is_green_plate_clean_and_large,
+                    is_valid_generated_thumbnail_file,
+                )
 
                 is_homeless_proj = self._get_idea_channel_key(
                     ma_id=ma_id, idea=idea
@@ -13037,7 +13246,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             renders_dir / "THUMBNAIL.png",
                             renders_dir / f"{ma_id}_THUMBNAIL_1.png",
                         )
-                        if p.exists() and p.stat().st_size > 4_000
+                        if is_valid_generated_thumbnail_file(p)
                     ),
                     None,
                 )

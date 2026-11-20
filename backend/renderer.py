@@ -1213,6 +1213,83 @@ def normalize_character_to_strict_80_20_green_plate(
         return None
 
 
+def is_chatgpt_placeholder_image_bytes(img_bytes: bytes) -> Tuple[bool, str]:
+    """
+    Phát hiện ảnh placeholder/loading của ChatGPT Web (khung đen + 4 khối xanh dương bo góc
+    hoặc khung đen trống đồng nhất) để tuyệt đối không lưu làm THUMBNAIL.png / THUMBNAIL-NENXANH.png.
+    Trả về `(is_placeholder, reason)`.
+    """
+    if not img_bytes or len(img_bytes) < 4_000:
+        return True, "INVALID_OR_TOO_SMALL"
+    try:
+        import io
+
+        import numpy as np
+        from PIL import Image
+
+        with Image.open(io.BytesIO(img_bytes)) as im_raw:
+            w, h = im_raw.size
+            if w < 256 or h < 256:
+                return True, f"TOO_SMALL_{w}x{h}"
+            im_small = im_raw.convert("RGB").resize((160, 160), Image.Resampling.BILINEAR)
+        arr = np.asarray(im_small, dtype=np.uint8)
+        # Bỏ qua vùng nền xanh lá chroma #00FF00 khi kiểm tra ảnh nhân vật nền xanh 9:16
+        non_green = ~(
+            (arr[:, :, 0] <= 25) & (arr[:, :, 1] >= 210) & (arr[:, :, 2] <= 25)
+        )
+        fg = arr[non_green]
+        if fg.shape[0] < 200:
+            return True, "EMPTY_FOREGROUND"
+
+        r = fg[:, 0].astype(np.int16)
+        g = fg[:, 1].astype(np.int16)
+        b = fg[:, 2].astype(np.int16)
+
+        dark_mask = (r < 22) & (g < 22) & (b < 22)
+        blue_mask = (b > r + 42) & (r < 135) & (g <= b + 8)
+        warm_or_light_mask = (r > 140) | ((r > 80) & (g > 80) & (b < 180))
+
+        dark_ratio = float(np.mean(dark_mask))
+        blue_ratio = float(np.mean(blue_mask))
+        dark_or_blue_ratio = float(np.mean(dark_mask | blue_mask))
+        warm_or_light_ratio = float(np.mean(warm_or_light_mask))
+
+        # Đặc trưng của thẻ <img> loading placeholder trên ChatGPT Web:
+        # nền đen (#000000) + các khối bo góc xanh dương (#0066CC/#1E88E5/#5BB4FF), gần như 0% màu ấm/da/chữ sáng
+        if (
+            dark_ratio >= 0.18
+            and blue_ratio >= 0.14
+            and dark_or_blue_ratio >= 0.84
+            and warm_or_light_ratio < 0.06
+        ):
+            return (
+                True,
+                f"CHATGPT_BLUE_PLACEHOLDER (dark={dark_ratio:.2f}, blue={blue_ratio:.2f})",
+            )
+
+        # Khung đen trống hoàn toàn
+        if dark_ratio > 0.92 and float(np.std(fg.astype(np.float32))) < 4.0:
+            return True, "BLANK_BLACK_FRAME"
+
+        return False, ""
+    except Exception:
+        return True, "UNREADABLE_IMAGE"
+
+
+def is_valid_generated_thumbnail_file(thumb_path: Path) -> bool:
+    """Kiểm tra file ảnh thumbnail tồn tại hợp lệ (> 4KB, >= 256px) và KHÔNG phải ảnh placeholder loading."""
+    if not thumb_path:
+        return False
+    try:
+        p = Path(thumb_path)
+        if not p.exists() or p.stat().st_size <= 4_000:
+            return False
+        is_ph, _ = is_chatgpt_placeholder_image_bytes(p.read_bytes())
+        return not is_ph
+    except Exception:
+        return False
+
+
 def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
     """Kiểm tra xem file THUMBNAIL-NENXANH.png / green_part_01.png đã là ảnh dọc 9:16 chuẩn V1.0.28 do ChatGPT tạo chưa."""
     if not plate_path:
@@ -1224,6 +1301,11 @@ def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
 
         import numpy as np
         from PIL import Image
+
+        raw_bytes = plate_path.read_bytes()
+        is_ph, _ = is_chatgpt_placeholder_image_bytes(raw_bytes)
+        if is_ph:
+            return False
 
         im_raw = Image.open(plate_path)
         png_stamp = str(im_raw.info.get("green_plate_engine", "")).strip()
@@ -1299,7 +1381,7 @@ def check_render_thumbnail_prerequisites(
         final_renders_dir / f"{proj_name}_THUMBNAIL_1.png",
     ]
     for tc in thumb_candidates:
-        if tc.exists() and tc.stat().st_size > 4_000:
+        if is_valid_generated_thumbnail_file(tc):
             main_thumb = tc
             break
 
@@ -1312,7 +1394,7 @@ def check_render_thumbnail_prerequisites(
                     up = img_f.name.upper()
                     if "NENXANH" in up or "GREEN" in up or "CROP" in up:
                         continue
-                    if img_f.stat().st_size > 4_000:
+                    if is_valid_generated_thumbnail_file(img_f):
                         main_thumb = img_f
                         break
                 if main_thumb is not None:
@@ -1320,9 +1402,10 @@ def check_render_thumbnail_prerequisites(
             if main_thumb is not None:
                 break
 
-    if main_thumb is not None and proj_dir.exists() and not target_thumb.exists():
+    if main_thumb is not None and proj_dir.exists() and not is_valid_generated_thumbnail_file(target_thumb):
         try:
-            shutil.copy2(main_thumb, target_thumb)
+            if target_thumb.resolve() != main_thumb.resolve():
+                shutil.copy2(main_thumb, target_thumb)
             main_thumb = target_thumb
         except Exception:
             pass
@@ -1345,9 +1428,10 @@ def check_render_thumbnail_prerequisites(
             if gc.exists() and _is_green_plate_clean_and_large(gc):
                 green_thumb = gc
                 break
-        if green_thumb is not None and proj_dir.exists() and not target_green.exists():
+        if green_thumb is not None and proj_dir.exists() and not _is_green_plate_clean_and_large(target_green):
             try:
-                shutil.copy2(green_thumb, target_green)
+                if target_green.resolve() != green_thumb.resolve():
+                    shutil.copy2(green_thumb, target_green)
                 green_thumb = target_green
             except Exception:
                 pass
