@@ -1710,7 +1710,14 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // 9. WebSocket Tiến Trình Thời Gian Thực
+  let _statusPollTimer = null;
+  let _wsReconnectTimer = null;
+
   function connectWebSocket() {
+    if (_wsReconnectTimer) {
+      clearTimeout(_wsReconnectTimer);
+      _wsReconnectTimer = null;
+    }
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${location.host}/ws`;
 
@@ -1730,10 +1737,11 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     socket.onclose = () => {
-      setTimeout(connectWebSocket, 3000);
+      if (_wsReconnectTimer) clearTimeout(_wsReconnectTimer);
+      _wsReconnectTimer = setTimeout(connectWebSocket, 3000);
     };
 
-    // Đồng bộ ngay khi kết nối và lặp lại mỗi 2.5 giây
+    // Đồng bộ ngay khi kết nối và giữ duy nhất 1 bộ đếm lặp mỗi 2.5 giây (tránh nhân bản timer khi reconnect)
     const syncStatusNow = async () => {
       try {
         const res = await fetch("/api/status");
@@ -1746,7 +1754,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     };
     syncStatusNow();
-    setInterval(syncStatusNow, 2500);
+    if (_statusPollTimer) {
+      clearInterval(_statusPollTimer);
+    }
+    _statusPollTimer = setInterval(syncStatusNow, 2500);
   }
 
   let latestVideoPipelineState = null;
@@ -3472,6 +3483,9 @@ document.addEventListener("DOMContentLoaded", () => {
           ? "Everyone Laughed When an Old Homeless Man Bought the Abandoned Victorian House Until They Opened the Basement Safe\nMy Son Threw Me Out on a Freezing Night Thinking I Was Broke, Until the County Clerk Read the Original Property Deed"
           : "Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo\nMi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable";
       }
+      if (typeof window.refreshMachineCodePreview === "function") {
+        window.refreshMachineCodePreview();
+      }
       if (userClicked) {
         try {
           const res = await fetch("/api/license/switch-key", {
@@ -3552,7 +3566,89 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     });
 
-    // 5. Nút Lưu Tiêu Đề & Thông Tin Vào Kho (Mỗi dòng 1 tiêu đề — Mã tự động theo STT)
+    // 4c. Quản lý Mã Máy riêng cho từng máy (VD: MAY1_MXC_001, MAY1_HL_002, MAY1_MF_003)
+    let machineCodeNextSeq = 1;
+    const mcInputEl = document.getElementById("adas-machine-code-input");
+    const mcSaveBtnEl = document.getElementById("btn-save-machine-code");
+    const mcPreviewEl = document.getElementById("adas-machine-code-preview-label");
+
+    function normalizeMachineCodeClient(rawVal) {
+      let s = String(rawVal || "").trim().toUpperCase().replace(/[^A-Z0-9\-]/g, "");
+      s = s.replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "").slice(0, 20);
+      return s || "MAY1";
+    }
+
+    function getKeyTagClient(ck) {
+      const low = String(ck || "").toLowerCase();
+      if (low.includes("mafia")) return "MF";
+      if (low.includes("homeless")) return "HL";
+      return "MXC";
+    }
+
+    window.refreshMachineCodePreview = () => {
+      if (!mcPreviewEl) return;
+      const mc = normalizeMachineCodeClient(mcInputEl ? mcInputEl.value : "MAY1");
+      const tag = getKeyTagClient(window.currentActiveChannelKey || "padre_mx");
+      const seqStr = String(Math.max(1, machineCodeNextSeq || 1)).padStart(3, "0");
+      mcPreviewEl.innerText = `Mã tạo mới tiếp theo: #${mc}_${tag}_${seqStr}`;
+    };
+
+    window.loadMachineCodeConfig = async () => {
+      try {
+        const res = await fetch("/api/adas/machine-code");
+        if (res.ok) {
+          const d = await res.json();
+          if (d && d.machine_code && mcInputEl && document.activeElement !== mcInputEl) {
+            mcInputEl.value = d.machine_code;
+          }
+          if (d && d.next_seq) {
+            machineCodeNextSeq = parseInt(d.next_seq, 10) || 1;
+          }
+          window.refreshMachineCodePreview();
+        }
+      } catch (e) {}
+    };
+
+    if (mcInputEl) {
+      mcInputEl.addEventListener("input", () => {
+        window.refreshMachineCodePreview();
+      });
+      mcInputEl.addEventListener("blur", () => {
+        mcInputEl.value = normalizeMachineCodeClient(mcInputEl.value);
+        window.refreshMachineCodePreview();
+      });
+    }
+
+    if (mcSaveBtnEl && mcInputEl) {
+      mcSaveBtnEl.addEventListener("click", async () => {
+        const normMc = normalizeMachineCodeClient(mcInputEl.value);
+        mcInputEl.value = normMc;
+        try {
+          const res = await fetch("/api/adas/machine-code", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ machine_code: normMc })
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            mcInputEl.value = data.machine_code || normMc;
+            machineCodeNextSeq = data.next_seq || machineCodeNextSeq;
+            window.refreshMachineCodePreview();
+            appendInstantLogToUI(`🏷️ Đã lưu Mã Máy riêng [${mcInputEl.value}] (Áp dụng cho mọi video tạo mới từ bây giờ).`, "SYSTEM", "INFO");
+            const origTxt = mcSaveBtnEl.innerText;
+            mcSaveBtnEl.innerText = "✅ Đã lưu!";
+            setTimeout(() => { mcSaveBtnEl.innerText = origTxt; }, 1600);
+          } else {
+            alert(data.detail || "Không thể lưu Mã Máy!");
+          }
+        } catch (e) {
+          alert("Lỗi kết nối khi lưu Mã Máy: " + e.message);
+        }
+      });
+    }
+    window.loadMachineCodeConfig();
+
+    // 5. Nút Lưu Tiêu Đề & Thông Tin Vào Kho (Mỗi dòng 1 tiêu đề — Mã theo Máy + Key + STT)
     const saveIdeaBtn = document.getElementById("btn-adas-save-idea");
     if (saveIdeaBtn && rawInputEl) {
       saveIdeaBtn.addEventListener("click", async () => {
@@ -3576,11 +3672,13 @@ document.addEventListener("DOMContentLoaded", () => {
           renderSavedIdeasList(data.ideas || []);
           rawInputEl.value = "";
           refreshDetectedCountBadge();
+          window.loadMachineCodeConfig();
           const orig = saveIdeaBtn.innerText;
           const cnt = data.saved_count || 1;
+          const savedIds = Array.isArray(data.saved_ids) && data.saved_ids.length > 0 ? data.saved_ids : [data.idea.ma_id];
           saveIdeaBtn.innerText = cnt > 1
-            ? `✅ Đã Lưu ${cnt} Tiêu Đề Theo STT!`
-            : `✅ Đã Lưu STT #${data.idea.ma_id}!`;
+            ? `✅ Đã Lưu ${cnt} Mã (${savedIds[0]}..${savedIds[savedIds.length - 1]})!`
+            : `✅ Đã Lưu #${savedIds[0]}!`;
           setTimeout(() => { saveIdeaBtn.innerText = orig; }, 2200);
         } else {
           alert(data.detail || "Lỗi lưu tiêu đề!");
@@ -3603,7 +3701,8 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({
             raw_text: raw,
             custom_id: "1",
-            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
+            channel_key: window.currentActiveChannelKey || "padre_mx"
           })
         });
         if (res.ok) {
@@ -3650,6 +3749,7 @@ document.addEventListener("DOMContentLoaded", () => {
           renderSavedIdeasList(data.ideas || []);
           rawInputEl.value = "";
           refreshDetectedCountBadge();
+          if (typeof window.loadMachineCodeConfig === "function") window.loadMachineCodeConfig();
           const idsToRun = (data.saved_ids && data.saved_ids.length > 0) ? data.saved_ids : [data.idea.ma_id];
           await triggerRunADAS(idsToRun, false);
         } else {
@@ -3682,6 +3782,7 @@ document.addEventListener("DOMContentLoaded", () => {
           renderSavedIdeasList(data.ideas || []);
           rawInputEl.value = "";
           refreshDetectedCountBadge();
+          if (typeof window.loadMachineCodeConfig === "function") window.loadMachineCodeConfig();
           const idsToRun = (data.saved_ids && data.saved_ids.length > 0) ? data.saved_ids : [data.idea.ma_id];
           await triggerRunADAS(idsToRun, null);
         } else {

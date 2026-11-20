@@ -383,45 +383,72 @@ def _ensure_preferred_python_runtime():
             candidates.append(std_py)
 
     cur_exe = os.path.normcase(os.path.abspath(sys.executable))
-    for cand in candidates:
-        cand_norm = os.path.normcase(os.path.abspath(cand))
-        if cand_norm == cur_exe:
-            try:
-                (ROOT_DIR / "config" / "python_path.txt").write_text(
-                    cand, encoding="utf-8"
-                )
-            except Exception:
-                pass
-            return
-        # Kiểm tra nhanh xem bản Python ưu tiên này đã có đủ thư viện cốt lõi chưa
+    probe_code = (
+        "import importlib.util as u; "
+        "ok = all(u.find_spec(m) for m in ('fastapi','uvicorn','webview','torch')); "
+        "import sys; "
+        "sys.exit(1) if not ok else None; "
+        "import torch; "
+        "sys.exit(0 if torch.cuda.is_available() else 2)"
+    )
+
+    def _probe_python(py_exe: str) -> int:
         try:
             chk = subprocess.run(
-                [
-                    cand,
-                    "-c",
-                    "import importlib.util as u; raise SystemExit(0 if all(u.find_spec(m) for m in ('fastapi','uvicorn','webview','torch')) else 1)",
-                ],
+                [py_exe, "-c", probe_code],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=8,
+                timeout=10,
+                creationflags=0x08000000 if os.name == "nt" else 0,
             )
-            if chk.returncode == 0:
-                try:
-                    (ROOT_DIR / "config" / "python_path.txt").write_text(
-                        cand, encoding="utf-8"
-                    )
-                except Exception:
-                    pass
-                env = os.environ.copy()
-                env["DRAMA_PYTHON_SWITCHED"] = "1"
-                res = subprocess.run(
-                    [cand, str(Path(__file__).resolve()), *sys.argv[1:]], env=env
-                )
-                raise SystemExit(res.returncode)
+            return int(chk.returncode)
+        except Exception:
+            return 1
+
+    # Bổ sung cả Python đang chạy vào danh sách so sánh (để nếu Python 3.14 đang chạy chỉ là CPU trong khi Python 3.11 có CUDA -> tự chuyển sang CUDA!)
+    all_eval_cands = []
+    seen_norm = set()
+    for c in [sys.executable, *candidates]:
+        if not c or not os.path.exists(c):
+            continue
+        cn = os.path.normcase(os.path.abspath(c))
+        if cn not in seen_norm:
+            seen_norm.add(cn)
+            all_eval_cands.append((c, cn))
+
+    # Nếu Python hiện tại đã nằm đầu và không có bản nào khác trên máy -> giữ nguyên tức thì
+    best_cand = None
+    best_score = -1  # 2 = deps + CUDA, 1 = deps only (CPU)
+    for c_path, c_norm in all_eval_cands:
+        rc = _probe_python(c_path)
+        sc = 2 if rc == 0 else (1 if rc == 2 else -1)
+        if sc > best_score:
+            best_score = sc
+            best_cand = (c_path, c_norm)
+        if sc == 2:
+            break
+
+    if best_cand is not None:
+        chosen_path, chosen_norm = best_cand
+        try:
+            (ROOT_DIR / "config" / "python_path.txt").write_text(
+                chosen_path, encoding="utf-8"
+            )
+        except Exception:
+            pass
+        if chosen_norm == cur_exe:
+            return
+        try:
+            env = os.environ.copy()
+            env["DRAMA_PYTHON_SWITCHED"] = "1"
+            res = subprocess.run(
+                [chosen_path, str(Path(__file__).resolve()), *sys.argv[1:]], env=env
+            )
+            raise SystemExit(res.returncode)
         except SystemExit:
             raise
         except Exception:
-            continue
+            pass
 
 
 _ensure_preferred_python_runtime()
@@ -877,6 +904,12 @@ class DesktopBridge:
 def shutdown_all_studio_processes():
     """Tắt sạch 100% mọi tiến trình con (FFmpeg, Launcher) khi người dùng bấm nút X đóng ứng dụng."""
     _write_startup_log("🛑 Đang tắt toàn bộ tiến trình Mexico Ông Già Studio...")
+    try:
+        from backend.renderer import terminate_active_ffmpeg_processes
+
+        terminate_active_ffmpeg_processes()
+    except Exception:
+        pass
     if os.name == "nt":
         for img in ("ffmpeg.exe", "Mexico_Ong_Gia.exe"):
             try:

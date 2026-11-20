@@ -1118,9 +1118,10 @@ def _hot_reload_live_runtime_and_green_plates(video_path: Path):
                     obj.__class__ = sm_mod.StockManager
                 elif cls_name == "VoiceStudioService":
                     obj.__class__ = vs_mod.VoiceStudioService
-                    threading.Thread(
-                        target=obj.ensure_voicestudio_server_running, daemon=True
-                    ).start()
+                    if os.environ.get("VOICESTUDIO_ENABLE_DAEMON") == "1":
+                        threading.Thread(
+                            target=obj.ensure_voicestudio_server_running, daemon=True
+                        ).start()
                 elif cls_name == "ADASScriptEngine":
                     obj.__class__ = ase_mod.ADASScriptEngine
                 elif cls_name == "ProductionPipeline":
@@ -1692,7 +1693,35 @@ def split_japanese_script(raw_text: str) -> List[str]:
 
         for s in sub_sentences:
             s = s.strip()
-            if s and any(ch not in punct_only_chars for ch in s):
+            if not (s and any(ch not in punct_only_chars for ch in s)):
+                continue
+            # Tách mềm câu quá dài (> 220 ký tự, không phải CJK) tại dấu phẩy/chấm phẩy/gạch nối gần giữa câu
+            # để tránh câu ngoại lai làm đội RAM/VRAM Batch và giữ nhịp Sub/Voice ổn định
+            if not is_cjk and len(s) > 220:
+                pending = [s]
+                while pending:
+                    cur = pending.pop(0)
+                    if len(cur) <= 220:
+                        sentences.append(cur)
+                        continue
+                    mid = len(cur) // 2
+                    best_pos = -1
+                    best_dist = 10**9
+                    for idx_c in range(60, len(cur) - 55):
+                        if cur[idx_c] in ",;—–:":
+                            d = abs(idx_c - mid)
+                            if d < best_dist:
+                                best_dist = d
+                                best_pos = idx_c
+                    if best_pos != -1:
+                        left_part = cur[: best_pos + 1].strip()
+                        right_part = cur[best_pos + 1 :].strip()
+                        if len(left_part) >= 50 and len(right_part) >= 50:
+                            pending.insert(0, right_part)
+                            pending.insert(0, left_part)
+                            continue
+                    sentences.append(cur)
+            else:
                 sentences.append(s)
     return sentences
 
@@ -1728,7 +1757,13 @@ def get_audio_duration(file_path: str) -> float:
     ]
     try:
         res = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=15,
+            creationflags=0x08000000 if os.name == "nt" else 0,
         )
         return float(res.stdout.strip())
     except Exception:
@@ -2529,11 +2564,12 @@ class VoiceStudioService:
         if VoiceStudioService._engine_lock is None:
             VoiceStudioService._engine_lock = threading.RLock()
 
-        # Đảm bảo Server VoiceStudio cũng được bật song hành
-        try:
-            self.ensure_voicestudio_server_running(port=3900)
-        except Exception:
-            pass
+        # Chỉ bật Daemon HTTP cổng 3900 khi có cờ yêu cầu rõ ràng; mặc định chạy In-Process trực tiếp để tiết kiệm RAM/VRAM
+        if os.environ.get("VOICESTUDIO_ENABLE_DAEMON") == "1":
+            try:
+                self.ensure_voicestudio_server_running(port=3900)
+            except Exception:
+                pass
 
         with VoiceStudioService._engine_lock:
             if self.engine is not None and getattr(self, "model", None) is not None:
@@ -2700,8 +2736,8 @@ class VoiceStudioService:
             try:
                 wav, sr = torchaudio.load(str(ref_audio))
                 dur_s = wav.shape[-1] / float(sr)
-                # Nếu là file mẫu Nhat_Drama.wav dài 9.6s (2 câu), trích đoạn câu đầu (0.55s -> 4.05s)
-                # để giảm 62% độ dài token mẫu tham chiếu, giúp tăng tốc gấp đôi mỗi bước giải mã GPU
+                # Cắt gọn đoạn mẫu tham chiếu quá dài (>6.5s) tại đúng ranh giới ngắt câu có transcript khớp 100%
+                # để giảm 30%-55% độ dài attention mỗi bước giải mã GPU mà không làm lệch đặc trưng giọng
                 if (
                     dur_s > 6.5
                     and "夜景が見下ろせる最高級タワーマンションのリビング。" in ref_text
@@ -2718,6 +2754,30 @@ class VoiceStudioService:
                     e_idx = min(wav.shape[-1], int(4.25 * sr))
                     ref_input = (wav[:, s_idx:e_idx], sr)
                     use_text = "奥さん、早く来てください。これを見てください。"
+                elif (
+                    dur_s > 6.5
+                    and "mientras yo estaba tumbado en un cattre" in ref_text
+                ):
+                    s_idx = 0
+                    e_idx = min(wav.shape[-1], int(4.35 * sr))
+                    ref_input = (wav[:, s_idx:e_idx], sr)
+                    use_text = "a la seis y cuarto de la mañana, mientras yo estaba tumbado en un cattre,"
+                elif (
+                    dur_s > 6.5
+                    and "beyond the broken stone gate" in ref_text
+                ):
+                    s_idx = int(0.20 * sr)
+                    e_idx = min(wav.shape[-1], int(4.97 * sr))
+                    ref_input = (wav[:, s_idx:e_idx], sr)
+                    use_text = "By the time the Duke of Caldermere's carriage disappeared beyond the broken stone gate,"
+                elif (
+                    dur_s > 7.8
+                    and "between her and a bullet." in ref_text
+                ):
+                    s_idx = 0
+                    e_idx = min(wav.shape[-1], int(7.45 * sr))
+                    ref_input = (wav[:, s_idx:e_idx], sr)
+                    use_text = "Claire Bennett noticed the broken exit light before she noticed the man who would later stand between her and a bullet."
             except Exception:
                 pass
 
@@ -2829,14 +2889,27 @@ class VoiceStudioService:
 
         cached_durations: Dict[int, float] = {}
 
+        def _get_safe_cuda_batch_size() -> int:
+            if self.device != "cuda" or not torch.cuda.is_available():
+                return 1
+            try:
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                if vram_gb >= 11.0:
+                    return 6
+                if vram_gb >= 5.5:
+                    return 3
+                return 2
+            except Exception:
+                return 3
+
         def _synthesize_sentence_indices_1to1(
             indices_to_run: List[int],
-            step_count: int = 16,
+            step_count: int = 12,
             tag_prefix: str = "⚡ GPU 1-to-1",
         ):
             if not indices_to_run:
                 return
-            batch_sz = 8 if self.device == "cuda" else 1
+            batch_sz = _get_safe_cuda_batch_size()
             win_sz = batch_sz * 6
             done_in_pass = 0
             total_in_pass = len(indices_to_run)
@@ -2924,7 +2997,7 @@ class VoiceStudioService:
                 f"Đã có {len(cached_durations)}/{total_sentences} câu, đang tạo {len(missing_indices)} câu mới..."
             )
             _synthesize_sentence_indices_1to1(
-                missing_indices, step_count=16, tag_prefix="⚡ GPU 1-to-1"
+                missing_indices, step_count=12, tag_prefix="⚡ GPU 1-to-1"
             )
 
         # 2. BƯỚC KIỂM ĐỊNH ĐỘ KHỚP SUB & VOICE TỰ ĐỘNG + LÀM LẠI CÁC CÂU LỆCH (TỐI ĐA 3 VÒNG)
@@ -3042,6 +3115,7 @@ class VoiceStudioService:
         subprocess.run(
             cmd,
             check=True,
+            timeout=600,
             creationflags=0x08000000 if os.name == "nt" else 0,
         )
 
@@ -3589,7 +3663,7 @@ def trim_media_file_by_keep_intervals(
                     str(tmp_out),
                 ]
             res_one = subprocess.run(
-                cmd_one, capture_output=True, text=True, creationflags=win_flags
+                cmd_one, capture_output=True, text=True, timeout=300, creationflags=win_flags
             )
             if (
                 res_one.returncode != 0
@@ -3636,7 +3710,7 @@ def trim_media_file_by_keep_intervals(
                         str(seg_f),
                     ]
                 res = subprocess.run(
-                    cmd_seg, capture_output=True, text=True, creationflags=win_flags
+                    cmd_seg, capture_output=True, text=True, timeout=180, creationflags=win_flags
                 )
                 if (
                     res.returncode != 0
@@ -3685,7 +3759,7 @@ def trim_media_file_by_keep_intervals(
                     str(tmp_out),
                 ]
             res_cat = subprocess.run(
-                cmd_cat, capture_output=True, text=True, creationflags=win_flags
+                cmd_cat, capture_output=True, text=True, timeout=300, creationflags=win_flags
             )
             if (
                 res_cat.returncode != 0

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from .adas_script_engine import (
     ADASScriptEngine,
+    _detect_channel_key_and_strip_tag,
     build_step2_prompt_from_idea,
     check_all_web_accounts_status,
     close_all_chatgpt_browsers,
@@ -26,6 +27,7 @@ from .adas_script_engine import (
 )
 from .logger_service import (
     LicenseManager,
+    format_project_ma_id,
     get_logger,
     install_missing_libraries_async,
     log_error,
@@ -203,6 +205,9 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         use_original_title: bool = False
         ma_ids: Optional[list[str]] = None
 
+    class SetMachineCodeRequest(BaseModel):
+        machine_code: str
+
     class DeleteIdeaRequest(BaseModel):
         ma_id: str
 
@@ -263,8 +268,14 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     }
 
     def _force_kill_all_studio_processes():
+        try:
+            from backend.renderer import terminate_active_ffmpeg_processes
+
+            terminate_active_ffmpeg_processes()
+        except Exception:
+            pass
         if os.name == "nt":
-            for img in ("ffmpeg.exe", "Drama_Nhat_Studio.exe"):
+            for img in ("ffmpeg.exe", "Drama_Nhat_Studio.exe", "Mexico_Ong_Gia.exe"):
                 try:
                     subprocess.run(
                         ["taskkill", "/F", "/IM", img, "/T"],
@@ -612,13 +623,21 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/adas/ideas/preview-prompt")
     def api_adas_preview_prompt(req: SaveIdeaInputRequest):
-        next_preview_id = str(adas_engine._load_idea_id_counter_state()[0] + 1)
+        next_seq = adas_engine._load_idea_id_counter_state()[0] + 1
+        eff_ck, _ = _detect_channel_key_and_strip_tag(
+            req.raw_text, explicit_channel_key=req.channel_key
+        )
+        next_preview_id = format_project_ma_id(
+            adas_engine.get_machine_code(), eff_ck, next_seq
+        )
         eff_id = (
             req.custom_id
             if (req.custom_id and req.custom_id not in ("1", "IDEA_PREVIEW"))
             else next_preview_id
         )
-        parsed = parse_idea_input_block(req.raw_text, custom_id=eff_id)
+        parsed = parse_idea_input_block(
+            req.raw_text, custom_id=eff_id, channel_key=eff_ck
+        )
         parsed["use_original_title"] = bool(req.use_original_title)
         if req.use_original_title:
             orig_t = parsed.get("draft_title_ja") or ""
@@ -637,6 +656,29 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             "parsed": parsed,
             "step2_prompt": step2_prompt,
         }
+
+    @app.get("/api/adas/machine-code")
+    def api_adas_get_machine_code():
+        mc = adas_engine.get_machine_code()
+        next_seq = adas_engine._load_idea_id_counter_state()[0] + 1
+        return {
+            "machine_code": mc,
+            "next_seq": next_seq,
+            "preview_ids": {
+                "padre_mx": format_project_ma_id(mc, "padre_mx", next_seq),
+                "homeless": format_project_ma_id(mc, "homeless", next_seq),
+                "mafia": format_project_ma_id(mc, "mafia", next_seq),
+            },
+        }
+
+    @app.post("/api/adas/machine-code")
+    def api_adas_set_machine_code(req: SetMachineCodeRequest):
+        res = adas_engine.set_machine_code(req.machine_code)
+        log_info(
+            "SYSTEM",
+            f"🏷️ Đã cập nhật Mã Máy gắn sản video: [{res['machine_code']}] (Mã tiếp theo: {res['preview_ids']['padre_mx']})",
+        )
+        return {"success": True, **res}
 
     @app.post("/api/adas/ideas/set-title-mode")
     def api_adas_set_title_mode(req: SetIdeaTitleModeRequest):
@@ -775,7 +817,14 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     @app.get("/api/adas/status")
     def api_adas_status():
-        adas_engine._sync_projects_disk_state()
+        now_ts = time.time()
+        last_sync = float(getattr(adas_engine, "_last_status_disk_sync_ts", 0.0) or 0.0)
+        if (now_ts - last_sync) >= 5.0 and not getattr(adas_engine, "_disk_sync_in_progress", False):
+            adas_engine._last_status_disk_sync_ts = now_ts
+            try:
+                adas_engine._sync_projects_disk_state()
+            except Exception:
+                pass
         return {
             "state": adas_engine.get_state(),
             "ideas": adas_engine.load_saved_ideas(),
@@ -1622,6 +1671,7 @@ except Exception:
                     str(dst_wav),
                 ],
                 capture_output=True,
+                timeout=120,
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
         if not dst_wav.exists():
@@ -1681,6 +1731,7 @@ except Exception:
                     str(dst_wav),
                 ],
                 capture_output=True,
+                timeout=120,
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
         if not dst_wav.exists():

@@ -16,7 +16,15 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import requests
 from websockets.sync.client import connect as ws_connect
 
-from .logger_service import log_info, log_warn
+from .logger_service import (
+    extract_ma_id_sequence,
+    format_project_ma_id,
+    get_machine_code_config,
+    log_info,
+    log_warn,
+    normalize_machine_code,
+    save_machine_code_config,
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -2798,6 +2806,17 @@ class ChatGPTWebSession:
                 # Nếu văn bản đã nhận được rất đầy đủ (>= 5.000 ký tự) và tab đột ngột đơ DOM khi hoàn tất render GenUI
                 if len(last_text) >= 5000 and none_poll_ticks >= 3:
                     return last_text
+                # Kiểm tra sớm nếu tab Chrome bị đóng hoặc mất kết nối CDP để Failover ngay, không treo 15 phút
+                if none_poll_ticks >= 6:
+                    alive_tabs = _cdp_get_tabs(getattr(self, "port", 0), timeout=2.5)
+                    tab_gone = alive_tabs is None or not any(
+                        str(t.get("id", "")) == str(getattr(self, "tab_id", ""))
+                        for t in (alive_tabs or [])
+                    )
+                    if tab_gone or none_poll_ticks >= 12:
+                        raise RuntimeError(
+                            f"Tab Chrome trên {self.cfg['label']} bị đóng hoặc mất phản hồi CDP tại {step_label} -> Chuyển nick khác!"
+                        )
                 continue
             none_poll_ticks = 0
 
@@ -4010,8 +4029,8 @@ def parse_idea_input_block(
         else "Giành lại toàn bộ tài sản hợp pháp, phẩm giá và sự bình yên tuổi già",
     )
 
-    # Bỏ qua mọi mã đầu dòng trong văn bản, luôn lấy Mã theo STT (custom_id truyền vào là STT "1", "2", "3"...)
-    ma_id = str(custom_id or "1").strip()
+    # Bỏ qua mọi mã đầu dòng trong văn bản, sử dụng custom_id chuẩn MAY1_MXC_001 (hoặc fallback mặc định)
+    ma_id = str(custom_id or "MAY1_MXC_001").strip()
     ma_id = re.sub(r"[^A-Za-z0-9_\-]", "_", ma_id)
 
     boi_canh = _pick_exact_or_contains(
@@ -4756,6 +4775,26 @@ class ADASScriptEngine:
         with self.lock:
             return dict(self.state)
 
+    def get_machine_code(self) -> str:
+        cfg = get_machine_code_config(self.root_dir)
+        return normalize_machine_code(cfg.get("machine_code"))
+
+    def set_machine_code(self, raw_code: str) -> Dict[str, Any]:
+        saved = save_machine_code_config(raw_code, self.root_dir)
+        mc = saved["machine_code"]
+        max_stt, _ = self._load_idea_id_counter_state()
+        next_seq = max_stt + 1
+        return {
+            "machine_code": mc,
+            "next_seq": next_seq,
+            "preview_ids": {
+                "padre_mx": format_project_ma_id(mc, "padre_mx", next_seq),
+                "homeless": format_project_ma_id(mc, "homeless", next_seq),
+                "mafia": format_project_ma_id(mc, "mafia", next_seq),
+            },
+            "updated_at": saved.get("updated_at", ""),
+        }
+
     def get_step2_template(self) -> str:
         if self.step2_template_file.exists():
             try:
@@ -5338,7 +5377,8 @@ class ADASScriptEngine:
 
         def _natural_dir_sort_key(d: Path):
             nm = d.name.strip()
-            return (0, int(nm)) if nm.isdigit() else (1, nm.lower())
+            seq = extract_ma_id_sequence(nm)
+            return (0 if seq > 0 else 1, seq, nm.lower())
 
         if include_final_video_dir:
             f_dir = getattr(self, "final_video_dir", None)
@@ -5460,8 +5500,9 @@ class ADASScriptEngine:
                             sx = str(x).strip()
                             if sx:
                                 used_ids.add(sx)
-                                if sx.isdigit() and int(sx) > max_id:
-                                    max_id = int(sx)
+                                seq_v = extract_ma_id_sequence(sx)
+                                if seq_v > max_id:
+                                    max_id = seq_v
                 except Exception:
                     pass
 
@@ -5469,8 +5510,9 @@ class ADASScriptEngine:
             s = str(sx).strip()
             if s:
                 used_ids.add(s)
-                if s.isdigit() and int(s) > max_id:
-                    max_id = int(s)
+                seq_v = extract_ma_id_sequence(s)
+                if seq_v > max_id:
+                    max_id = seq_v
 
         for sx in self._list_all_existing_project_ids_on_disk(
             include_final_video_dir=True
@@ -5478,16 +5520,18 @@ class ADASScriptEngine:
             s = str(sx).strip()
             if s:
                 used_ids.add(s)
-                if s.isdigit() and int(s) > max_id:
-                    max_id = int(s)
+                seq_v = extract_ma_id_sequence(s)
+                if seq_v > max_id:
+                    max_id = seq_v
 
         if extra_ids:
             for sx in extra_ids:
                 s = str(sx).strip()
                 if s:
                     used_ids.add(s)
-                    if s.isdigit() and int(s) > max_id:
-                        max_id = int(s)
+                    seq_v = extract_ma_id_sequence(s)
+                    if seq_v > max_id:
+                        max_id = seq_v
 
         return max_id, used_ids
 
@@ -5501,14 +5545,19 @@ class ADASScriptEngine:
         if int(max_id or 0) > cur_max:
             cur_max = int(max_id)
         for sx in list(cur_used):
-            if sx.isdigit() and int(sx) > cur_max:
-                cur_max = int(sx)
+            seq_v = extract_ma_id_sequence(sx)
+            if seq_v > cur_max:
+                cur_max = seq_v
         payload = json.dumps(
             {
                 "last_id": int(cur_max),
                 "used_ids": sorted(
                     cur_used,
-                    key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
+                    key=lambda x: (
+                        0 if extract_ma_id_sequence(str(x)) > 0 else 1,
+                        extract_ma_id_sequence(str(x)),
+                        str(x),
+                    ),
                 ),
                 "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             },
@@ -6500,7 +6549,14 @@ class ADASScriptEngine:
             if disk_proj_map:
                 restored_items: List[Dict[str, Any]] = []
                 unblocked_deleted: Set[str] = set()
-                for mid, p_dir in sorted(disk_proj_map.items()):
+                for mid, p_dir in sorted(
+                    disk_proj_map.items(),
+                    key=lambda kv: (
+                        0 if extract_ma_id_sequence(kv[0]) > 0 else 1,
+                        extract_ma_id_sequence(kv[0]),
+                        kv[0].lower(),
+                    ),
+                ):
                     if not mid or mid in existing_ids:
                         continue
                     del_marker = p_dir / ".deleted_by_user"
@@ -7224,9 +7280,12 @@ class ADASScriptEngine:
         ideas = self.load_saved_ideas()
         if not ideas:
             max_stt, ever_used = self._load_idea_id_counter_state()
-            next_id = str(max_stt + 1)
+            next_seq = max_stt + 1
+            next_id = format_project_ma_id(
+                self.get_machine_code(), "padre_mx", next_seq
+            )
             ever_used.add(next_id)
-            self._save_idea_id_counter_state(max_stt + 1, ever_used)
+            self._save_idea_id_counter_state(next_seq, ever_used)
             sample_raw = (
                 "P01 — Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable que firmé hace diez años.\n"
                 "VI: Con trai và con dâu đuổi người cha già khỏi ngôi nhà ông tự tay xây từng viên gạch; hôm sau công chứng viên đọc điều khoản thu hồi tặng cho có điều kiện.\n"
@@ -7244,13 +7303,15 @@ class ADASScriptEngine:
         custom_id: Optional[str] = None,
         use_original_title: bool = False,
         channel_key: Optional[str] = None,
+        machine_code: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Phân tích danh sách tiêu đề người dùng dán (MỖI TIÊU ĐỀ 1 DÒNG),
-        tự động bỏ qua mọi Mã đầu dòng và gán Mã dự án theo Số Thứ Tự lũy tiến vĩnh viễn:
-        - Mã luôn tăng lên tiếp nối từ mốc lớn nhất đã lưu (kể cả sau khi xóa tiêu đề cũ).
-        - Lưu lại mã vào bộ đếm bền vững, tuyệt đối không bao giờ trùng mã nào với mã nào.
-        - Hỗ trợ gắn `channel_key` (`padre_mx` hoặc `homeless`) theo từng dòng (`[MX]` / `[HL]`) hoặc theo key đang chọn.
+        tự động bỏ qua mọi Mã đầu dòng và gán Mã sản video theo định dạng `{MA_MAY}_{KEY_TAG}_{STT_3_SO}`
+        (VD: `MAY1_MXC_001`, `MAY1_HL_002`, `MAY1_MF_003`):
+        - STT luôn tăng nối tiếp từ mốc lớn nhất trên máy (kể cả sau khi xóa tiêu đề cũ).
+        - Lưu lại mã vào bộ đếm bền vững, tuyệt đối không bao giờ trùng mã.
+        - Giữ nguyên toàn bộ mã dự án cũ (`1`, `2`, `3`...) đã tồn tại trước đó.
         """
         blocks = split_raw_text_into_idea_blocks(raw_text)
         if not blocks:
@@ -7263,24 +7324,58 @@ class ADASScriptEngine:
         saved_items: List[Dict[str, Any]] = []
         new_items_to_append: List[Dict[str, Any]] = []
 
-        # Đọc bộ đếm Mã Tiêu Đề lớn nhất từng được cấp phát để tăng tiếp nối, không bao giờ trùng lại mã cũ
+        eff_machine = (
+            normalize_machine_code(machine_code)
+            if machine_code
+            else self.get_machine_code()
+        )
+        # Đọc bộ đếm Mã Tiêu Đề lớn nhất từng được cấp phát trên máy để tăng nối tiếp không trùng
         max_stt, ever_used_ids = self._load_idea_id_counter_state(list(existing_ids))
+        used_seqs = {
+            extract_ma_id_sequence(x)
+            for x in (existing_ids | ever_used_ids)
+            if extract_ma_id_sequence(x) > 0
+        }
         next_num = max_stt + 1
+        final_dir_path = (
+            Path(self.final_video_dir)
+            if getattr(self, "final_video_dir", None)
+            else None
+        )
 
         for block_str in blocks:
-            while (
-                str(next_num) in existing_ids
-                or str(next_num) in ever_used_ids
-                or (self.projects_dir / str(next_num)).exists()
-            ):
-                next_num += 1
-            assigned_id = str(next_num)
+            block_probe = re.sub(
+                r"^(?:(?:#|\*|\-|\•)\s*)?\d{1,4}\s*[\.\)\-—–:：]+\s*",
+                "",
+                (block_str or "").strip(),
+            )
+            block_ck, _ = _detect_channel_key_and_strip_tag(
+                block_probe, explicit_channel_key=channel_key
+            )
+            while True:
+                cand_id = format_project_ma_id(eff_machine, block_ck, next_num)
+                if (
+                    next_num in used_seqs
+                    or cand_id in existing_ids
+                    or cand_id in ever_used_ids
+                    or str(next_num) in existing_ids
+                    or (self.projects_dir / cand_id).exists()
+                    or (
+                        final_dir_path is not None
+                        and (final_dir_path / cand_id).exists()
+                    )
+                ):
+                    next_num += 1
+                    continue
+                break
+            assigned_id = format_project_ma_id(eff_machine, block_ck, next_num)
+            used_seqs.add(next_num)
             ever_used_ids.add(assigned_id)
             max_stt = max(max_stt, next_num)
             next_num += 1
 
             parsed = parse_idea_input_block(
-                block_str, custom_id=assigned_id, channel_key=channel_key
+                block_str, custom_id=assigned_id, channel_key=block_ck
             )
             parsed["use_original_title"] = bool(use_original_title)
             if use_original_title and parsed.get("draft_title_ja"):
@@ -9926,7 +10021,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 finally:
                     if session_gr is not None:
                         try:
-                            session_gr.close()
+                            session_gr.close_session_tab(keep_open=False)
                         except Exception:
                             pass
             self._update_idea_record(ma_id, has_thumbnail=True)
@@ -10052,16 +10147,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         chạy tạo lại (tự động chuyển sang nick khác nếu nick hiện tại lỗi/limit).
         """
         self._sync_projects_disk_state()
-        ideas = self.load_saved_ideas()
         all_ids: List[str] = []
         if target_ids:
             for mid in target_ids:
                 if mid and mid not in all_ids:
                     all_ids.append(mid)
-        for it in ideas:
-            mid = str(it.get("ma_id", "")).strip()
-            if mid and mid not in all_ids:
-                all_ids.append(mid)
+        else:
+            ideas = self.load_saved_ideas()
+            for it in ideas:
+                mid = str(it.get("ma_id", "")).strip()
+                if mid and mid not in all_ids:
+                    all_ids.append(mid)
 
         missing_ids: List[str] = []
         for mid in all_ids:

@@ -42,6 +42,7 @@ def migrate_customer_workspace_layout(root_dir: Path | None = None) -> None:
         "used_stock_links.json",
         "python_path.txt",
         "youtube_cookies.txt",
+        "machine_code.json",
     )
     for fname in state_files:
         src = r / fname

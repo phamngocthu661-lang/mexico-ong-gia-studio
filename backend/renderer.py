@@ -354,6 +354,38 @@ ICON_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 _GREEN_ICONS_LOCK = threading.Lock()
 _DEEPLAB_CACHE: Dict[str, Any] = {"model": None, "preprocess": None, "device": "cpu"}
+_ACTIVE_FFMPEG_PROCS: set = set()
+_ACTIVE_FFMPEG_LOCK = threading.Lock()
+
+
+def terminate_active_ffmpeg_processes() -> int:
+    """Ngắt lập tức mọi tiến trình FFmpeg đang chạy thuộc Renderer (dùng khi bấm Dừng hoặc thoát App)."""
+    killed = 0
+    with _ACTIVE_FFMPEG_LOCK:
+        procs = list(_ACTIVE_FFMPEG_PROCS)
+    for proc in procs:
+        try:
+            if proc.poll() is None:
+                proc.kill()
+                killed += 1
+        except Exception:
+            pass
+    return killed
+
+
+def _release_deeplab_vram() -> None:
+    """Giải phóng VRAM của model tách nền DeepLabV3 khỏi GPU trước khi FFmpeg NVENC chạy."""
+    try:
+        model = _DEEPLAB_CACHE.get("model")
+        if model is not None and _DEEPLAB_CACHE.get("device") == "cuda":
+            import torch
+
+            model.to("cpu")
+            _DEEPLAB_CACHE["device"] = "cpu"
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def _generate_sfx_wav_file(sfx_path: Path, category: str) -> None:
@@ -640,6 +672,7 @@ def _generate_green_icon_mp4(mp4_path: Path, category: str) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,
+            timeout=60,
             creationflags=win_flags,
         )
     finally:
@@ -841,6 +874,16 @@ def _get_person_segmentation_model():
         _DEEPLAB_CACHE["model"] = model
         _DEEPLAB_CACHE["preprocess"] = weights.transforms()
         _DEEPLAB_CACHE["device"] = device
+    else:
+        try:
+            import torch
+
+            want_dev = "cuda" if torch.cuda.is_available() else "cpu"
+            if _DEEPLAB_CACHE.get("device") != want_dev:
+                _DEEPLAB_CACHE["model"].to(want_dev)
+                _DEEPLAB_CACHE["device"] = want_dev
+        except Exception:
+            pass
     return (
         _DEEPLAB_CACHE["model"],
         _DEEPLAB_CACHE["preprocess"],
@@ -1914,7 +1957,13 @@ def get_audio_duration(file_path: str) -> float:
     ]
     try:
         res = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=15,
+            creationflags=0x08000000 if os.name == "nt" else 0,
         )
         return float(res.stdout.strip())
     except Exception:
@@ -2718,7 +2767,7 @@ def build_or_get_fixed_green_layers_cache(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=60,
+                timeout=180,
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
             if (
@@ -2917,11 +2966,18 @@ def render_drama_nhat_video(
     )
     is_work_70 = perf_mode == "work_70"
     total_cores = os.cpu_count() or 8
+    with _ACTIVE_FFMPEG_LOCK:
+        concurrent_ff_est = max(1, len(_ACTIVE_FFMPEG_PROCS) + 1)
     win_flags = 0x08000000 if os.name == "nt" else 0
-    cpu_threads = (
-        max(4, int(round(total_cores * 0.65)))
+    base_threads = (
+        max(2, int(round(total_cores * 0.65)))
         if is_work_70
-        else max(4, total_cores - 1)
+        else max(3, total_cores - 1)
+    )
+    cpu_threads = (
+        base_threads
+        if concurrent_ff_est <= 1
+        else max(2, min(base_threads, (total_cores // concurrent_ff_est) + 1))
     )
     filter_threads = max(2, cpu_threads // 2)
 
@@ -3072,12 +3128,13 @@ def render_drama_nhat_video(
     pts_factor = round(1.0 / eff_stock_speed, 3) if eff_stock_speed > 0 else 1.0
     stock_dur = get_audio_duration(stock_video_path)
 
-    # 1. Tạo Cache cho các lớp Video Green cố định từ Kho_Green (nếu có)
+    # 1. Tạo Cache cho các lớp Video Green cố định từ Kho_Green ở mức 12fps (khớp Preview Cache, giảm ~50% tải decode CPU & dung lượng .nut)
+    green_cache_fps = min(12, max(1, work_fps))
     fixed_green_cache_nut = build_or_get_fixed_green_layers_cache(
         layout_cfg=layout_cfg,
         target_w=target_w,
         target_h=target_h,
-        work_fps=work_fps,
+        work_fps=green_cache_fps,
         root_dir=root_dir,
     )
 
@@ -3095,6 +3152,8 @@ def render_drama_nhat_video(
             char_cfg=char_cfg,
             cache_dir=root_dir / "cache" / "script_char_cutouts",
         )
+        # Giải phóng VRAM DeepLabV3 ngay sau khi cắt xong ảnh để nhường GPU cho FFmpeg NVENC & OmniVoice
+        _release_deeplab_vram()
 
     # 3. Chuẩn bị Phụ đề Karaoke CapCut (.ass) ở Lớp Cao Nhất
     karaoke_ass_path = resume_dir / "karaoke_subtitles_active.ass"
@@ -3222,16 +3281,27 @@ def render_drama_nhat_video(
             )
             current_v = "[v_with_green]"
 
-        # LỚP #2 (TRÊN VIDEO GREEN, DƯỚI SUB): Ảnh Green Theo Kịch Bản đặt sát đáy dưới cùng (Opacity = 0.9)
+        # LỚP #2 (TRÊN VIDEO GREEN, DƯỚI SUB): Ảnh Green Theo Kịch Bản tĩnh -> đọc 1fps + repeatlast giảm >90% CPU giải mã PNG
         if char_cutout_png and os.path.exists(char_cutout_png):
-            base_inputs_cmd.extend(["-loop", "1", "-i", char_cutout_png])
+            base_inputs_cmd.extend(
+                [
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    "1",
+                    "-t",
+                    f"{remaining_dur + 2.0:.3f}",
+                    "-i",
+                    char_cutout_png,
+                ]
+            )
             char_in_idx = input_idx
             input_idx += 1
             filters.append(
-                f"[{char_in_idx}:v]fps={work_fps},format=yuva420p[char_rgba]"
+                f"[{char_in_idx}:v]format=yuva420p[char_rgba]"
             )
             filters.append(
-                f"{current_v}[char_rgba]overlay=x=0:y=0:shortest=1:format=yuv420[v_with_char]"
+                f"{current_v}[char_rgba]overlay=x=0:y=0:shortest=1:repeatlast=1:format=yuv420[v_with_char]"
             )
             current_v = "[v_with_char]"
 
@@ -3325,8 +3395,18 @@ def render_drama_nhat_video(
         time_regex = re.compile(r"out_time=(\d{2}:\d{2}:\d{2}\.\d+)")
         log_tail: List[str] = []
 
+        import queue as _queue_mod
+
+        stall_timeout_sec = 120.0
+        init_stall_timeout_sec = 150.0
+
         for enc_try in range(2):
             active_codec_args = v_codec_args if enc_try == 0 else cpu_codec_args
+            active_enc_label = (
+                encoder_label
+                if enc_try == 0
+                else f"CPU Fallback ({cpu_threads} threads)"
+            )
             cmd = _build_encode_cmd(active_codec_args)
             process = subprocess.Popen(
                 cmd,
@@ -3337,38 +3417,122 @@ def render_drama_nhat_video(
                 errors="replace",
                 creationflags=win_flags,
             )
+            with _ACTIVE_FFMPEG_LOCK:
+                _ACTIVE_FFMPEG_PROCS.add(process)
+
+            line_q: _queue_mod.Queue = _queue_mod.Queue(maxsize=512)
+
+            def _pump_ffmpeg_stdout(pipe=process.stdout, q=line_q):
+                try:
+                    if pipe is not None:
+                        for raw_ln in pipe:
+                            try:
+                                q.put(raw_ln, timeout=2.0)
+                            except _queue_mod.Full:
+                                try:
+                                    q.get_nowait()
+                                    q.put_nowait(raw_ln)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        q.put(None, timeout=1.0)
+                    except Exception:
+                        pass
+
+            pump_thread = threading.Thread(target=_pump_ffmpeg_stdout, daemon=True)
+            pump_thread.start()
 
             log_tail.clear()
             last_cb_ts = 0.0
+            last_percent = (
+                min(99.9, round((completed_sec / dur) * 100, 1)) if dur > 0 else 0.0
+            )
+            last_done_sec = completed_sec
             max_seg_sec_reached = 0.0
+            last_progress_adv_ts = time.time()
+            saw_first_out_time = False
+            stalled_reason = ""
+            eof_reached = False
 
             try:
                 while True:
-                    line = process.stdout.readline()
-                    if not line and process.poll() is not None:
-                        break
-                    line = line.strip()
-                    if line:
-                        log_tail.append(line)
-                        if len(log_tail) > 25:
-                            log_tail.pop(0)
-                    if "out_time=" in line:
-                        match = time_regex.search(line)
-                        if match:
-                            curr_seg_sec = parse_time_to_seconds(match.group(1))
-                            if curr_seg_sec > max_seg_sec_reached:
-                                max_seg_sec_reached = curr_seg_sec
-                            total_done_sec = min(dur, completed_sec + curr_seg_sec)
-                            percent = min(99.9, round((total_done_sec / dur) * 100, 1))
-                            now_cb = time.time()
-                            if progress_callback and (
-                                now_cb - last_cb_ts >= 0.8 or percent >= 99.9
-                            ):
-                                last_cb_ts = now_cb
-                                progress_callback(
-                                    percent,
-                                    f"Đang render video ({encoder_label}): {percent}% ({total_done_sec:.0f}s / {dur:.0f}s)",
+                    try:
+                        item = line_q.get(timeout=0.5)
+                    except _queue_mod.Empty:
+                        item = "__TIMEOUT_TICK__"
+
+                    if item is None:
+                        eof_reached = True
+                        if process.poll() is not None:
+                            break
+                        try:
+                            process.wait(timeout=2.0)
+                        except subprocess.TimeoutExpired:
+                            pass
+                        if process.poll() is not None:
+                            break
+                        continue
+
+                    if item != "__TIMEOUT_TICK__":
+                        line = item.strip()
+                        if line:
+                            log_tail.append(line)
+                            if len(log_tail) > 25:
+                                log_tail.pop(0)
+                        if "out_time=" in line:
+                            match = time_regex.search(line)
+                            if match:
+                                curr_seg_sec = parse_time_to_seconds(match.group(1))
+                                if curr_seg_sec > max_seg_sec_reached + 0.01:
+                                    max_seg_sec_reached = curr_seg_sec
+                                    last_progress_adv_ts = time.time()
+                                    saw_first_out_time = True
+                                elif not saw_first_out_time:
+                                    saw_first_out_time = True
+                                    last_progress_adv_ts = time.time()
+                                last_done_sec = min(dur, completed_sec + curr_seg_sec)
+                                last_percent = min(
+                                    99.9, round((last_done_sec / dur) * 100, 1)
                                 )
+                                now_cb = time.time()
+                                if progress_callback and (
+                                    now_cb - last_cb_ts >= 0.8 or last_percent >= 99.9
+                                ):
+                                    last_cb_ts = now_cb
+                                    progress_callback(
+                                        last_percent,
+                                        f"Đang render video ({active_enc_label}): {last_percent}% ({last_done_sec:.0f}s / {dur:.0f}s)",
+                                    )
+
+                    # Heartbeat giúp nút DỪNG phản hồi <=1.5s ngay cả khi FFmpeg im lặng / đang seek
+                    now_hb = time.time()
+                    if progress_callback and (now_hb - last_cb_ts >= 1.5):
+                        last_cb_ts = now_hb
+                        progress_callback(
+                            last_percent,
+                            f"Đang render video ({active_enc_label}): {last_percent}% ({last_done_sec:.0f}s / {dur:.0f}s)",
+                        )
+
+                    # Watchdog phát hiện FFmpeg treo đứng hình (NVENC / VRAM / Stock lỗi)
+                    idle_elapsed = now_hb - last_progress_adv_ts
+                    allowed_idle = (
+                        stall_timeout_sec if saw_first_out_time else init_stall_timeout_sec
+                    )
+                    if idle_elapsed >= allowed_idle:
+                        stalled_reason = f"FFmpeg bị treo đứng hình {idle_elapsed:.0f}s tại {last_done_sec:.0f}s/{dur:.0f}s"
+                        print(f"⚠️ [WATCHDOG] {stalled_reason} -> Ngắt tiến trình treo!")
+                        try:
+                            process.kill()
+                            process.wait(timeout=3)
+                        except Exception:
+                            pass
+                        break
+
+                    if eof_reached and process.poll() is not None:
+                        break
             except BaseException:
                 try:
                     process.kill()
@@ -3376,16 +3540,44 @@ def render_drama_nhat_video(
                 except Exception:
                     pass
                 raise
+            finally:
+                with _ACTIVE_FFMPEG_LOCK:
+                    _ACTIVE_FFMPEG_PROCS.discard(process)
+                try:
+                    if process.stdout:
+                        process.stdout.close()
+                except Exception:
+                    pass
 
             rc = process.poll()
-            if rc == 0:
+            if rc == 0 and not stalled_reason:
                 break
-            if enc_try == 0 and use_nvenc and max_seg_sec_reached < 3.0:
+            # Nếu FFmpeg bị ngắt do người dùng bấm DỪNG / Yield -> progress_callback sẽ raise InterruptedError ngay lập tức, không chạy Fallback CPU
+            if progress_callback:
+                progress_callback(
+                    last_percent,
+                    f"Kiểm tra trạng thái dừng sau mã thoát FFmpeg {rc}...",
+                )
+            nvenc_err_hint = any(
+                k in "\n".join(log_tail).lower()
+                for k in ("nvenc", "cuda", "out of memory", "capable devices", "openencodesessionex")
+            )
+            if enc_try == 0 and use_nvenc and (
+                max_seg_sec_reached < 10.0 or stalled_reason or nvenc_err_hint
+            ):
+                # Xóa raw segment dở dang trước khi chuyển sang CPU fallback
+                try:
+                    if os.path.exists(current_raw_seg):
+                        os.remove(current_raw_seg)
+                except Exception:
+                    pass
                 print(
-                    f"⚠️ [NVENC FALLBACK] Chuyển sang CPU Multi-Thread ({cpu_threads} threads)..."
+                    f"⚠️ [NVENC FALLBACK] Lý do: {stalled_reason or f'mã {rc}'}. Chuyển sang CPU Multi-Thread ({cpu_threads} threads)..."
                 )
                 continue
             err_detail = "\n".join(log_tail[-8:])
+            if stalled_reason:
+                raise RuntimeError(f"FFmpeg bị treo và đã tự ngắt ({stalled_reason}): {err_detail}")
             raise RuntimeError(f"FFmpeg render lỗi (mã {rc}): {err_detail}")
 
         final_clean_seg = str(resume_dir / f"seg_clean_{next_seg_idx:04d}.ts")
@@ -3440,11 +3632,13 @@ def render_drama_nhat_video(
             temp_output_path,
         ]
 
+    remux_timeout = max(180, int(dur * 0.5) + 120)
     remux_res = subprocess.run(
         remux_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        timeout=remux_timeout,
         creationflags=win_flags,
     )
     if remux_res.returncode != 0:

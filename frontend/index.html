@@ -324,9 +324,18 @@
             <div class="relative bg-surface-container-low p-2.5 rounded border border-surface-container-high">
               <div class="flex items-center justify-between mb-1.5">
                 <span class="font-label-sm text-[10px] text-secondary font-bold uppercase">MỖI DÒNG = 1 TIÊU ĐỀ KỊCH BẢN ĐỘC LẬP</span>
-                <span class="font-label-sm text-[10px] text-primary-container font-mono">Tự động bỏ qua Mã đầu dòng • Mã gán theo STT (1, 2, 3...)</span>
+                <span class="font-label-sm text-[10px] text-primary-container font-mono">Gắn mã theo Máy + Key + STT (VD: MAY1_MXC_001)</span>
               </div>
               <textarea class="w-full bg-surface-container-lowest rounded p-2.5 font-label-md text-xs text-on-surface placeholder:text-outline-variant focus:outline-none focus:ring-1 focus:ring-primary-container border border-surface-container-high resize-y leading-relaxed" id="adas-raw-input" placeholder="Mi yerno me pidió ciento veinte mil euros sin saber que yo ya lo había visto todo&#10;Mi hijo y mi nuera me echaron de la casa que construí ladrillo por ladrillo; al día siguiente el notario leyó la cláusula de donación revocable&#10;Mis tres hijos cambiaron las cerraduras de mi rancho pensando que ya no valía nada, pero el juez abrió el fideicomiso" rows="6"></textarea>
+            </div>
+            <!-- CẤU HÌNH MÃ MÁY RIÊNG GẮN TRƯỚC MÃ VIDEO (VD: MAY1_MXC_001, MAY1_HL_002, MAY1_MF_003) -->
+            <div class="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-surface-container-low border border-secondary/35" id="adas-machine-code-box">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="text-[11px] font-bold text-secondary uppercase tracking-wide shrink-0">🏷️ Mã Máy:</span>
+                <input class="w-28 bg-surface-container-lowest border border-outline-variant/40 rounded px-2 py-1 text-xs font-mono font-bold text-primary-container uppercase focus:outline-none focus:ring-1 focus:ring-primary-container" id="adas-machine-code-input" maxlength="20" placeholder="MAY1" type="text" value="MAY1"/>
+                <button class="px-2.5 py-1 rounded bg-secondary-container/20 hover:bg-secondary-container/35 text-secondary border border-secondary/40 text-[10.5px] font-bold transition-all cursor-pointer shrink-0" id="btn-save-machine-code" type="button">💾 Lưu Mã Máy</button>
+              </div>
+              <span class="font-mono text-[10.5px] text-primary-container font-semibold truncate" id="adas-machine-code-preview-label">Mã tạo mới tiếp theo: #MAY1_MXC_001</span>
             </div>
             <!-- CHỌN KEY KỊCH BẢN & GIỌNG CLONE ĐỂ LƯU VÀO HÀNG ĐỢI ĐA KEY (VÍ DỤ: 10 KB MEXICO + 10 KB HOMELESS) -->
             <div class="flex flex-col gap-1.5 p-2.5 rounded-lg bg-surface-container-low border border-primary-container/40" id="adas-channel-key-box">

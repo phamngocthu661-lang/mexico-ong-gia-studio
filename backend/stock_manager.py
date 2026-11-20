@@ -1956,7 +1956,12 @@ class StockManager:
                     "1",
                     out_pattern,
                 ]
-                subprocess.run(cmd_slice, check=True)
+                subprocess.run(
+                    cmd_slice,
+                    check=True,
+                    timeout=600,
+                    creationflags=0x08000000 if os.name == "nt" else 0,
+                )
                 try:
                     os.remove(temp_output)
                 except Exception:

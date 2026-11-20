@@ -14,7 +14,9 @@ Ghi nhận toàn bộ hoạt động và lỗi của:
 """
 
 import importlib.util
+import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -908,6 +910,7 @@ CHANNEL_KEY_METADATA: Dict[str, Dict[str, Any]] = {
     "padre_mx": {
         "channel_key": "padre_mx",
         "prefix": "MEXICO",
+        "id_code": "MXC",
         "label": "🇲🇽 Mexico Ông Già (PADRE MX V4.0 — es-MX)",
         "short_label": "🇲🇽 Mexico Ông Già",
         "language": "es",
@@ -918,6 +921,7 @@ CHANNEL_KEY_METADATA: Dict[str, Dict[str, Any]] = {
     "homeless": {
         "channel_key": "homeless",
         "prefix": "HOMELESS",
+        "id_code": "HL",
         "label": "🏚️ Homeless Story US (V3.0 — en-US, Không Ảnh Green)",
         "short_label": "🏚️ Homeless US",
         "language": "en",
@@ -928,6 +932,7 @@ CHANNEL_KEY_METADATA: Dict[str, Dict[str, Any]] = {
     "mafia": {
         "channel_key": "mafia",
         "prefix": "MAFIA",
+        "id_code": "MF",
         "label": "🕴️ Mafia × Maid US (V2.0 — en-US, Không Ảnh Green)",
         "short_label": "🕴️ Mafia US",
         "language": "en",
@@ -951,6 +956,103 @@ def normalize_channel_key(raw_key: Optional[str]) -> str:
 def get_channel_metadata(channel_key: Optional[str] = None) -> Dict[str, Any]:
     ck = normalize_channel_key(channel_key)
     return dict(CHANNEL_KEY_METADATA.get(ck, CHANNEL_KEY_METADATA["padre_mx"]))
+
+
+def get_channel_id_tag(channel_key: Optional[str] = None) -> str:
+    """Trả về mã viết tắt chuẩn cho phần giữa của mã video: MXC, HL hoặc MF."""
+    meta = get_channel_metadata(channel_key)
+    return str(meta.get("id_code") or "MXC").strip().upper()
+
+
+def normalize_machine_code(raw_code: Optional[str]) -> str:
+    """Chuẩn hóa Mã Máy riêng (chỉ giữ A-Z, 0-9, '-' để phân tách sạch với dấu '_' trong MAY1_MXC_001)."""
+    s = re.sub(r"[^A-Za-z0-9\-]", "", str(raw_code or "").strip().upper())
+    s = re.sub(r"-{2,}", "-", s).strip("-")[:20]
+    return s or "MAY1"
+
+
+def extract_ma_id_sequence(ma_id: Optional[str]) -> int:
+    """Trích xuất số thứ tự (STT) từ mã cũ ('1', '12') hoặc mã mới ('MAY1_MXC_001', 'PC2_HL_045')."""
+    s = str(ma_id or "").strip()
+    if not s:
+        return 0
+    if s.isdigit():
+        return int(s)
+    m = re.search(r"_(\d+)$", s)
+    if m:
+        return int(m.group(1))
+    return 0
+
+
+def format_project_ma_id(
+    machine_code: Optional[str] = None,
+    channel_key: Optional[str] = None,
+    seq_num: int = 1,
+) -> str:
+    """Định dạng mã sản video mới theo chuẩn: `{MA_MAY}_{KEY_TAG}_{STT_3_SO}` (VD: MAY1_MXC_001)."""
+    mc = normalize_machine_code(machine_code)
+    tag = get_channel_id_tag(channel_key)
+    n = max(1, int(seq_num or 1))
+    return f"{mc}_{tag}_{n:03d}"
+
+
+def _resolve_machine_code_files(root_dir: Optional[Path] = None) -> List[Path]:
+    base = Path(root_dir) if root_dir else ROOT_DIR
+    if base.name.lower() == "app":
+        base = base.parent
+    local_appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    appdata_dir = Path(local_appdata) / "Mexico_Ong_Gia_Studio"
+    return [
+        base / "config" / "machine_code.json",
+        appdata_dir / "machine_code.json",
+    ]
+
+
+def get_machine_code_config(root_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Đọc cấu hình Mã Máy riêng (ưu tiên `config/machine_code.json`, dự phòng AppData để sống sót qua OTA)."""
+    files = _resolve_machine_code_files(root_dir)
+    for fp in files:
+        if fp.exists():
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("machine_code"):
+                    mc = normalize_machine_code(data.get("machine_code"))
+                    res = dict(data)
+                    res["machine_code"] = mc
+                    # Đồng bộ ngược lại nếu một trong hai file bị thiếu
+                    for other_fp in files:
+                        if not other_fp.exists():
+                            try:
+                                other_fp.parent.mkdir(parents=True, exist_ok=True)
+                                other_fp.write_text(
+                                    json.dumps(res, ensure_ascii=False, indent=2),
+                                    encoding="utf-8",
+                                )
+                            except Exception:
+                                pass
+                    return res
+            except Exception:
+                pass
+    return {"machine_code": "MAY1", "updated_at": ""}
+
+
+def save_machine_code_config(
+    machine_code: str, root_dir: Optional[Path] = None
+) -> Dict[str, Any]:
+    """Lưu Mã Máy riêng an toàn vào `config/machine_code.json` và AppData."""
+    mc = normalize_machine_code(machine_code)
+    payload = {
+        "machine_code": mc,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    raw_txt = json.dumps(payload, ensure_ascii=False, indent=2)
+    for fp in _resolve_machine_code_files(root_dir):
+        try:
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(raw_txt, encoding="utf-8")
+        except Exception:
+            pass
+    return payload
 
 
 class LicenseManager:
@@ -1607,6 +1709,7 @@ PROTECTED_CUSTOMER_PATHS = {
     "deleted_ideas.json",
     "idea_id_counter.json",
     "_idea_id_counter.json",
+    "machine_code.json",
     "license.json",
     "settings.json",
     "used_stocks_history.json",

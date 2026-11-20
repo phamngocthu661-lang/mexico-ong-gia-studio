@@ -74,6 +74,9 @@ class HardwareResourceBalancer:
             "gpu_enc_percent": 0.0,
             "gpu_percent": 10.0,
             "vram_percent": 30.0,
+            "vram_used_mb": 0.0,
+            "vram_total_mb": 0.0,
+            "vram_free_mb": 0.0,
             "timestamp": 0.0,
         }
 
@@ -128,6 +131,8 @@ class HardwareResourceBalancer:
             gpu_core = 0.0
             gpu_enc = 0.0
             vram_pct = 0.0
+            mem_used = 0.0
+            mem_tot = 0.0
             try:
                 creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
                 res = subprocess.run(
@@ -153,6 +158,7 @@ class HardwareResourceBalancer:
             except Exception:
                 pass
 
+            vram_free = max(0.0, mem_tot - mem_used) if mem_tot > 0 else 0.0
             gpu_effective = max(gpu_core, gpu_enc)
             self._last_metrics = {
                 "cpu_percent": cpu_pct,
@@ -161,6 +167,9 @@ class HardwareResourceBalancer:
                 "gpu_enc_percent": gpu_enc,
                 "gpu_percent": gpu_effective,
                 "vram_percent": vram_pct,
+                "vram_used_mb": round(mem_used, 1),
+                "vram_total_mb": round(mem_tot, 1),
+                "vram_free_mb": round(vram_free, 1),
                 "timestamp": now,
             }
             return dict(self._last_metrics)
@@ -169,9 +178,11 @@ class HardwareResourceBalancer:
         self, current_active_tasks: int, max_concurrent: Optional[int] = None
     ) -> bool:
         """
-        Kiểm tra xem máy còn khoảng trống tài nguyên để đẩy thêm luồng chạy song song không:
-        - Chế độ Full 100% (`full_100`): Tối đa 5 video cùng lúc, ngưỡng CPU/GPU < 90%, RAM < 92%.
-        - Chế độ 70% (`work_70` - Vừa chạy vừa làm việc khác): Tối đa 3 video cùng lúc, ngưỡng CPU/GPU < 70%, RAM < 84%.
+        Kiểm tra xem máy còn khoảng trống tài nguyên (CPU, RAM, GPU Core/NVENC và VRAM)
+        để đẩy thêm luồng chạy song song mà không bị tràn VRAM gây treo máy:
+        - Tự động giới hạn trần song song an toàn theo dung lượng VRAM thực tế của GPU (<=6.5GB tối đa 2 luồng, <=9GB tối đa 3 luồng).
+        - Chế độ Full 100% (`full_100`): ngưỡng CPU/GPU < 90%, RAM < 92%, VRAM < 86%, dư tối thiểu 850MB VRAM.
+        - Chế độ 70% (`work_70`): Tối đa 3 luồng, ngưỡng CPU/GPU < 70%, RAM < 84%, VRAM < 76%, dư tối thiểu 1000MB VRAM.
         """
         perf_mode = getattr(self, "performance_mode", "full_100")
         default_max = 3 if perf_mode == "work_70" else 5
@@ -180,21 +191,36 @@ class HardwareResourceBalancer:
             if max_concurrent is not None
             else int(getattr(self, "max_concurrent_videos", default_max) or default_max)
         )
-        if current_active_tasks >= eff_max:
-            return False
         if current_active_tasks <= 0:
             return True
         m = self.get_metrics(force_refresh=True)
+        vram_tot = float(m.get("vram_total_mb", 0.0) or 0.0)
+        if vram_tot > 0:
+            if vram_tot <= 6500:
+                eff_max = min(eff_max, 2)
+            elif vram_tot <= 9000:
+                eff_max = min(eff_max, 3)
+        if current_active_tasks >= eff_max:
+            return False
+
         limit = float(
             getattr(
                 self, "target_max_percent", 70.0 if perf_mode == "work_70" else 90.0
             )
         )
         ram_limit = 84.0 if perf_mode == "work_70" else 92.0
+        vram_limit = 76.0 if perf_mode == "work_70" else 86.0
+        min_free_vram = 1000.0 if perf_mode == "work_70" else 850.0
+        vram_free = float(m.get("vram_free_mb", 0.0) or 0.0)
+        vram_ok = (vram_tot <= 0) or (
+            float(m.get("vram_percent", 0.0) or 0.0) < vram_limit
+            and vram_free >= min_free_vram
+        )
         if (
             m["cpu_percent"] < limit
             and m["gpu_percent"] < limit
             and m["ram_percent"] < ram_limit
+            and vram_ok
         ):
             return True
         return False
@@ -467,20 +493,21 @@ class ProductionPipeline:
         return self.get_performance_mode_info()
 
     def _auto_start_gpu_server_on_boot(self):
-        """Khởi động sẵn Server VoiceStudio (Cổng 3900) sau khi giao diện chính đã mở ổn định."""
+        """Khởi động sẵn Model OmniVoice GPU In-Process sau khi giao diện chính đã mở ổn định (không bật dư Server cổng 3900 để tránh ngốn RAM/VRAM)."""
         try:
             time.sleep(4.0)
-            log_info(
-                "VOICE",
-                "🚀 [AUTO-BOOT GPU] Đang tự động mở Server VoiceStudio (http://127.0.0.1:3900)...",
-            )
             server_ok = False
-            try:
-                server_ok = self.voice_service.ensure_voicestudio_server_running(
-                    port=3900
+            if os.environ.get("VOICESTUDIO_ENABLE_DAEMON") == "1":
+                log_info(
+                    "VOICE",
+                    "🚀 [AUTO-BOOT GPU] Đang tự động mở Server VoiceStudio (http://127.0.0.1:3900)...",
                 )
-            except Exception as se:
-                log_warn("VOICE", f"Lưu ý khi mở cổng 3900 VoiceStudio Server: {se}")
+                try:
+                    server_ok = self.voice_service.ensure_voicestudio_server_running(
+                        port=3900
+                    )
+                except Exception as se:
+                    log_warn("VOICE", f"Lưu ý khi mở cổng 3900 VoiceStudio Server: {se}")
 
             # Đợi cửa sổ giao diện chính hiển thị hoàn tất rồi mới nạp ngầm Model OmniVoice (nếu đã tải sẵn trên ổ cứng)
             time.sleep(5.0)
@@ -499,7 +526,7 @@ class ProductionPipeline:
             omni_loaded = getattr(self.voice_service, "model", None) is not None
             log_info(
                 "VOICE",
-                f"✅ [VOICESTUDIO GPU] Đã mở Server VoiceStudio (Port 3900: {'ONLINE' if server_ok else 'IN-PROCESS'}) "
+                f"✅ [VOICESTUDIO GPU] Chế độ In-Process (Port 3900: {'ONLINE' if server_ok else 'OFF - Tiết kiệm RAM'}) "
                 f"& trạng thái Model Clone Giọng GPU: {'READY' if omni_loaded else 'STANDBY'}!",
             )
         except Exception as e:
@@ -508,12 +535,13 @@ class ProductionPipeline:
     def activate_gpu_voice_server(
         self, server_mode: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Kích hoạt VoiceStudio CUDA GPU Server để clone giọng từ Kho_Voice."""
+        """Kích hoạt VoiceStudio CUDA GPU In-Process để clone giọng từ Kho_Voice."""
         saved_cfg = save_voice_config(
             {"active_gpu_server": "omnivoice_gpu", "engine_mode": "voicestudio"}
         )
         try:
-            self.voice_service.ensure_voicestudio_server_running(port=3900)
+            if os.environ.get("VOICESTUDIO_ENABLE_DAEMON") == "1":
+                self.voice_service.ensure_voicestudio_server_running(port=3900)
             self.voice_service._ensure_engine()
         except Exception:
             pass
@@ -522,9 +550,8 @@ class ProductionPipeline:
             "active_gpu_server": "omnivoice_gpu",
             "engine_mode": "voicestudio",
             "omnivoice_loaded": omni_loaded,
-            "voicestudio_server_online": self.voice_service.is_voicestudio_server_alive(
-                3900
-            ),
+            "voicestudio_server_online": omni_loaded
+            or self.voice_service.is_voicestudio_server_alive(3900),
             "selected_preset_id": saved_cfg.get(
                 "selected_preset_id", "04_mx_ong_gia_padre_implacable"
             ),
@@ -650,6 +677,12 @@ class ProductionPipeline:
             self.should_stop = True
             self.pending_jobs.clear()
             self.active_jobs_detail.clear()
+        try:
+            from backend.renderer import terminate_active_ffmpeg_processes
+
+            terminate_active_ffmpeg_processes()
+        except Exception:
+            pass
         log_warn(
             "Đã nhận lệnh dừng dây chuyền sản xuất Video từ người dùng.",
             category="RENDER",
@@ -1386,6 +1419,20 @@ class ProductionPipeline:
 
                         # Dồn 100% công suất Server VOICEVOX GPU hoàn thành xong Voice cho từng kịch bản tại Folder Project (assets_dir)
                         # để kịch bản đó lập tức chuyển sang Render Video FFmpeg mà không bị 3-4 kịch bản chia nhỏ tốc độ tạo Voice!
+                        if self.voice_synth_lock.locked():
+                            self._set_project_live_detail(
+                                proj_name=proj_name,
+                                stage="voice_queue",
+                                stage_label="⏳ Đang xếp hàng GPU Voice",
+                                progress=2.0,
+                                detail="Đang đợi luồng trước hoàn tất đọc Voice AI...",
+                                job_num=job_num,
+                            )
+                            self._update_job_card_status(
+                                proj_name,
+                                "VIDEO_RENDERING",
+                                "⏳ Đang xếp hàng chờ GPU Voice AI (Job trước đang đọc)...",
+                            )
                         with self.voice_synth_lock:
                             if self.should_stop:
                                 raise InterruptedError(
@@ -1625,6 +1672,20 @@ class ProductionPipeline:
                                     category="RENDER",
                                     project_id=proj_name,
                                 )
+                                if self.voice_synth_lock.locked():
+                                    self._set_project_live_detail(
+                                        proj_name=proj_name,
+                                        stage="voice_queue",
+                                        stage_label="⏳ Đang xếp hàng GPU Voice",
+                                        progress=50.0,
+                                        detail="Đang đợi luồng trước hoàn tất đọc Voice AI để bù đồng bộ...",
+                                        job_num=job_num,
+                                    )
+                                    self._update_job_card_status(
+                                        proj_name,
+                                        "VIDEO_RENDERING",
+                                        "⏳ Đang xếp hàng chờ GPU Voice AI (Tạo bù đồng bộ)...",
+                                    )
                                 with self.voice_synth_lock:
                                     voice_res = self._synthesize_project_voice(
                                         proj_name=proj_name,
@@ -1712,11 +1773,23 @@ class ProductionPipeline:
                                             ADASScriptEngine,
                                         )
 
-                                        self._emit(
+                                        log_info(
+                                            f"[{proj_name}] 🟩 Đang gọi ChatGPT tạo ảnh nhân vật nền xanh khổ dọc 9:16 từ ảnh tham chiếu THUMBNAIL.png...",
+                                            category="RENDER",
+                                            project_id=proj_name,
+                                        )
+                                        self._set_project_live_detail(
+                                            proj_name=proj_name,
                                             stage="render",
+                                            stage_label="🟩 Tạo ảnh nhân vật Green 9:16",
                                             progress=74.5,
-                                            message="🟩 Đang gọi ChatGPT tạo ảnh nhân vật nền xanh khổ dọc 9:16 từ ảnh tham chiếu THUMBNAIL.png...",
-                                            job_id=job_id,
+                                            detail="Đang gọi ChatGPT tạo ảnh nhân vật nền xanh khổ dọc 9:16...",
+                                            job_num=job_num,
+                                        )
+                                        self._update_job_card_status(
+                                            proj_name,
+                                            "VIDEO_RENDERING",
+                                            "🟩 Đang tạo ảnh nhân vật Green 9:16 từ THUMBNAIL.png...",
                                         )
                                         eng_gr = ADASScriptEngine(root_dir=self.root_dir)
                                         eng_gr.ensure_project_thumbnail_with_failover_sync(
@@ -2230,6 +2303,14 @@ class ProductionPipeline:
 
                 with self.lock:
                     if self.should_stop:
+                        try:
+                            from backend.renderer import (
+                                terminate_active_ffmpeg_processes,
+                            )
+
+                            terminate_active_ffmpeg_processes()
+                        except Exception:
+                            pass
                         break
                     has_pending = len(self.pending_jobs) > 0
 
@@ -2363,9 +2444,12 @@ class ProductionPipeline:
                 time.sleep(0.8)
 
             for t in active_threads:
-                t.join()
+                t.join(timeout=12.0 if self.should_stop else None)
 
             with self.lock:
+                if self.should_stop and self.state.get("status") not in ("completed", "error"):
+                    self.state["status"] = "stopped"
+                    self.state["message"] = "🛑 Đã dừng dây chuyền sản xuất Video."
                 self.is_running = False
 
             self._notify()
