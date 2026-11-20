@@ -1261,6 +1261,123 @@ def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
         return False
 
 
+def check_render_thumbnail_prerequisites(
+    proj_dir: Path,
+    final_proj_dir: Optional[Path] = None,
+    proj_name: str = "",
+    channel_key: str = "padre_mx",
+) -> Dict[str, Any]:
+    """
+    Chốt chặn kiểm tra điều kiện ảnh BẮT BUỘC trước khi cho phép Render Video MP4:
+    - Mọi Key đều BẮT BUỘC phải có `THUMBNAIL.png` hợp lệ (> 4KB).
+    - Key `padre_mx` BẮT BUỘC phải có thêm ảnh nhân vật nền xanh `THUMBNAIL-NENXANH.png` (9:16 sạch).
+    - Key `homeless` / `mafia` không dùng ảnh nền xanh theo quy chuẩn Preview.
+    """
+    proj_dir = Path(proj_dir)
+    if not proj_name:
+        proj_name = proj_dir.name
+    final_dir = Path(final_proj_dir) if final_proj_dir else proj_dir
+    renders_dir = proj_dir / "renders"
+    final_renders_dir = final_dir / "renders"
+    ck = str(channel_key or "padre_mx").strip().lower()
+    if ck not in ("homeless", "mafia"):
+        ck = "padre_mx"
+
+    target_thumb = proj_dir / "THUMBNAIL.png"
+    main_thumb: Optional[Path] = None
+    thumb_candidates = [
+        target_thumb,
+        proj_dir / f"{proj_name}_THUMBNAIL.png",
+        proj_dir / f"{proj_name}_THUMBNAIL_1.png",
+        renders_dir / "THUMBNAIL.png",
+        renders_dir / f"{proj_name}_THUMBNAIL.png",
+        renders_dir / f"{proj_name}_THUMBNAIL_1.png",
+        final_dir / "THUMBNAIL.png",
+        final_dir / f"{proj_name}_THUMBNAIL.png",
+        final_dir / f"{proj_name}_THUMBNAIL_1.png",
+        final_renders_dir / "THUMBNAIL.png",
+        final_renders_dir / f"{proj_name}_THUMBNAIL_1.png",
+    ]
+    for tc in thumb_candidates:
+        if tc.exists() and tc.stat().st_size > 4_000:
+            main_thumb = tc
+            break
+
+    if main_thumb is None:
+        for scan_d in (proj_dir, renders_dir, final_dir, final_renders_dir):
+            if not scan_d.exists():
+                continue
+            for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+                for img_f in sorted(scan_d.glob(ext)):
+                    up = img_f.name.upper()
+                    if "NENXANH" in up or "GREEN" in up or "CROP" in up:
+                        continue
+                    if img_f.stat().st_size > 4_000:
+                        main_thumb = img_f
+                        break
+                if main_thumb is not None:
+                    break
+            if main_thumb is not None:
+                break
+
+    if main_thumb is not None and proj_dir.exists() and not target_thumb.exists():
+        try:
+            shutil.copy2(main_thumb, target_thumb)
+            main_thumb = target_thumb
+        except Exception:
+            pass
+
+    requires_green = ck not in ("homeless", "mafia")
+    green_thumb: Optional[Path] = None
+    if requires_green:
+        target_green = proj_dir / "THUMBNAIL-NENXANH.png"
+        for gc in (
+            target_green,
+            proj_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
+            renders_dir / "THUMBNAIL-NENXANH.png",
+            renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
+            final_dir / "THUMBNAIL-NENXANH.png",
+            final_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
+            final_renders_dir / "THUMBNAIL-NENXANH.png",
+            final_renders_dir / f"{proj_name}_THUMBNAIL_NENXANH.png",
+            proj_dir / "script_green_images" / "green_part_01.png",
+        ):
+            if gc.exists() and _is_green_plate_clean_and_large(gc):
+                green_thumb = gc
+                break
+        if green_thumb is not None and proj_dir.exists() and not target_green.exists():
+            try:
+                shutil.copy2(green_thumb, target_green)
+                green_thumb = target_green
+            except Exception:
+                pass
+
+    missing: List[str] = []
+    if main_thumb is None:
+        missing.append("THUMBNAIL.png")
+    if requires_green and green_thumb is None:
+        missing.append("THUMBNAIL-NENXANH.png")
+
+    ok = len(missing) == 0
+    reason = (
+        ""
+        if ok
+        else (
+            f"[{proj_name}] Không thể Render MP4 vì còn thiếu: {', '.join(missing)}. "
+            f"Hãy tạo đủ {'cặp ảnh Thumbnail + Ảnh Nền Xanh' if requires_green else 'ảnh Thumbnail'} trước khi Render!"
+        )
+    )
+    return {
+        "ok": ok,
+        "channel_key": ck,
+        "requires_green": requires_green,
+        "thumbnail_path": str(main_thumb) if main_thumb else "",
+        "green_path": str(green_thumb) if green_thumb else "",
+        "missing": missing,
+        "reason": reason,
+    }
+
+
 def ensure_project_script_green_images(
     proj_dir: Path,
     renders_dir: Optional[Path] = None,

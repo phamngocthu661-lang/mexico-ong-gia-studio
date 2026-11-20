@@ -3003,7 +3003,7 @@ class ChatGPTWebSession:
                 nativeSetter.call(el, text);
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                await new Promise(r => setTimeout(r, 120));
+                await new Promise(r => setTimeout(r, 150));
             }} else {{
                 if ((el.innerText || '').trim().length > 0) {{
                     const sel = window.getSelection();
@@ -3017,23 +3017,41 @@ class ChatGPTWebSession:
                 const dt = new DataTransfer();
                 dt.setData('text/plain', text);
                 el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
-                await new Promise(r => setTimeout(r, 120));
+                await new Promise(r => setTimeout(r, 180));
+                if ((el.innerText || '').trim().length === 0) {{
+                    try {{
+                        document.execCommand('insertText', false, text);
+                    }} catch (eIns) {{}}
+                    await new Promise(r => setTimeout(r, 150));
+                }}
+                if ((el.innerText || '').trim().length === 0) {{
+                    el.textContent = text;
+                    el.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: text, inputType: 'insertText' }}));
+                    await new Promise(r => setTimeout(r, 150));
+                }}
+            }}
+
+            const initLenCheck = ((el.tagName === 'TEXTAREA' ? el.value : el.innerText) || '').trim().length;
+            let sawTextInBox = initLenCheck > 0;
+            if (!sawTextInBox) {{
+                return {{ ok: false, err: 'EMPTY_PROMPT_AFTER_PASTE' }};
             }}
 
             let sentConfirmed = false;
-            for (let s = 0; s < 30; s++) {{
+            for (let s = 0; s < 35; s++) {{
                 await new Promise(r => setTimeout(r, 320));
                 const stopNow = document.querySelector('[data-testid="stop-button"], form button[aria-label*="Stop" i], button[aria-label*="Stop streaming" i]');
                 const curBox = document.querySelector('#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], main textarea');
                 const curTextLen = curBox ? ((curBox.tagName === 'TEXTAREA' ? curBox.value : curBox.innerText) || '').trim().length : 0;
-                if (stopNow || (s > 0 && curTextLen === 0)) {{
+                if (curTextLen > 0) sawTextInBox = true;
+                if (stopNow || (s > 0 && sawTextInBox && curTextLen === 0)) {{
                     sentConfirmed = true;
                     break;
                 }}
                 const sendBtn = document.querySelector('button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], form button[aria-label*="Send" i], button[aria-label*="Send prompt" i], form button[type="submit"]');
                 if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
-                }} else if (s >= 8) {{
+                }} else if (s >= 6) {{
                     el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }}));
                 }}
             }}
@@ -3049,6 +3067,7 @@ class ChatGPTWebSession:
 
         start_t = time.time()
         idle_after_stream_ticks = 0
+        retried_text_nudge = False
 
         poll_img_js = f"""
         (() => {{
@@ -3056,8 +3075,6 @@ class ChatGPTWebSession:
             const turnStates = Array.from(document.querySelectorAll('[data-talvt-turn-state]')).map(e => e.getAttribute('data-talvt-turn-state'));
             const hasIncompleteTurn = turnStates.some(s => s && s !== 'complete');
             const stopBtn = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Dừng" i], .result-streaming');
-            const bodyTxt = (document.body ? document.body.innerText : '').slice(-1500).toLowerCase();
-            const isCreatingImgText = bodyTxt.includes('creating image') || bodyTxt.includes('đang tạo hình ảnh') || bodyTxt.includes('generating image');
             const isStreaming = Boolean(stopBtn || hasIncompleteTurn);
 
             const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
@@ -3077,10 +3094,17 @@ class ChatGPTWebSession:
             }}
 
             let latestText = '';
+            let isCreatingImgText = false;
             const turns = Array.from(document.querySelectorAll('[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"], article[data-turn="assistant"], div[data-turn="assistant"]'));
             const newTurns = turns.filter(n => n.getAttribute('data-studio-turn-seen') !== stamp);
             if (newTurns.length > 0) {{
                 latestText = newTurns.map(n => (n.innerText || '').trim()).join('\\n').trim();
+                if (newImgs.length === 0) {{
+                    const lastTurn = newTurns[newTurns.length - 1];
+                    const lastLow = (lastTurn.innerText || '').slice(-400).toLowerCase();
+                    const hasImgSpinner = Boolean(lastTurn.querySelector('[role="progressbar"], svg.animate-spin, [data-testid*="image-gen"]'));
+                    isCreatingImgText = hasImgSpinner || lastLow.includes('creating image') || lastLow.includes('đang tạo hình ảnh') || lastLow.includes('generating image');
+                }}
             }}
             let alertText = '';
             try {{
@@ -3267,8 +3291,8 @@ class ChatGPTWebSession:
             if progress_cb:
                 progress_cb(step_label, elapsed)
 
-            if new_img_count > 0 and not is_streaming and not is_creating_img:
-                # Chờ thêm 1.5s để ảnh render hoàn chỉnh độ phân giải cao nhất
+            if new_img_count > 0 and not is_streaming:
+                # Chờ thêm 1.5s để ảnh render hoàn chỉnh độ phân giải cao nhất rồi thu hoạch NGAY
                 time.sleep(1.5)
                 harv = _cdp_eval_js(
                     self.ws_url, harvest_img_js, await_promise=True, timeout=25.0
@@ -3287,10 +3311,10 @@ class ChatGPTWebSession:
                 not is_streaming
                 and not is_creating_img
                 and new_img_count == 0
-                and elapsed > 25
+                and elapsed > 18
             ):
                 idle_after_stream_ticks += 1
-                if idle_after_stream_ticks >= 4:
+                if idle_after_stream_ticks >= 3:
                     harv = _cdp_eval_js(
                         self.ws_url, harvest_img_js, await_promise=True, timeout=25.0
                     )
@@ -3303,6 +3327,40 @@ class ChatGPTWebSession:
                             "source": harv.get("source", "api"),
                             "assistant_text": latest_text,
                         }
+                    if (
+                        idle_after_stream_ticks >= 6
+                        and latest_text
+                        and not retried_text_nudge
+                    ):
+                        retried_text_nudge = True
+                        idle_after_stream_ticks = 0
+                        _cdp_eval_js(
+                            self.ws_url,
+                            """
+                            (async () => {
+                                const el = document.querySelector('#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], main textarea');
+                                if (!el) return false;
+                                el.focus();
+                                const nudge = 'Generate and output the actual image right now using the image generation tool (do not reply with text only).';
+                                if (el.tagName === 'TEXTAREA') {
+                                    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                                    setter.call(el, nudge);
+                                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                                } else {
+                                    const dt = new DataTransfer();
+                                    dt.setData('text/plain', nudge);
+                                    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+                                }
+                                await new Promise(r => setTimeout(r, 150));
+                                const btn = document.querySelector('button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], form button[aria-label*="Send" i], form button[type="submit"]');
+                                if (btn && !btn.disabled) btn.click();
+                                return true;
+                            })()
+                            """,
+                            await_promise=True,
+                            timeout=10.0,
+                        )
+                        continue
                     if idle_after_stream_ticks >= 10 and latest_text:
                         return {
                             "success": False,
@@ -6189,24 +6247,25 @@ class ADASScriptEngine:
                 if found_thumb:
                     break
 
-        if found_thumb is not None and (self.projects_dir / ma_id).exists():
-            try:
-                if not target_thumb_std.exists():
-                    shutil.copy2(found_thumb, target_thumb_std)
-                found_thumb = target_thumb_std
-            except Exception:
-                pass
+        has_valid_green = is_homeless_proj
+        if found_thumb is not None:
+            if (self.projects_dir / ma_id).exists():
+                try:
+                    if not target_thumb_std.exists():
+                        shutil.copy2(found_thumb, target_thumb_std)
+                    found_thumb = target_thumb_std
+                except Exception:
+                    pass
 
             # Với key `padre_mx`: Kiểm tra ảnh nền xanh THUMBNAIL-NENXANH.png khổ dọc 9:16 do ChatGPT tạo.
-            # Với key `homeless`: KHÔNG dùng ảnh nền xanh kịch bản (bỏ qua hoàn toàn).
+            # Với key `homeless` / `mafia`: KHÔNG dùng ảnh nền xanh kịch bản (bỏ qua hoàn toàn).
             if not is_homeless_proj:
                 try:
+                    from PIL import Image as _PILImg
                     from backend.renderer import (
                         _is_green_plate_clean_and_large,
                         ensure_project_script_green_images,
                     )
-
-                    from PIL import Image as _PILImg
 
                     green_cands = (
                         target_green,
@@ -6216,6 +6275,7 @@ class ADASScriptEngine:
                         final_renders_dir / "THUMBNAIL-NENXANH.png",
                         final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                         final_proj_dir / "THUMBNAIL-NENXANH.png",
+                        proj_dir / "script_green_images" / "green_part_01.png",
                     )
                     for g_cand in green_cands:
                         if not g_cand.exists():
@@ -6241,13 +6301,19 @@ class ADASScriptEngine:
                             break
 
                     if valid_green is not None:
-                        if not target_green.exists():
-                            shutil.copy2(valid_green, target_green)
-                        part1_chk = proj_dir / "script_green_images" / "green_part_01.png"
-                        if not part1_chk.exists():
-                            ensure_project_script_green_images(
-                                proj_dir=proj_dir, renders_dir=proj_dir, proj_name=ma_id
+                        has_valid_green = True
+                        if (self.projects_dir / ma_id).exists():
+                            if not target_green.exists():
+                                shutil.copy2(valid_green, target_green)
+                            part1_chk = (
+                                proj_dir / "script_green_images" / "green_part_01.png"
                             )
+                            if not part1_chk.exists():
+                                ensure_project_script_green_images(
+                                    proj_dir=proj_dir,
+                                    renders_dir=proj_dir,
+                                    proj_name=ma_id,
+                                )
                 except Exception:
                     pass
 
@@ -6276,10 +6342,11 @@ class ADASScriptEngine:
             except Exception:
                 pass
 
+        has_all_required_thumbs = (found_thumb is not None) and has_valid_green
         return (
-            (found_thumb is not None),
+            has_all_required_thumbs,
             (found_seo is not None),
-            (str(found_thumb) if found_thumb else ""),
+            (str(found_thumb) if has_all_required_thumbs else ""),
         )
 
     def has_valid_video_mp4_on_disk(
@@ -9899,7 +9966,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 saved_paths = _save_matched_pair(
                     target_file.read_bytes(), green_already_attempted=False
                 )
-                self._update_idea_record(ma_id, has_thumbnail=True)
+                has_req_thumbs = is_homeless_proj or len(saved_paths) > 1
+                self._update_idea_record(ma_id, has_thumbnail=has_req_thumbs)
                 self._emit(
                     message=f"[{ma_id}] ♻️ Đã có sẵn {target_file.name} -> giữ nguyên không vẽ thừa ({len(saved_paths)} ảnh)!"
                 )
@@ -10017,7 +10085,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     chatgpt_green_9_16_bytes=chatgpt_green_9_16,
                     green_already_attempted=True,
                 )
-                self._update_idea_record(ma_id, has_thumbnail=True)
+                has_pair_ok = len(saved_paths) > 1
+                self._update_idea_record(ma_id, has_thumbnail=has_pair_ok)
                 self._emit(
                     message=f"[{ma_id}] ✅ Đã hoàn tất cặp 1 ảnh THUMBNAIL.png + {1 if len(saved_paths) > 1 else 0} ảnh THUMBNAIL-NENXANH.png -> Lưu vào {proj_dir}!"
                 )
@@ -10081,10 +10150,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     self._update_idea_record(ma_id, has_thumbnail=True)
                     return [str(target_thumb)]
                 if not _is_green_plate_clean_and_large(target_green):
+                    use_acc_gr = (
+                        None
+                        if (
+                            preferred_acc_id
+                            and preferred_acc_id in (exclude_accs or set())
+                        )
+                        else preferred_acc_id
+                    )
                     session_gr = None
                     try:
                         session_gr = ChatGPTWebSession(
-                            project_id=f"{ma_id}_GREEN_9_16", acc_id=preferred_acc_id
+                            project_id=f"{ma_id}_GREEN_9_16", acc_id=use_acc_gr
                         )
                         self._generate_chatgpt_9_16_green_from_reference_sync(
                             session=session_gr,
@@ -10107,7 +10184,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                 session_gr.close_session_tab(keep_open=False)
                             except Exception:
                                 pass
-                self._update_idea_record(ma_id, has_thumbnail=True)
+                has_green_ok = _is_green_plate_clean_and_large(target_green)
+                self._update_idea_record(ma_id, has_thumbnail=has_green_ok)
                 return _current_thumb_result()
 
             # Chuẩn bị dữ liệu Idea + Step 2 + Step 6 để tạo Thumbnail
@@ -10284,7 +10362,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 message=f"🎨 [{idx}/{len(missing_ids)}] Đang tạo bù Thumbnail cho kịch bản {mid}...",
             )
             paths = self.ensure_project_thumbnail_with_failover_sync(mid)
-            if paths:
+            has_th_after, _, _ = self.has_thumbnail_and_seo_on_disk(mid)
+            if paths and has_th_after:
                 fixed_ids.append(mid)
             else:
                 still_missing.append(mid)
@@ -10481,6 +10560,47 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         vcfg = video_settings or {}
         job_channel_key = self._get_idea_channel_key(ma_id=ma_id)
+        try:
+            from backend.renderer import check_render_thumbnail_prerequisites
+
+            proj_dir_chk = self.projects_dir / ma_id
+            final_proj_dir_chk = (
+                getattr(self, "final_video_dir", None) or self.projects_dir
+            ) / ma_id
+            preq = check_render_thumbnail_prerequisites(
+                proj_dir=proj_dir_chk,
+                final_proj_dir=final_proj_dir_chk,
+                proj_name=ma_id,
+                channel_key=job_channel_key,
+            )
+            if not preq.get("ok"):
+                missing_lbl = ", ".join(preq.get("missing") or ["THUMBNAIL.png"])
+                err_msg = (
+                    f"[{ma_id}] ⛔ CHẶN RENDER MP4: Thiếu {missing_lbl} "
+                    f"(Key={job_channel_key.upper()}). Không tiến hành render khi chưa đủ ảnh bắt buộc!"
+                )
+                log_error("VIDEO", err_msg, project_id=ma_id)
+                self._update_idea_record(
+                    ma_id,
+                    has_script=True,
+                    has_thumbnail=False,
+                    status="SCRIPT_DONE",
+                    current_step=f"⛔ Không render: Thiếu {missing_lbl}",
+                )
+                self._emit(
+                    current_ma_id=ma_id,
+                    current_step=f"⛔ Chặn Render — Thiếu {missing_lbl}",
+                    message=err_msg,
+                )
+                return False
+        except Exception as e_preq:
+            log_warn(
+                "VIDEO",
+                f"[{ma_id}] Lỗi kiểm tra điều kiện ảnh trước render: {e_preq}",
+                project_id=ma_id,
+            )
+            return False
+
         job_payload = [
             {
                 "name": ma_id,
@@ -10671,42 +10791,61 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             else:
                 master_seo_content = master_seo_file.read_text(encoding="utf-8")
 
-            thumb_files = [
-                str(p)
-                for p in (
-                    proj_dir / "THUMBNAIL.png",
-                    proj_dir / f"{ma_id}_THUMBNAIL.png",
-                    proj_dir / f"{ma_id}_THUMBNAIL_1.png",
-                )
-                if p.exists() and p.stat().st_size > 4_000
-            ]
-            if not thumb_files and renders_dir.exists():
-                thumb_files = [
-                    str(p)
-                    for p in sorted(renders_dir.glob("*THUMBNAIL*.png"))
-                    if "NENXANH" not in p.name.upper() and p.stat().st_size > 4_000
-                ]
+            from backend.renderer import check_render_thumbnail_prerequisites
 
-            # BẮT BUỘC MỌI KỊCH BẢN PHẢI CÓ THUMBNAIL: Nếu dự án đã có kịch bản nhưng chưa có Thumbnail -> Tự động tạo bù (kèm đổi nick nếu limit/lỗi)!
-            if len(thumb_files) == 0 and not self.should_stop:
+            job_ck_existing = self._get_idea_channel_key(ma_id=ma_id, idea=idea)
+            final_proj_dir_ex = (
+                getattr(self, "final_video_dir", None) or self.projects_dir
+            ) / ma_id
+            preq_existing = check_render_thumbnail_prerequisites(
+                proj_dir=proj_dir,
+                final_proj_dir=final_proj_dir_ex,
+                proj_name=ma_id,
+                channel_key=job_ck_existing,
+            )
+
+            # BẮT BUỘC MỌI KỊCH BẢN PHẢI CÓ ĐỦ THUMBNAIL (+ NỀN XANH NẾU LÀ padre_mx):
+            # Nếu dự án đã có kịch bản nhưng thiếu ảnh bắt buộc -> Tự động tạo bù (kèm đổi nick nếu limit/lỗi)!
+            if not preq_existing.get("ok") and not self.should_stop:
+                missing_str = ", ".join(
+                    preq_existing.get("missing") or ["THUMBNAIL.png"]
+                )
                 try:
                     self._emit(
                         current_ma_id=ma_id,
-                        current_step="STEP 7 — Đang tạo bổ sung Thumbnail 16:9 (6 dòng chữ)",
+                        current_step=f"STEP 7 — Đang tạo bổ sung {missing_str}",
                         progress=92.0,
-                        message=f"[{ma_id}] 🎨 Kịch bản ({existing_pure_chars:,} chữ) & SEO đã có sẵn nhưng chưa có Thumbnail -> Đang tạo bổ sung 1 Thumbnail 16:9...",
+                        message=f"[{ma_id}] 🎨 Kịch bản ({existing_pure_chars:,} chữ) & SEO đã có sẵn nhưng thiếu {missing_str} -> Đang tạo bổ sung...",
                     )
-                    thumb_files = self.ensure_project_thumbnail_with_failover_sync(
+                    self.ensure_project_thumbnail_with_failover_sync(
                         ma_id=ma_id,
                         preferred_acc_id=preferred_acc_id,
                         exclude_accs=exclude_accs,
+                        max_failover_rounds=2,
                     )
                 except Exception as e_th_ex:
                     log_warn(
                         "SCRIPT",
-                        f"[{ma_id}] Không thể tạo bổ sung Thumbnail: {e_th_ex}",
+                        f"[{ma_id}] Không thể tạo bổ sung {missing_str}: {e_th_ex}",
                         project_id=ma_id,
                     )
+                preq_existing = check_render_thumbnail_prerequisites(
+                    proj_dir=proj_dir,
+                    final_proj_dir=final_proj_dir_ex,
+                    proj_name=ma_id,
+                    channel_key=job_ck_existing,
+                )
+
+            thumb_files = [
+                p
+                for p in (
+                    preq_existing.get("thumbnail_path"),
+                    preq_existing.get("green_path"),
+                )
+                if p
+            ]
+            has_th_now = bool(preq_existing.get("ok"))
+            missing_after_ex = preq_existing.get("missing") or []
 
             video_triggered = False
             if (
@@ -10714,20 +10853,41 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 and not defer_video_handoff
                 and self.video_pipeline is not None
             ):
-                self._emit(
-                    current_ma_id=ma_id,
-                    current_step="🎬 Đẩy kịch bản có sẵn sang tạo Voice & Render MP4",
-                    progress=95.0,
-                    message=f"[{ma_id}] 🚀 Đang chuyển kịch bản có sẵn ({existing_pure_chars:,} chữ) sang tạo Voice & Render Video MP4...",
-                )
-                video_triggered = self._enqueue_or_start_video_job(
-                    ma_id=ma_id,
-                    script_text=existing_script_text,
-                    seo_text=master_seo_content,
-                    video_settings=video_settings,
-                )
+                if has_th_now:
+                    self._emit(
+                        current_ma_id=ma_id,
+                        current_step="🎬 Đẩy kịch bản có sẵn sang tạo Voice & Render MP4",
+                        progress=95.0,
+                        message=f"[{ma_id}] 🚀 Đang chuyển kịch bản có sẵn ({existing_pure_chars:,} chữ) sang tạo Voice & Render Video MP4...",
+                    )
+                    video_triggered = self._enqueue_or_start_video_job(
+                        ma_id=ma_id,
+                        script_text=existing_script_text,
+                        seo_text=master_seo_content,
+                        video_settings=video_settings,
+                    )
+                else:
+                    missing_lbl_ex = ", ".join(missing_after_ex)
+                    self._update_idea_record(
+                        ma_id,
+                        locked_title=locked_title,
+                        pure_char_count=existing_pure_chars,
+                        has_script=True,
+                        has_seo=True,
+                        has_thumbnail=False,
+                        status="SCRIPT_DONE",
+                        current_step=f"⛔ Không render: Thiếu {missing_lbl_ex}",
+                    )
+                    self._emit(
+                        status="running" if self.is_running else "completed",
+                        current_ma_id=ma_id,
+                        current_step=f"⛔ Chặn Render {ma_id}: Thiếu {missing_lbl_ex}",
+                        progress=98.0 if self.is_running else 100.0,
+                        message=f"[{ma_id}] ⛔ Kịch bản ({existing_pure_chars:,} chữ) đã có nhưng thiếu {missing_lbl_ex} -> KHÔNG tiến hành Render MP4!",
+                    )
             else:
-                has_th_now = len(thumb_files) > 0
+                req_cnt_ex = 2 if preq_existing.get("requires_green") else 1
+                got_cnt_ex = len(thumb_files)
                 self._update_idea_record(
                     ma_id,
                     locked_title=locked_title,
@@ -10737,18 +10897,30 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     has_thumbnail=has_th_now,
                     status="SCRIPT_DONE",
                     current_step=(
-                        f"📝 Đã xong Kịch bản ({existing_pure_chars:,} chữ) + SEO + {len(thumb_files)}/1 Thumbnail — Sẵn sàng Render MP4"
-                        if not auto_produce_video
-                        else f"📝 Đã có kịch bản ({existing_pure_chars:,} chữ) — Chờ Phase 2 tạo Voice & Video"
+                        f"📝 Đã xong Kịch bản ({existing_pure_chars:,} chữ) + SEO + {got_cnt_ex}/{req_cnt_ex} Ảnh — Sẵn sàng Render MP4"
+                        if (has_th_now and not auto_produce_video)
+                        else (
+                            f"⛔ Thiếu {', '.join(missing_after_ex)} — Chưa thể Render MP4"
+                            if not has_th_now
+                            else f"📝 Đã có kịch bản ({existing_pure_chars:,} chữ) — Chờ Phase 2 tạo Voice & Video"
+                        )
                     ),
                 )
                 if not auto_produce_video and not defer_video_handoff:
                     self._emit(
                         status="running" if self.is_running else "completed",
                         current_ma_id=ma_id,
-                        current_step=f"✅ Xong {ma_id} (Kịch bản + SEO + Thumbnail)",
+                        current_step=(
+                            f"✅ Xong {ma_id} (Kịch bản + SEO + Ảnh)"
+                            if has_th_now
+                            else f"⛔ Xong Kịch bản {ma_id} (Thiếu {', '.join(missing_after_ex)})"
+                        ),
                         progress=98.0 if self.is_running else 100.0,
-                        message=f"[{ma_id}] 🎉 Đã hoàn tất Kịch bản ({existing_pure_chars:,} chữ) + SEO + {len(thumb_files)}/1 Thumbnail (Chế độ Không Render Video)!",
+                        message=(
+                            f"[{ma_id}] 🎉 Đã hoàn tất Kịch bản ({existing_pure_chars:,} chữ) + SEO + {got_cnt_ex}/{req_cnt_ex} Ảnh!"
+                            if has_th_now
+                            else f"[{ma_id}] ⚠️ Kịch bản ({existing_pure_chars:,} chữ) đã xong nhưng thiếu {', '.join(missing_after_ex)} -> Chưa cho phép Render MP4!"
+                        ),
                     )
 
             return {
@@ -11541,11 +11713,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
             master_seo_file.write_text(master_seo_content, encoding="utf-8")
 
-            # --- Vẫn trên cùng New Chat #4: Vẽ Thumbnail 80/20 + Ảnh nền xanh ---
-            if not chat4_seo_thumb_opened:
-                session.start_fresh_chat("NEW_CHAT_4_SKILL_05_SEO_AND_THUMB")
-                chat4_seo_thumb_opened = True
-
+            # --- Mở đoạn chat mới SẠCH để vẽ Thumbnail 80/20 + Ảnh nền xanh ---
+            # Dùng reuse_current_chat=False để tránh thread SEO dài khiến ChatGPT trả lời chữ thay vì gọi Image Tool.
             thumbnail_paths: List[str] = []
             try:
                 thumbnail_paths = self.generate_and_verify_three_thumbnails_sync(
@@ -11557,7 +11726,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     idea=idea,
                     proj_dir=proj_dir,
                     renders_dir=proj_dir,
-                    reuse_current_chat=True,
+                    reuse_current_chat=False,
+                    max_attempts=3,
                 )
             except Exception as e_thumb:
                 if self.should_stop:
@@ -11566,17 +11736,29 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     message=f"[{ma_id}] ⚠️ Tạo Thumbnail trên {session.cfg['label']} gặp gián đoạn ({e_thumb}) -> Sẽ chuyển sang tài khoản khác để tạo lại!"
                 )
 
-            # KIỂM TRA LẠI SAU KHI XONG: Nếu chưa có THUMBNAIL.png -> Chuyển sang nick khác thử bù đúng 1 vòng
-            has_main_thumb_disk = (
-                (proj_dir / "THUMBNAIL.png").exists()
-                and (proj_dir / "THUMBNAIL.png").stat().st_size > 4_000
+            from backend.renderer import check_render_thumbnail_prerequisites
+
+            job_ck_s7 = self._get_idea_channel_key(ma_id=ma_id, idea=idea)
+            final_proj_dir_s7 = (
+                getattr(self, "final_video_dir", None) or self.projects_dir
+            ) / ma_id
+            preq_after_s7 = check_render_thumbnail_prerequisites(
+                proj_dir=proj_dir,
+                final_proj_dir=final_proj_dir_s7,
+                proj_name=ma_id,
+                channel_key=job_ck_s7,
             )
-            if not thumbnail_paths and not has_main_thumb_disk and not self.should_stop:
+
+            # KIỂM TRA LẠI SAU KHI XONG: Nếu thiếu THUMBNAIL.png hoặc (với padre_mx) thiếu THUMBNAIL-NENXANH.png -> Thử bù 1 vòng trên nick dự phòng
+            if not preq_after_s7.get("ok") and not self.should_stop:
+                missing_s7_str = ", ".join(
+                    preq_after_s7.get("missing") or ["THUMBNAIL.png"]
+                )
                 self._emit(
                     current_ma_id=ma_id,
-                    current_step="STEP 7 — Đổi sang nick khác tạo lại Thumbnail",
+                    current_step=f"STEP 7 — Đổi sang nick khác tạo bù {missing_s7_str}",
                     progress=95.0,
-                    message=f"[{ma_id}] 🔄 Kiểm tra thấy chưa có Thumbnail trên {session.cfg['label']} -> Đang chuyển sang tài khoản dự phòng (tối đa 1 vòng)...",
+                    message=f"[{ma_id}] 🔄 Sau Step 7 còn thiếu {missing_s7_str} trên {session.cfg['label']} -> Đang chuyển sang tài khoản dự phòng (tối đa 1 vòng)...",
                 )
                 try:
                     session.close_session_tab(keep_open=False)
@@ -11588,15 +11770,32 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     exclude_accs={getattr(session, "acc_id", "")},
                     max_failover_rounds=1,
                 )
+                preq_after_s7 = check_render_thumbnail_prerequisites(
+                    proj_dir=proj_dir,
+                    final_proj_dir=final_proj_dir_s7,
+                    proj_name=ma_id,
+                    channel_key=job_ck_s7,
+                )
+
+            thumbnail_paths = [
+                p
+                for p in (
+                    preq_after_s7.get("thumbnail_path"),
+                    preq_after_s7.get("green_path"),
+                )
+                if p
+            ]
+            has_all_thumbs_s7 = bool(preq_after_s7.get("ok"))
+            missing_after_s7 = preq_after_s7.get("missing") or []
 
             self._update_idea_record(
                 ma_id,
                 has_seo=True,
-                has_thumbnail=bool(thumbnail_paths),
+                has_thumbnail=has_all_thumbs_s7,
             )
 
             # ------------------------------------------------------------------
-            # BƯỚC 8 (AUTO-HANDOFF): ĐẨY SANG SẢN XUẤT VIDEO (HOẶC CHỜ PHASE 2 NẾU CHẠY ĐA LUỒNG)
+            # BƯỚC 8 (AUTO-HANDOFF): ĐẨY SANG SẢN XUẤT VIDEO (CHẶN NẾU THIẾU ẢNH BẮT BUỘC)
             # ------------------------------------------------------------------
             video_triggered = False
             if (
@@ -11605,34 +11804,66 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 and not defer_video_handoff
                 and self.video_pipeline is not None
             ):
-                self._emit(
-                    current_step="Auto-Handoff -> Render Video",
-                    progress=97.0,
-                    message=f"[{ma_id}] 🚀 Kịch bản ({total_pure:,} chữ), SEO & {len(thumbnail_paths)}/1 Thumbnail đã xong! Đang đẩy sang Render Video...",
-                )
-                video_triggered = self._enqueue_or_start_video_job(
-                    ma_id=ma_id,
-                    script_text=full_clean_script,
-                    seo_text=master_seo_content,
-                    video_settings=video_settings,
-                )
+                if has_all_thumbs_s7:
+                    self._emit(
+                        current_step="Auto-Handoff -> Render Video",
+                        progress=97.0,
+                        message=f"[{ma_id}] 🚀 Kịch bản ({total_pure:,} chữ), SEO & {len(thumbnail_paths)} ảnh bắt buộc đã đủ! Đang đẩy sang Render Video...",
+                    )
+                    video_triggered = self._enqueue_or_start_video_job(
+                        ma_id=ma_id,
+                        script_text=full_clean_script,
+                        seo_text=master_seo_content,
+                        video_settings=video_settings,
+                    )
+                else:
+                    missing_lbl_s7 = ", ".join(missing_after_s7)
+                    self._update_idea_record(
+                        ma_id,
+                        status="SCRIPT_DONE",
+                        has_script=True,
+                        has_thumbnail=False,
+                        current_step=f"⛔ Không render: Thiếu {missing_lbl_s7}",
+                    )
+                    self._emit(
+                        current_ma_id=ma_id,
+                        current_step=f"⛔ Chặn Render — Thiếu {missing_lbl_s7}",
+                        progress=98.0 if self.is_running else 100.0,
+                        message=f"[{ma_id}] ⛔ CHẶN RENDER MP4: Thiếu {missing_lbl_s7}. Hệ thống KHÔNG tiến hành render khi chưa tạo được đủ ảnh!",
+                    )
             else:
+                req_cnt_s7 = 2 if preq_after_s7.get("requires_green") else 1
                 self._update_idea_record(
                     ma_id,
                     status="SCRIPT_DONE",
                     has_script=True,
-                    current_step=f"📝 Đã xong Kịch bản ({total_pure:,} chữ) & {len(thumbnail_paths)}/1 Thumbnail — Sẵn sàng Render MP4",
+                    has_thumbnail=has_all_thumbs_s7,
+                    current_step=(
+                        f"📝 Đã xong Kịch bản ({total_pure:,} chữ) & {len(thumbnail_paths)}/{req_cnt_s7} Ảnh — Sẵn sàng Render MP4"
+                        if has_all_thumbs_s7
+                        else f"⛔ Đã xong Kịch bản nhưng thiếu {', '.join(missing_after_s7)} — Chưa thể Render MP4"
+                    ),
                 )
 
             if not video_triggered:
                 self._emit(
                     status="running" if self.is_running else "completed",
                     current_ma_id=ma_id,
-                    current_step=f"✅ Hoàn tất {ma_id} — Đang chờ các luồng còn lại..."
-                    if self.is_running
-                    else "Hoàn tất Kịch bản & SEO",
+                    current_step=(
+                        f"✅ Hoàn tất {ma_id} — Đang chờ các luồng còn lại..."
+                        if (has_all_thumbs_s7 and self.is_running)
+                        else (
+                            "Hoàn tất Kịch bản & SEO"
+                            if has_all_thumbs_s7
+                            else f"⛔ Hoàn tất Kịch bản {ma_id} (Thiếu {', '.join(missing_after_s7)})"
+                        )
+                    ),
                     progress=98.0 if self.is_running else 100.0,
-                    message=f"[{ma_id}] 🎉 Hoàn tất Kịch bản ({total_pure:,} chữ) + SEO Pack + {len(thumbnail_paths)}/1 Thumbnail tại {renders_dir}!",
+                    message=(
+                        f"[{ma_id}] 🎉 Hoàn tất Kịch bản ({total_pure:,} chữ) + SEO Pack + {len(thumbnail_paths)} Ảnh tại {renders_dir}!"
+                        if has_all_thumbs_s7
+                        else f"[{ma_id}] ⚠️ Kịch bản ({total_pure:,} chữ) đã xong nhưng thiếu {', '.join(missing_after_s7)} -> Không tự động Render MP4!"
+                    ),
                 )
             completed_ok = True
             return {
@@ -11735,9 +11966,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         }
         target_ids = ma_ids or [it.get("ma_id") for it in ideas if it.get("ma_id")]
 
+        from backend.renderer import check_render_thumbnail_prerequisites
+
         jobs_to_push: List[Dict[str, str]] = []
         skipped_no_script: List[str] = []
         skipped_already_mp4: List[str] = []
+        skipped_missing_thumbnails: List[str] = []
         now_ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
 
         for mid in target_ids:
@@ -11758,6 +11992,35 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 continue
 
             idea = ideas_map.get(mid) or {"ma_id": mid}
+            job_ck = self._get_idea_channel_key(ma_id=mid, idea=idea)
+            final_proj_dir = (
+                getattr(self, "final_video_dir", None) or self.projects_dir
+            ) / mid
+            preq = check_render_thumbnail_prerequisites(
+                proj_dir=proj_dir,
+                final_proj_dir=final_proj_dir,
+                proj_name=mid,
+                channel_key=job_ck,
+            )
+            if not preq.get("ok"):
+                missing_lbl = ", ".join(preq.get("missing") or ["THUMBNAIL.png"])
+                skipped_missing_thumbnails.append(f"{mid} (thiếu {missing_lbl})")
+                log_warn(
+                    "VIDEO",
+                    f"[{mid}] ⛔ KHÔNG RENDER MP4: Thiếu {missing_lbl} (Key={job_ck.upper()}).",
+                    project_id=mid,
+                )
+                if mid in ideas_map:
+                    ideas_map[mid]["has_script"] = True
+                    ideas_map[mid]["has_thumbnail"] = False
+                    ideas_map[mid]["pure_char_count"] = sc_chars
+                    ideas_map[mid]["status"] = "SCRIPT_DONE"
+                    ideas_map[mid]["current_step"] = (
+                        f"⛔ Không render: Thiếu {missing_lbl}"
+                    )
+                    ideas_map[mid]["updated_at"] = now_ts_str
+                continue
+
             step2_file = proj_dir / "step2_title_thumbnail.txt"
             step2_out = (
                 step2_file.read_text(encoding="utf-8") if step2_file.exists() else ""
@@ -11777,6 +12040,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
             if mid in ideas_map:
                 ideas_map[mid]["has_script"] = True
+                ideas_map[mid]["has_thumbnail"] = True
                 ideas_map[mid]["pure_char_count"] = sc_chars
                 ideas_map[mid]["status"] = "VIDEO_QUEUED"
                 ideas_map[mid]["current_step"] = (
@@ -11789,16 +12053,26 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     "name": mid,
                     "script_text": sc_text,
                     "seo_text": seo_text,
-                    "channel_key": self._get_idea_channel_key(ma_id=mid, idea=idea),
+                    "channel_key": job_ck,
                 }
             )
 
-        if jobs_to_push:
+        if jobs_to_push or skipped_missing_thumbnails:
             with self.ideas_io_lock:
                 self.save_ideas_list(ideas)
 
         if not jobs_to_push:
-            msg = "Không có dự án nào đủ điều kiện Render MP4 (Cần viết xong kịch bản trước)."
+            if skipped_missing_thumbnails:
+                msg = (
+                    f"⛔ KHÔNG THỂ RENDER MP4: Thiếu ảnh bắt buộc ở "
+                    f"{', '.join(skipped_missing_thumbnails)}. Phải tạo đủ Thumbnail & Ảnh nền xanh trước khi Render!"
+                )
+                self._emit(
+                    current_step="⛔ Chặn Render — Thiếu Thumbnail / Nền Xanh",
+                    message=msg,
+                )
+            else:
+                msg = "Không có dự án nào đủ điều kiện Render MP4 (Cần viết xong kịch bản trước)."
             log_warn("VIDEO", msg)
             return {
                 "started": False,
@@ -11806,6 +12080,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 "queued_ids": [],
                 "skipped_no_script": skipped_no_script,
                 "skipped_already_mp4": skipped_already_mp4,
+                "skipped_missing_thumbnails": skipped_missing_thumbnails,
                 "message": msg,
             }
 
@@ -11838,11 +12113,16 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
 
         queued_ids = [j["name"] for j in jobs_to_push]
+        skip_msg = (
+            f" (Bỏ qua {len(skipped_missing_thumbnails)} mã thiếu ảnh: {', '.join(skipped_missing_thumbnails)})"
+            if skipped_missing_thumbnails
+            else ""
+        )
         self._emit(
             status="running",
             current_step="🎬 Đang tạo Voice & Render Video MP4",
             progress=92.0,
-            message=f"🎬 Đã đẩy {len(queued_ids)} kịch bản ({', '.join(queued_ids)}) vào hàng đợi tạo Voice & Render MP4!",
+            message=f"🎬 Đã đẩy {len(queued_ids)} kịch bản ({', '.join(queued_ids)}) vào hàng đợi tạo Voice & Render MP4!{skip_msg}",
         )
         return {
             "started": started,
@@ -11850,7 +12130,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             "queued_ids": queued_ids,
             "skipped_no_script": skipped_no_script,
             "skipped_already_mp4": skipped_already_mp4,
-            "message": f"Đã đẩy {len(queued_ids)} kịch bản sang tạo Voice & Render Video MP4!",
+            "skipped_missing_thumbnails": skipped_missing_thumbnails,
+            "message": f"Đã đẩy {len(queued_ids)} kịch bản sang tạo Voice & Render Video MP4!{skip_msg}",
         }
 
     def start_run_ideas_async(

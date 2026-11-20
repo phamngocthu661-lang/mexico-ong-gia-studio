@@ -1127,6 +1127,39 @@ class ProductionPipeline:
                             raw_job_ck = "padre_mx"
                     job_channel_key = normalize_channel_key(raw_job_ck)
 
+                    # CHỐT CHẶN BẮT BUỘC TRƯỚC VOICE & RENDER: Phải có đủ THUMBNAIL.png (+ THUMBNAIL-NENXANH.png cho padre_mx)!
+                    import backend.renderer as _renderer_preq_mod
+
+                    preq_early = _renderer_preq_mod.check_render_thumbnail_prerequisites(
+                        proj_dir=proj_dir,
+                        final_proj_dir=final_proj_dir,
+                        proj_name=proj_name,
+                        channel_key=job_channel_key,
+                    )
+                    if not preq_early.get("ok"):
+                        missing_early = ", ".join(
+                            preq_early.get("missing") or ["THUMBNAIL.png"]
+                        )
+                        msg_preq = (
+                            f"⛔ KHÔNG RENDER MP4: Thiếu {missing_early} "
+                            f"(Key={job_channel_key.upper()}). Bắt buộc phải có đủ ảnh trước khi Render!"
+                        )
+                        log_error(
+                            f"[{proj_name}] {msg_preq}",
+                            category="RENDER",
+                            project_id=proj_name,
+                        )
+                        self._update_job_card_status(
+                            proj_name,
+                            "ERROR",
+                            f"⛔ Không Render MP4: Thiếu {missing_early}",
+                            extra={"has_thumbnail": False},
+                        )
+                        with self.lock:
+                            failed_projects.append(f"{proj_name}: Thiếu {missing_early}")
+                            progress_map[proj_name] = 100.0
+                        return
+
                     # Luôn đọc cấu hình Voice mới nhất (ưu tiên cấu hình đi kèm job hoặc vừa chọn trên UI)
                     v_cfg = load_voice_config()
                     if (
@@ -1814,6 +1847,32 @@ class ProductionPipeline:
                                     category="RENDER",
                                     project_id=proj_name,
                                 )
+
+                            # CHỐT CHẶN CUỐI TRƯỚC KHI GHÉP FFmpeg: Bắt buộc phải có đủ THUMBNAIL.png (+ THUMBNAIL-NENXANH.png nếu padre_mx)
+                            preq_render = _renderer_mod.check_render_thumbnail_prerequisites(
+                                proj_dir=proj_dir,
+                                final_proj_dir=final_proj_dir,
+                                proj_name=proj_name,
+                                channel_key=job_channel_key,
+                            )
+                            if not preq_render.get("ok"):
+                                missing_ren = ", ".join(
+                                    preq_render.get("missing") or ["THUMBNAIL.png"]
+                                )
+                                raise RuntimeError(
+                                    f"⛔ CHẶN RENDER FFmpeg [{proj_name}]: Thiếu {missing_ren} (Key={job_channel_key.upper()}). Không render khi chưa đủ ảnh bắt buộc!"
+                                )
+                            if job_channel_key not in ("homeless", "mafia") and not (
+                                green_screen_img and os.path.exists(green_screen_img)
+                            ):
+                                if preq_render.get("green_path") and os.path.exists(
+                                    preq_render["green_path"]
+                                ):
+                                    green_screen_img = preq_render["green_path"]
+                                else:
+                                    raise RuntimeError(
+                                        f"⛔ CHẶN RENDER FFmpeg [{proj_name}]: Chưa có ảnh nhân vật nền xanh THUMBNAIL-NENXANH.png hợp lệ!"
+                                    )
 
                             # Khởi tạo / cập nhật Bộ Điều Phối Hình Ảnh (`visual_cues.json` + `script_green_images/green_part_01..07.png` + `TIMESTAMPS.txt`)
                             cues_json_path = assets_dir / "visual_cues.json"

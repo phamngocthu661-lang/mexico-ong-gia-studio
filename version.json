@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.1",
-  "build_number": 221,
-  "released_at": "2026-11-20 20:11:00",
+  "version": "V2.2.2",
+  "build_number": 222,
+  "released_at": "2026-11-20 22:18:00",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.2.1 (Build #221): Chặn triệt để lỗi vẽ Thumbnail và Ảnh Nền Xanh lặp liên tục khi viết kịch bản — đảm bảo mỗi kịch bản chỉ tạo đúng 1 ảnh THUMBNAIL.png (và 1 ảnh THUMBNAIL-NENXANH.png cho key Mexico Ông Già; key Homeless/Mafia chỉ tạo 1 THUMBNAIL.png), tắt tự đánh giá QA vẽ lại 5 lần, chống gọi trùng đa tầng & không tự xóa ảnh nền xanh 9:16."
+  "changelog": "V2.2.2 (Build #222): Sửa lỗi không thu được ảnh Thumbnail & Ảnh Nền Xanh từ ChatGPT Web (gỡ điều kiện nghẽn 'Creating image', vá dán prompt ProseMirror khi đính kèm ảnh tham chiếu, mở New Chat sạch cho Step 7, bổ sung 1x nhắc gọi Image Tool nếu ChatGPT trả lời chữ) và bổ sung Chốt Chặn Bắt Buộc Trước Khi Render (chặn Render MP4 & trả lỗi rõ ràng nếu thiếu THUMBNAIL.png hoặc thiếu THUMBNAIL-NENXANH.png đối với key padre_mx)."
 }
