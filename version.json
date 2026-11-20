@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.0",
-  "build_number": 220,
-  "released_at": "2026-11-20 09:15:00",
+  "version": "V2.2.1",
+  "build_number": 221,
+  "released_at": "2026-11-20 20:11:00",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.2.0 (Build #220): (1) Chống treo đơ & tăng tốc 2-4x Voice AI/FFmpeg/Chrome (In-process OmniVoice tắt cổng 3900, giới hạn VRAM GPU 6GB-8GB an toàn, FFmpeg Watchdog tự ngắt treo + nút Dừng phản hồi nhanh, ưu tiên chọn đúng Python CUDA); (2) Cấp mã dự án & video theo từng máy (VD: MAY1_MXC_001, MAY2_HL_002, MAY1_MF_003) có ô chỉnh Mã Máy trực tiếp trên UI và bảo vệ không bị ghi đè khi cập nhật OTA."
+  "changelog": "V2.2.1 (Build #221): Chặn triệt để lỗi vẽ Thumbnail và Ảnh Nền Xanh lặp liên tục khi viết kịch bản — đảm bảo mỗi kịch bản chỉ tạo đúng 1 ảnh THUMBNAIL.png (và 1 ảnh THUMBNAIL-NENXANH.png cho key Mexico Ông Già; key Homeless/Mafia chỉ tạo 1 THUMBNAIL.png), tắt tự đánh giá QA vẽ lại 5 lần, chống gọi trùng đa tầng & không tự xóa ảnh nền xanh 9:16."
 }

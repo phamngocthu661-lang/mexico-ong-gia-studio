@@ -1171,8 +1171,6 @@ def extract_clean_large_green_character_bytes(
 
 
 def _write_green_plate_stamp(target_path: Path) -> None:
-    if not _DEEPLAB_CACHE.get("last_used_deeplab", False):
-        return
     try:
         target_path = Path(target_path)
         for st_dir in (
@@ -1252,11 +1250,11 @@ def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
             return False
         arr = np.asarray(im, dtype=np.uint8)
         is_exact_green = (
-            (arr[:, :, 0] == 0) & (arr[:, :, 1] == 255) & (arr[:, :, 2] == 0)
+            (arr[:, :, 0] <= 20) & (arr[:, :, 1] >= 220) & (arr[:, :, 2] <= 20)
         )
         green_ratio = float(np.mean(is_exact_green))
         char_ratio = 1.0 - green_ratio
-        if green_ratio < 0.12 or char_ratio < 0.22:
+        if green_ratio < 0.08 or char_ratio < 0.08:
             return False
         return True
     except Exception:

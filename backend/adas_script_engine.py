@@ -3131,7 +3131,7 @@ class ChatGPTWebSession:
                     const r = await fetch(src, {{ credentials: 'include' }});
                     if (r.ok) {{
                         const b = await r.blob();
-                        if (b && b.size > 15000) {{
+                        if (b && b.size > 4000) {{
                             const dUrl = await blobToDataUrl(b);
                             if (dUrl && dUrl.includes('base64,')) {{
                                 return {{ ok: true, b64: dUrl.split('base64,')[1], width: nw, height: nh, source: 'dom_fetch' }};
@@ -3240,12 +3240,15 @@ class ChatGPTWebSession:
                 continue
 
             is_streaming = bool(st.get("isStreaming"))
+            is_creating_img = bool(st.get("isCreatingImgText"))
             new_img_count = int(st.get("newImgCount") or 0)
             latest_text = str(st.get("latestText") or "").strip()
             alert_text = str(st.get("alertText") or "").strip()
 
             rl_img = _detect_rate_limit_in_text(alert_text, 500) or (
-                _detect_rate_limit_in_text(latest_text, 700) if not is_streaming else ""
+                _detect_rate_limit_in_text(latest_text, 700)
+                if (not is_streaming and not is_creating_img)
+                else ""
             )
             if rl_img:
                 mark_account_rate_limited(
@@ -3264,7 +3267,7 @@ class ChatGPTWebSession:
             if progress_cb:
                 progress_cb(step_label, elapsed)
 
-            if new_img_count > 0 and not is_streaming:
+            if new_img_count > 0 and not is_streaming and not is_creating_img:
                 # Chờ thêm 1.5s để ảnh render hoàn chỉnh độ phân giải cao nhất
                 time.sleep(1.5)
                 harv = _cdp_eval_js(
@@ -3280,7 +3283,12 @@ class ChatGPTWebSession:
                         "assistant_text": latest_text,
                     }
 
-            if not is_streaming and elapsed > 18:
+            if (
+                not is_streaming
+                and not is_creating_img
+                and new_img_count == 0
+                and elapsed > 25
+            ):
                 idle_after_stream_ticks += 1
                 if idle_after_stream_ticks >= 4:
                     harv = _cdp_eval_js(
@@ -3295,7 +3303,7 @@ class ChatGPTWebSession:
                             "source": harv.get("source", "api"),
                             "assistant_text": latest_text,
                         }
-                    if idle_after_stream_ticks >= 8 and latest_text:
+                    if idle_after_stream_ticks >= 10 and latest_text:
                         return {
                             "success": False,
                             "acc_id": self.acc_id,
@@ -3519,7 +3527,7 @@ E. THIẾT KẾ CẶP ẢNH THUMBNAIL (`THUMBNAIL.png` 80/20 16:9 + `THUMBNAIL-N
   + `PROTAGONIST_VISUAL_BRIEF`: Mô tả chi tiết ngoại hình độc bản, kiểu tóc/râu, kính mắt, trang phục khác biệt của người cha Mexico trong tập này để vẽ đồng bộ 2 ảnh.
 
 F. `STEP3_HANDOFF` (BÀN GIAO SANG STEP 2 OUTLINE 7 PART & STORY BLUEPRINT V4.0)
-- Tóm tắt đầy đủ hồ sơ nhân vật, tên tuổi, số tiền MXN, tài sản, giấy tờ công chứng (`Notaría Pública`, `Escritura`, `Usufructo`) và `ORIGINALITY_SIGNATURE` để chuyển sang lập Dàn Ý 7 Phần (`[PART 1]`..`[PART 7]` — `STORY_BLUEPRINT_V4`). Không viết kịch bản ở bước này."""
+- Tóm tắt đầy đủ hồ sơ nhân vật, tên tuổi, số tiền MXN, tài sản, giấy tờ công chứng (`Notaría Pública`, `Escritura`, `Usufructo`) và `ORIGINALITY_SIGNATURE` để chuyển sang lập Dàn Ý 7 Phần (`[PART 1]`..`[PART 7]` — `STORY_BLUEPRINT_V4`). Không viết kịch bản và tuyệt đối không gọi công cụ tạo/vẽ ảnh thật ở bước này (chỉ xuất văn bản)."""
 
 DEFAULT_MOTIF_REFERENCES = (
     "- Ref #01: Mi hijo me gritó que era un viejo inútil en su fiesta, sin saber que la casa seguía a mi nombre.\n"
@@ -4323,7 +4331,7 @@ YÊU CẦU THỰC THI NGAY TRỰC TIẾP TRÊN KHUNG CHAT (TUYỆT ĐỐI KHÔNG
    `VIETNAMESE_TRANSLATION: <bản dịch tiếng Việt>`
    `LOCKED_TITLE_PROMISE: <core Mafia × Underestimated Woman story promise & emotional justice payoff>`
    `TITLE_LOCKED: YES`
-4. Xuất `ORIGINALITY_SIGNATURE` (5 trường: `CENTRAL_INJUSTICE`, `LEVERAGE`, `EVIDENCE_MECHANISM`, `ANTAGONIST_COST`, `EARNED_PAYOFF`) và `STEP2_HANDOFF` để bàn giao sang STEP 2 (`viet-gian-y-nguoi-hau` V2.0 — 7 Parts, `en-US`). Không viết kịch bản ở bước này."""
+4. Xuất `ORIGINALITY_SIGNATURE` (5 trường: `CENTRAL_INJUSTICE`, `LEVERAGE`, `EVIDENCE_MECHANISM`, `ANTAGONIST_COST`, `EARNED_PAYOFF`) và `STEP2_HANDOFF` để bàn giao sang STEP 2 (`viet-gian-y-nguoi-hau` V2.0 — 7 Parts, `en-US`). Không viết kịch bản và không gọi công cụ vẽ/tạo ảnh thật ở bước này."""
 
     if ch_key == "homeless":
         skill01_p = ROOT_DIR / "adas_skills" / "01_title_homeless" / "SKILL.md"
@@ -4355,7 +4363,7 @@ YÊU CẦU THỰC THI NGAY TRỰC TIẾP TRÊN KHUNG CHAT (TUYỆT ĐỐI KHÔNG
    `VIETNAMESE_TRANSLATION: <bản dịch tiếng Việt>`
    `LOCKED_TITLE_PROMISE: <core story promise & hidden legacy payoff>`
    `TITLE_LOCKED: YES`
-4. Xuất `ORIGINALITY_SIGNATURE` (5 trường: `CENTRAL_INJUSTICE`, `LEVERAGE`, `EVIDENCE_MECHANISM`, `ANTAGONIST_COST`, `EARNED_PAYOFF`) và `STEP3_HANDOFF` để bàn giao sang STEP 2 (`Viet_Gian_Y_Homeless_v2.4` — 7 Parts, 70.000–80.000 ký tự `en-US`). Không viết kịch bản ở bước này."""
+4. Xuất `ORIGINALITY_SIGNATURE` (5 trường: `CENTRAL_INJUSTICE`, `LEVERAGE`, `EVIDENCE_MECHANISM`, `ANTAGONIST_COST`, `EARNED_PAYOFF`) và `STEP3_HANDOFF` để bàn giao sang STEP 2 (`Viet_Gian_Y_Homeless_v2.4` — 7 Parts, 70.000–80.000 ký tự `en-US`). Không viết kịch bản và không gọi công cụ vẽ/tạo ảnh thật ở bước này."""
 
     tpl = (custom_template or DEFAULT_STEP2_PROMPT_TEMPLATE).strip()
     # Nếu file step2_prompt_template.txt cũ trên ổ cứng vẫn là bản tiếng Nhật hoặc V3.0 cũ, tự động nâng cấp lên mẫu PADRE MX V4.0
@@ -4658,6 +4666,9 @@ class ADASScriptEngine:
 
         self.lock = threading.Lock()
         self.ideas_io_lock = threading.RLock()
+        self._thumb_locks_guard = threading.Lock()
+        self._thumb_locks_by_id: Dict[str, threading.RLock] = {}
+        self._thumb_session_attempted_ids: set = set()
         self._disk_sync_in_progress = False
         self.is_running = False
         self.should_stop = False
@@ -4685,6 +4696,16 @@ class ADASScriptEngine:
                 pass
 
         self._sync_projects_disk_state()
+
+    def _get_project_thumb_lock(self, ma_id: str) -> threading.RLock:
+        """Khóa riêng theo từng `ma_id` để ngăn hai luồng vẽ trùng Thumbnail cho cùng 1 kịch bản."""
+        key = str(ma_id or "").strip() or "_default"
+        with self._thumb_locks_guard:
+            lk = self._thumb_locks_by_id.get(key)
+            if lk is None:
+                lk = threading.RLock()
+                self._thumb_locks_by_id[key] = lk
+            return lk
 
     def _on_video_pipeline_job_update(
         self,
@@ -6147,7 +6168,7 @@ class ADASScriptEngine:
             final_renders_dir / "THUMBNAIL.png",
         ]
         for tc in thumb_candidates:
-            if tc.exists() and tc.stat().st_size > 10_000:
+            if tc.exists() and tc.stat().st_size > 4_000:
                 found_thumb = tc
                 break
 
@@ -6160,7 +6181,7 @@ class ADASScriptEngine:
                         up_img = img_f.name.upper()
                         if "NENXANH" in up_img or "GREEN" in up_img or "CROP" in up_img:
                             continue
-                        if img_f.stat().st_size > 10_000:
+                        if img_f.stat().st_size > 4_000:
                             found_thumb = img_f
                             break
                     if found_thumb:
@@ -6185,7 +6206,9 @@ class ADASScriptEngine:
                         ensure_project_script_green_images,
                     )
 
-                    for g_cand in (
+                    from PIL import Image as _PILImg
+
+                    green_cands = (
                         target_green,
                         proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                         renders_dir / "THUMBNAIL-NENXANH.png",
@@ -6193,23 +6216,26 @@ class ADASScriptEngine:
                         final_renders_dir / "THUMBNAIL-NENXANH.png",
                         final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
                         final_proj_dir / "THUMBNAIL-NENXANH.png",
-                    ):
-                        if g_cand.exists() and not _is_green_plate_clean_and_large(g_cand):
+                    )
+                    for g_cand in green_cands:
+                        if not g_cand.exists():
+                            continue
+                        # Chỉ xóa ảnh cắt ngang đời cũ (w >= h); KHÔNG tự ý xóa ảnh khổ dọc 9:16
+                        try:
+                            with _PILImg.open(g_cand) as _im_chk:
+                                is_legacy_horiz = _im_chk.width >= _im_chk.height
+                        except Exception:
+                            is_legacy_horiz = False
+                        if is_legacy_horiz and not _is_green_plate_clean_and_large(
+                            g_cand
+                        ):
                             try:
                                 g_cand.unlink()
                             except Exception:
                                 pass
 
                     valid_green: Optional[Path] = None
-                    for g_cand in (
-                        target_green,
-                        proj_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                        renders_dir / "THUMBNAIL-NENXANH.png",
-                        renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                        final_renders_dir / "THUMBNAIL-NENXANH.png",
-                        final_renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
-                        final_proj_dir / "THUMBNAIL-NENXANH.png",
-                    ):
+                    for g_cand in green_cands:
                         if g_cand.exists() and _is_green_plate_clean_and_large(g_cand):
                             valid_green = g_cand
                             break
@@ -8939,7 +8965,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
    - `<THUMBNAIL_PROMPT_1>`: Prompt tiếng Anh chi tiết để công cụ tạo ảnh (size `1536x1024`, bố cục 16:9 `1920x1080`) vẽ bức ảnh `THUMBNAIL.png` điện ảnh chân thực (Photorealistic American Mafia Boss × Maid/Waitress Emotional Drama):
      + Khung cảnh & Nhân vật: Nữ chính trong trang phục giản dị (maid/waitress/nurse/archivist) ánh mắt kiên cường đứng cạnh hoặc được bảo vệ bởi người đàn ông quyền lực mặc suit tối màu sang trọng (Mafia Boss / CEO), đối diện kẻ phản diện đang bàng hoàng trước bằng chứng sự thật.
      + Chữ trên Thumbnail: Tối đa 3–5 từ tiếng Anh IN HOA ngắn gọn, cực kỳ nổi bật (màu Vàng/Trắng viền Đen đậm) ở góc trái trên.
-   - `</THUMBNAIL_PROMPT_1>`"""
+   - `</THUMBNAIL_PROMPT_1>`
+
+⚠️ CHỈ XUẤT VĂN BẢN GÓI SEO & PROMPT Ở BƯỚC NÀY — TUYỆT ĐỐI KHÔNG gọi công cụ vẽ/tạo ảnh thật hay chạy script Python trong lượt trả lời này (hệ thống sẽ tự động gọi bước vẽ 1 ảnh Thumbnail ngay sau đây)."""
 
         if ck_s6 == "homeless":
             skill_md = self._load_skill_markdown("05_seo_homeless")
@@ -8975,7 +9003,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
    - `<THUMBNAIL_PROMPT_1>`: Prompt tiếng Anh chi tiết để công cụ tạo ảnh (size `1536x1024`, bố cục 16:9 `1920x1080`) vẽ bức ảnh `THUMBNAIL.png` điện ảnh chân thực (Photorealistic American Homeless & Abandoned Property Drama):
      + Khung cảnh & Nhân vật: Nhân vật người đàn ông/cựu chiến binh vô gia cư khắc khổ, ánh mắt sâu lắng nhưng đĩnh đạc đứng trước căn nhà bỏ hoang / văn phòng quận hoặc cầm vật chứng pháp lý quyết định đối diện với nhân vật phản diện/luật sư đang sững sờ.
      + Chữ trên Thumbnail: Tối đa 3–5 từ tiếng Anh IN HOA ngắn gọn, cực kỳ nổi bật (màu Vàng/Trắng viền Đen đậm) ở góc trái trên.
-   - `</THUMBNAIL_PROMPT_1>`"""
+   - `</THUMBNAIL_PROMPT_1>`
+
+⚠️ CHỈ XUẤT VĂN BẢN GÓI SEO & PROMPT Ở BƯỚC NÀY — TUYỆT ĐỐI KHÔNG gọi công cụ vẽ/tạo ảnh thật hay chạy script Python trong lượt trả lời này (hệ thống sẽ tự động gọi bước vẽ 1 ảnh Thumbnail ngay sau đây)."""
 
         skill_md = self._load_skill_markdown("05_seo_thumbnail_padre_mx")
         skill_block = (
@@ -9033,7 +9063,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
      + Bên phải 20–22% khung hình (BẮT BUỘC DÙNG ĐÚNG NGOẠI HÌNH & TRANG PHỤC NGẪU NHIÊN ĐỘC BẢN DƯỚI ĐÂY ĐỂ KHÔNG TRÙNG LẶP VỚI VIDEO KHÁC): {persona["full_en_prompt"]}
    - `</THUMBNAIL_PROMPT_1>`
    - `<THUMBNAIL_GREEN_PROMPT_1>`: Prompt tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` khổ dọc 9:16 (`1024x1536` / `1080x1920`) lấy `THUMBNAIL.png` làm ảnh tham chiếu mặt & trang phục của nhân vật bên phải: xóa sạch 100% tất cả chữ, tiêu đề, băng rôn và giấy tờ; vẽ ĐẦY ĐỦ nhân vật người cha Mexico ({persona["short_en_tag"]}) gồm trọn vẹn đầu, tóc, hai tai, cổ và đầy đủ cả hai vai/thân trên đặt chính giữa khung hình dọc 9:16, tách biệt hoàn toàn trên nền xanh lá thuần khiết `#00FF00` (`RGB 0, 255, 0`) không dính bất kỳ phông nền nào ở hốc cổ dưới tai.
-   - `</THUMBNAIL_GREEN_PROMPT_1>`"""
+   - `</THUMBNAIL_GREEN_PROMPT_1>`
+
+⚠️ CHỈ XUẤT VĂN BẢN GÓI SEO & PROMPT Ở BƯỚC NÀY — TUYỆT ĐỐI KHÔNG tự mở công cụ vẽ/tạo ảnh thật hay chạy `validate_seo_package.py` / `validate_thumbnail_pair.py` trong lượt trả lời SEO này (hệ thống bên ngoài sẽ tự gọi bước vẽ đúng 1 Thumbnail + 1 Ảnh Nền Xanh ngay sau đây)."""
 
     def _extract_six_lines_from_single_source(self, src: str) -> List[str]:
         """Trích xuất chính xác 6 dòng chữ Thumbnail L1..L6 (hỗ trợ cả tiếng Tây Ban Nha `es-MX` và tiếng Nhật legacy)."""
@@ -9459,22 +9491,36 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         renders_dir: Path,
         idea: Optional[Dict[str, Any]] = None,
         open_fresh_tab_first: bool = False,
+        max_green_tries: int = 2,
     ) -> Optional[bytes]:
         """
-        BẮT BUỘC tạo ảnh nhân vật nền xanh khổ dọc 9:16 (`THUMBNAIL-NENXANH.png`, `1080x1920`) bằng ChatGPT:
+        BẮT BUỘC tạo ĐÚNG 1 ảnh nhân vật nền xanh khổ dọc 9:16 (`THUMBNAIL-NENXANH.png`, `1080x1920`) bằng ChatGPT:
+        - Nếu đã có sẵn `THUMBNAIL-NENXANH.png` hợp lệ trên đĩa -> dùng luôn, tuyệt đối không vẽ lại.
         - Lấy `THUMBNAIL.png` (vùng nhân vật bên phải) làm ảnh tham chiếu (tham chiếu mặt & trang phục).
-        - Yêu cầu tạo mới 1 bức ảnh khổ dọc 9:16 (`1024x1536` -> chuẩn hóa `1080x1920`), nền xanh `#00FF00`, không text.
-        - Nếu ChatGPT không tạo được ảnh ở tab hiện tại -> TỰ ĐỘNG mở tab mới (`start_fresh_chat`) kèm đính kèm ảnh tham chiếu để tạo bằng được!
+        - Nếu gặp lỗi kỹ thuật/rate-limit -> thử tối đa `max_green_tries` lần (mặc định 2 lần) rồi dừng ngay.
         """
         import base64
 
         from backend.renderer import (
+            _is_green_plate_clean_and_large,
             _write_green_plate_stamp,
             compose_chatgpt_9_16_green_portrait_to_plate,
             ensure_project_script_green_images,
         )
 
         proj_dir.mkdir(parents=True, exist_ok=True)
+        existing_g = proj_dir / "THUMBNAIL-NENXANH.png"
+        if _is_green_plate_clean_and_large(existing_g):
+            return existing_g.read_bytes()
+        if renders_dir and Path(renders_dir) != proj_dir:
+            alt_g = Path(renders_dir) / "THUMBNAIL-NENXANH.png"
+            if _is_green_plate_clean_and_large(alt_g):
+                try:
+                    shutil.copy2(alt_g, existing_g)
+                except Exception:
+                    pass
+                return alt_g.read_bytes()
+
         ref_b64 = self._extract_right_character_reference_b64(
             thumb_1080p_bytes, save_path=None
         )
@@ -9488,7 +9534,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             "Strict rule: Generate the vertical 9:16 green-screen image directly right now without asking any questions."
         )
 
-        max_green_tries = 4
+        max_green_tries = max(1, min(3, int(max_green_tries or 2)))
         tried_green_accs: set = {getattr(session, "acc_id", "acc_1")}
 
         for g_try in range(1, max_green_tries + 1):
@@ -9498,23 +9544,22 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             acc_lbl = getattr(session, "cfg", {}).get(
                 "label", getattr(session, "acc_id", "AI")
             )
-            # Từ lượt thử thứ 2 trở đi (hoặc khi được yêu cầu mở tab mới ngay từ lượt 1):
-            # BẮT BUỘC mở tab ChatGPT mới (New Chat) và đính kèm ảnh tham chiếu để tránh lỗi kẹt context!
+            # Mở tab ChatGPT mới sạch kèm ảnh tham chiếu để không bị nhiễm ngữ cảnh chữ 80/20 từ lượt vẽ Thumbnail
             need_new_tab = open_fresh_tab_first or (g_try >= 2)
             if need_new_tab:
                 self._emit(
-                    message=f"[{ma_id}] 🔄 Mở tab ChatGPT mới (Lượt {g_try}/{max_green_tries}) trên {acc_lbl} kèm ảnh tham chiếu để vẽ Ảnh Nền Xanh Khổ Dọc 9:16..."
+                    message=f"[{ma_id}] 🔄 Mở tab ChatGPT mới (Lượt {g_try}/{max_green_tries}) trên {acc_lbl} kèm ảnh tham chiếu để vẽ 1 Ảnh Nền Xanh 9:16..."
                 )
                 session.start_fresh_chat(f"STEP7_GREEN_9_16_TRY_{g_try}")
 
             self._update_idea_record(
                 ma_id,
-                current_step=f"Đang vẽ Ảnh Nền Xanh Khổ Dọc 9:16 (Tham chiếu mặt & trang phục từ Thumbnail) trên {acc_lbl} (Lượt {g_try}/{max_green_tries})...",
+                current_step=f"Đang vẽ 1 Ảnh Nền Xanh 9:16 trên {acc_lbl} (Lượt {g_try}/{max_green_tries})...",
             )
             self._emit(
-                current_step="ChatGPT đang vẽ Ảnh Nhân Vật Nền Xanh Khổ Dọc 9:16 (#00FF00, Không Text)...",
+                current_step="ChatGPT đang vẽ 1 Ảnh Nhân Vật Nền Xanh 9:16 (#00FF00, Không Text)...",
                 progress=96.5,
-                message=f"[{ma_id}] 🟩 [{acc_lbl}] Đang yêu cầu ChatGPT vẽ Ảnh Nhân Vật Nền Xanh Khổ Dọc 9:16 từ ảnh tham chiếu (Lượt {g_try}/{max_green_tries})...",
+                message=f"[{ma_id}] 🟩 [{acc_lbl}] Đang vẽ 1 Ảnh Nhân Vật Nền Xanh Khổ Dọc 9:16 từ ảnh tham chiếu (Lượt {g_try}/{max_green_tries})...",
             )
 
             green_res = session.generate_image_and_harvest_base64(
@@ -9522,7 +9567,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 step_label=f"THUMB_2_GREEN_9_16_TRY_{g_try}",
                 timeout_sec=240,
                 progress_cb=lambda st, sec, gt=g_try, al=acc_lbl: self._emit(
-                    message=f"[{ma_id}] 🟩 {al} đang vẽ Ảnh Nền Xanh Khổ Dọc 9:16 (Lượt {gt}: {sec}s)..."
+                    message=f"[{ma_id}] 🟩 {al} đang vẽ Ảnh Nền Xanh 9:16 (Lượt {gt}: {sec}s)..."
                 ),
                 should_stop_cb=lambda: self.should_stop,
                 reference_image_b64=ref_b64,
@@ -9532,7 +9577,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             if green_res.get("success") and green_res.get("b64_data"):
                 try:
                     raw_green_bytes = base64.b64decode(green_res["b64_data"])
-                    if len(raw_green_bytes) > 15_000:
+                    if len(raw_green_bytes) > 4_000:
                         plate_9_16_bytes = compose_chatgpt_9_16_green_portrait_to_plate(
                             raw_green_bytes, part_index=1
                         )
@@ -9551,7 +9596,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             pass
                         log_info(
                             "SCRIPT",
-                            f"[{ma_id}] 🟩 Đã tạo thành công THUMBNAIL-NENXANH.png khổ dọc 9:16 (1080x1920) bằng ChatGPT từ ảnh tham chiếu!",
+                            f"[{ma_id}] 🟩 Đã tạo thành công ĐÚNG 1 ảnh THUMBNAIL-NENXANH.png khổ dọc 9:16 (1080x1920) bằng ChatGPT!",
                             project_id=ma_id,
                         )
                         return plate_9_16_bytes
@@ -9564,20 +9609,19 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
             err_g = str(green_res.get("error", "ChatGPT chưa trả về ảnh"))
             is_rl_g = bool(green_res.get("rate_limited"))
-            self._emit(
-                message=f"[{ma_id}] ⚠️ Lượt {g_try} ({acc_lbl}) chưa tạo được ảnh nền xanh 9:16 ({err_g}) -> Chuyển sang tab mới / nick khác để tạo lại..."
-            )
-            if (is_rl_g or g_try >= 2) and hasattr(
-                session, "switch_to_another_account"
-            ):
-                switched = session.switch_to_another_account(
-                    extra_exclude=tried_green_accs
+            if g_try < max_green_tries:
+                self._emit(
+                    message=f"[{ma_id}] ⚠️ Lượt {g_try} ({acc_lbl}) chưa tạo được ảnh nền xanh 9:16 ({err_g}) -> Đổi sang nick khác thử lại..."
                 )
-                if switched:
-                    tried_green_accs.add(session.acc_id)
-                    self._emit(
-                        message=f"[{ma_id}] 🔄 Đã chuyển sang tài khoản {session.cfg['label']} (Cổng {session.port}) để mở tab mới vẽ Ảnh Nền Xanh 9:16!"
+                if hasattr(session, "switch_to_another_account"):
+                    switched = session.switch_to_another_account(
+                        extra_exclude=tried_green_accs
                     )
+                    if switched:
+                        tried_green_accs.add(session.acc_id)
+                        self._emit(
+                            message=f"[{ma_id}] 🔄 Đã chuyển sang tài khoản {session.cfg['label']} (Cổng {session.port}) để vẽ Ảnh Nền Xanh 9:16!"
+                        )
 
         return None
 
@@ -9708,225 +9752,255 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         proj_dir: Path,
         renders_dir: Path,
         reuse_current_chat: bool = False,
+        max_attempts: int = 2,
     ) -> List[str]:
         """
-        BƯỚC MỚI (STEP 7 — PADRE MX V3.0):
-        1. Mở đoạn chat mới, tạo ảnh Thumbnail chính `THUMBNAIL.png` (`{ma_id}_THUMBNAIL_1.png`, 16:9 `1920x1080`) theo chuẩn 80/20
-           (80% bên trái nền trắng chữ Tây Ban Nha + băng rôn đỏ; 20% bên phải chân dung người cha già Mexico).
-        2. Ngay sau khi có `THUMBNAIL.png`, tự động tạo bức ảnh thứ hai `THUMBNAIL-NENXANH.png` (`{ma_id}_THUMBNAIL_NENXANH.png`, 16:9 `1920x1080`)
-           với nền xanh lá `#00FF00` tinh khiết và giữ nguyên 100% nhân vật người cha ở đúng tọa độ pixel để Renderer ghép vào góc trái video!
-        3. Kiểm định cặp ảnh bằng `_validate_thumbnail_pair_bytes` (`left_exact_key_ratio >= 0.96`).
+        BƯỚC MỚI (STEP 7 — CHUẨN HÓA 1 THUMBNAIL + 1 NỀN XANH CHO MỖI KỊCH BẢN):
+        1. Nếu là `padre_mx`: Tạo ĐÚNG 1 ảnh Thumbnail chính `THUMBNAIL.png` (16:9 `1920x1080` bố cục 80/20)
+           và ĐÚNG 1 ảnh nhân vật nền xanh `THUMBNAIL-NENXANH.png` (9:16 `1080x1920` nền `#00FF00` không chữ).
+        2. Nếu là `homeless` hoặc `mafia`: Tạo ĐÚNG 1 ảnh `THUMBNAIL.png` (16:9 `1920x1080`) duy nhất,
+           tuyệt đối KHÔNG tạo ảnh nền xanh.
+        3. Khi đã thu hoạch được ảnh hợp lệ -> LƯU NGAY và thoát vòng lặp ngay lập tức, chỉ thử lại
+           tối đa `max_attempts` lượt khi không nhận được ảnh từ ChatGPT (lỗi kỹ thuật / rate-limit).
         """
         import base64
 
-        proj_dir.mkdir(parents=True, exist_ok=True)
-        prompts_list = self._extract_three_thumbnail_prompts(
-            step6_out, step2_out, locked_title, idea
-        )
-        saved_paths: List[Path] = []
+        with self._get_project_thumb_lock(ma_id):
+            self._thumb_session_attempted_ids.add(ma_id)
+            proj_dir.mkdir(parents=True, exist_ok=True)
+            prompts_list = self._extract_three_thumbnail_prompts(
+                step6_out, step2_out, locked_title, idea
+            )
+            saved_paths: List[Path] = []
 
-        target_file = proj_dir / "THUMBNAIL.png"
-        green_file = proj_dir / "THUMBNAIL-NENXANH.png"
-        is_homeless_proj = self._get_idea_channel_key(ma_id=ma_id, idea=idea) in (
-            "homeless",
-            "mafia",
-        )
+            target_file = proj_dir / "THUMBNAIL.png"
+            green_file = proj_dir / "THUMBNAIL-NENXANH.png"
+            if (
+                not target_file.exists()
+                and renders_dir
+                and Path(renders_dir) != proj_dir
+                and (Path(renders_dir) / "THUMBNAIL.png").exists()
+                and (Path(renders_dir) / "THUMBNAIL.png").stat().st_size > 4_000
+            ):
+                try:
+                    shutil.copy2(Path(renders_dir) / "THUMBNAIL.png", target_file)
+                except Exception:
+                    pass
 
-        def _save_matched_pair(
-            thumb_1080p_bytes: bytes,
-            chatgpt_green_9_16_bytes: Optional[bytes] = None,
-        ) -> List[Path]:
-            target_file.write_bytes(thumb_1080p_bytes)
-            out_list = [target_file]
-            if is_homeless_proj:
-                log_info(
-                    "SCRIPT",
-                    f"[{ma_id}] 🖼️ [HOMELESS KEY] Đã lưu THUMBNAIL.png (16:9 1920x1080) — Bỏ qua ảnh nhân vật nền xanh theo đúng cấu hình key Homeless!",
-                    project_id=ma_id,
-                )
-                return out_list
-            try:
-                from backend.renderer import (
-                    _is_green_plate_clean_and_large,
-                    _write_green_plate_stamp,
-                    compose_chatgpt_9_16_green_portrait_to_plate,
-                    ensure_project_script_green_images,
-                )
+            is_homeless_proj = self._get_idea_channel_key(ma_id=ma_id, idea=idea) in (
+                "homeless",
+                "mafia",
+            )
 
-                green_bytes = None
-                if chatgpt_green_9_16_bytes and len(chatgpt_green_9_16_bytes) > 15_000:
-                    green_bytes = compose_chatgpt_9_16_green_portrait_to_plate(
-                        chatgpt_green_9_16_bytes, part_index=1
-                    )
-                elif _is_green_plate_clean_and_large(green_file):
-                    green_bytes = green_file.read_bytes()
-                else:
-                    # BẮT BUỘC gọi ChatGPT vẽ ảnh dọc 9:16 từ ảnh tham chiếu THUMBNAIL.png (TUYỆT ĐỐI KHÔNG tự cắt từ THUMBNAIL.png)
-                    green_bytes = self._generate_chatgpt_9_16_green_from_reference_sync(
-                        session=session,
-                        ma_id=ma_id,
-                        thumb_1080p_bytes=thumb_1080p_bytes,
-                        proj_dir=proj_dir,
-                        renders_dir=proj_dir,
-                        idea=idea,
-                        open_fresh_tab_first=True,
-                    )
-
-                if green_bytes and len(green_bytes) > 10_000:
-                    val_pair = self._validate_thumbnail_pair_bytes(
-                        thumb_1080p_bytes, green_bytes
-                    )
-                    green_file.write_bytes(green_bytes)
-                    _write_green_plate_stamp(green_file)
-                    out_list.append(green_file)
+            def _save_matched_pair(
+                thumb_1080p_bytes: bytes,
+                chatgpt_green_9_16_bytes: Optional[bytes] = None,
+                green_already_attempted: bool = False,
+            ) -> List[Path]:
+                target_file.write_bytes(thumb_1080p_bytes)
+                if renders_dir and Path(renders_dir) != proj_dir:
                     try:
-                        ensure_project_script_green_images(
-                            proj_dir=proj_dir,
-                            renders_dir=proj_dir,
-                            proj_name=ma_id,
-                            force_regenerate=True,
-                        )
+                        Path(renders_dir).mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(target_file, Path(renders_dir) / "THUMBNAIL.png")
                     except Exception:
                         pass
+                out_list = [target_file]
+                if is_homeless_proj:
                     log_info(
                         "SCRIPT",
-                        f"[{ma_id}] 🟩 Đã tạo & kiểm định cặp ảnh THUMBNAIL.png (16:9) + THUMBNAIL-NENXANH.png (Khổ dọc 9:16 ChatGPT) + bộ 7 ảnh green_part_01..07.png "
-                        f"(size={val_pair.get('size')}, green_key={val_pair.get('left_exact_key_ratio')}, char={val_pair.get('right_character_ratio')})",
+                        f"[{ma_id}] 🖼️ [{self._get_idea_channel_key(ma_id=ma_id, idea=idea).upper()} KEY] Đã lưu ĐÚNG 1 ảnh THUMBNAIL.png (16:9 1920x1080) — Không tạo ảnh nền xanh!",
                         project_id=ma_id,
                     )
-            except Exception as e_gr:
-                log_warn(
-                    "SCRIPT",
-                    f"[{ma_id}] ⚠️ Lỗi tạo THUMBNAIL-NENXANH.png 9:16 bằng ChatGPT: {e_gr}",
-                    project_id=ma_id,
-                )
-            return out_list
-
-        if target_file.exists() and target_file.stat().st_size > 30000:
-            saved_paths = _save_matched_pair(target_file.read_bytes())
-            self._emit(
-                message=f"[{ma_id}] ♻️ Đã đồng bộ cặp Thumbnail + Ảnh Nền Xanh 9:16 ({target_file.name} & THUMBNAIL-NENXANH.png)..."
-            )
-            return [str(p) for p in saved_paths]
-
-        max_attempts = 5
-        best_fallback_bytes: Optional[bytes] = None
-        tried_thumb_accs: set = {getattr(session, "acc_id", "acc_1")}
-
-        for attempt in range(1, max_attempts + 1):
-            if self.should_stop:
-                raise RuntimeError("Đã dừng theo yêu cầu người dùng.")
-
-            acc_lbl = getattr(session, "cfg", {}).get(
-                "label", getattr(session, "acc_id", "AI")
-            )
-            self._update_idea_record(
-                ma_id,
-                current_step=f"New Chat #4 (Vẽ Thumbnail): Đang tạo cặp Thumbnail 80/20 + Ảnh Nền Xanh 9:16 trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
-            )
-            self._emit(
-                current_step="New Chat #4 — Vẽ Thumbnail 80/20 + Ảnh Nhân Vật Nền Xanh Khổ Dọc 9:16",
-                progress=94.0,
-                message=f"[{ma_id}] 🎨 [New Chat #4] Đang vẽ Thumbnail 80/20 + Ảnh Nền Xanh 9:16 trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
-            )
-
-            # Lượt 1: Nếu đang đứng sẵn ở New Chat #4 (vừa chạy xong Skill 05 SEO) thì vẽ trực tiếp trong cùng New Chat #4!
-            if not (attempt == 1 and reuse_current_chat):
-                session.start_fresh_chat(f"STEP7_THUMB_1_TRY_{attempt}")
-
-            prompt_to_send = prompts_list[min(attempt - 1, len(prompts_list) - 1)]
-            if attempt > 1:
-                prompt_to_send += (
-                    "\n\nLAYOUT REQUIREMENT:\n"
-                    "- Draw a completely new standalone 1536x1024 image from scratch.\n"
-                    "- Left 78% solid white background (#FFFFFF) with bold uppercase Spanish text and a bottom red banner; right 22% realistic photographic portrait of the elderly Mexican father."
-                )
-
-            img_res = session.generate_image_and_harvest_base64(
-                prompt_to_send,
-                step_label=f"THUMB_1_TRY_{attempt}",
-                timeout_sec=260,
-                progress_cb=lambda st, sec, at=attempt, al=acc_lbl: self._emit(
-                    message=f"[{ma_id}] 🎨 {al} đang vẽ Thumbnail 80/20 (Lượt {at}: {sec}s)..."
-                ),
-                should_stop_cb=lambda: self.should_stop,
-            )
-
-            if not img_res.get("success") or not img_res.get("b64_data"):
-                err_txt = str(img_res.get("error", "retry"))
-                is_rl = bool(img_res.get("rate_limited"))
-                self._emit(
-                    message=f"[{ma_id}] ⚠️ Lượt {attempt} ({acc_lbl}): Chưa thu được ảnh Thumbnail ({err_txt}) -> {'Tài khoản bị Limit 30p, đang đổi sang nick khác...' if is_rl else 'Đang đổi nick / tạo lại...'}"
-                )
-                if isinstance(session, ChatGPTWebSession) and hasattr(
-                    session, "switch_to_another_account"
-                ):
-                    if not is_rl and attempt >= 2:
-                        mark_account_rate_limited(
-                            session.acc_id,
-                            reason=f"Lỗi tạo Thumbnail liên tiếp ({err_txt})",
-                            cooldown_sec=ACCOUNT_LIMIT_COOLDOWN_SEC,
-                        )
-                    switched = session.switch_to_another_account(
-                        extra_exclude=tried_thumb_accs
+                    return out_list
+                try:
+                    from backend.renderer import (
+                        _is_green_plate_clean_and_large,
+                        _write_green_plate_stamp,
+                        compose_chatgpt_9_16_green_portrait_to_plate,
+                        ensure_project_script_green_images,
                     )
-                    if switched:
-                        tried_thumb_accs.add(session.acc_id)
-                        self._emit(
-                            message=f"[{ma_id}] 🔄 Đã chuyển sang tài khoản {session.cfg['label']} (Cổng {session.port}) để tạo lại Thumbnail!"
+
+                    # Nếu _generate_chatgpt_9_16_green_from_reference_sync đã ghi sẵn file chuẩn + part 1..7 thì dùng ngay, không xử lý lại
+                    if _is_green_plate_clean_and_large(green_file):
+                        part1_p = proj_dir / "script_green_images" / "green_part_01.png"
+                        if not part1_p.exists():
+                            try:
+                                ensure_project_script_green_images(
+                                    proj_dir=proj_dir,
+                                    renders_dir=proj_dir,
+                                    proj_name=ma_id,
+                                    force_regenerate=False,
+                                )
+                            except Exception:
+                                pass
+                        out_list.append(green_file)
+                        return out_list
+
+                    green_bytes = None
+                    if (
+                        chatgpt_green_9_16_bytes
+                        and len(chatgpt_green_9_16_bytes) > 4_000
+                    ):
+                        green_bytes = compose_chatgpt_9_16_green_portrait_to_plate(
+                            chatgpt_green_9_16_bytes, part_index=1
                         )
-                continue
+                    elif not green_already_attempted:
+                        green_bytes = (
+                            self._generate_chatgpt_9_16_green_from_reference_sync(
+                                session=session,
+                                ma_id=ma_id,
+                                thumb_1080p_bytes=thumb_1080p_bytes,
+                                proj_dir=proj_dir,
+                                renders_dir=proj_dir,
+                                idea=idea,
+                                open_fresh_tab_first=True,
+                            )
+                        )
 
-            try:
-                raw_img_bytes = base64.b64decode(img_res["b64_data"])
-                img_bytes = self._normalize_thumbnail_to_16_9_1080p(raw_img_bytes)
-            except Exception:
-                continue
+                    if green_bytes and len(green_bytes) > 4_000:
+                        val_pair = self._validate_thumbnail_pair_bytes(
+                            thumb_1080p_bytes, green_bytes
+                        )
+                        if not green_file.exists():
+                            green_file.write_bytes(green_bytes)
+                            _write_green_plate_stamp(green_file)
+                        if green_file.exists():
+                            try:
+                                part1_p = (
+                                    proj_dir
+                                    / "script_green_images"
+                                    / "green_part_01.png"
+                                )
+                                if not part1_p.exists():
+                                    ensure_project_script_green_images(
+                                        proj_dir=proj_dir,
+                                        renders_dir=proj_dir,
+                                        proj_name=ma_id,
+                                        force_regenerate=False,
+                                    )
+                            except Exception:
+                                pass
+                            out_list.append(green_file)
+                            log_info(
+                                "SCRIPT",
+                                f"[{ma_id}] 🟩 Đã lưu cặp 1 ảnh THUMBNAIL.png (16:9) + 1 ảnh THUMBNAIL-NENXANH.png (9:16 ChatGPT) "
+                                f"(size={val_pair.get('size')}, green_key={val_pair.get('left_exact_key_ratio')}, char={val_pair.get('right_character_ratio')})",
+                                project_id=ma_id,
+                            )
+                except Exception as e_gr:
+                    log_warn(
+                        "SCRIPT",
+                        f"[{ma_id}] ⚠️ Lỗi tạo THUMBNAIL-NENXANH.png 9:16 bằng ChatGPT: {e_gr}",
+                        project_id=ma_id,
+                    )
+                return out_list
 
-            if len(img_bytes) < 20000:
-                continue
+            if target_file.exists() and target_file.stat().st_size > 4_000:
+                saved_paths = _save_matched_pair(
+                    target_file.read_bytes(), green_already_attempted=False
+                )
+                self._update_idea_record(ma_id, has_thumbnail=True)
+                self._emit(
+                    message=f"[{ma_id}] ♻️ Đã có sẵn {target_file.name} -> giữ nguyên không vẽ thừa ({len(saved_paths)} ảnh)!"
+                )
+                return [str(p) for p in saved_paths]
 
-            best_fallback_bytes = img_bytes
+            max_attempts = max(1, min(3, int(max_attempts or 2)))
+            tried_thumb_accs: set = {getattr(session, "acc_id", "acc_1")}
 
-            self._emit(
-                message=f"[{ma_id}] 🔍 Đang đánh giá QA Thumbnail 80/20 & yêu cầu ChatGPT vẽ THUMBNAIL-NENXANH.png khổ dọc 9:16..."
-            )
-            qa_prompt = (
-                "Hãy nhìn trực tiếp vào bức ảnh Thumbnail vừa tạo ở trên và kiểm định chất lượng (PADRE MX 80/20 QA Gate):\n"
-                "1. Bên trái có vùng chữ tiếng Tây Ban Nha rõ nét trên nền sáng kèm băng rôn nổi bật không?\n"
-                "2. Bên phải có chân dung người đàn ông lớn tuổi Mexico rõ mặt, biểu cảm cảm xúc kịch tính không?\n"
-                "Chỉ trả lời ngắn gọn đúng định dạng 2 dòng sau:\n"
-                "THUMBNAIL_QA: PASS (nếu đạt chuẩn) hoặc FAIL (nếu ảnh bị lỗi nặng)\n"
-                "REASON: <nhận xét 1 câu>"
-            )
-            qa_resp = ""
-            try:
-                qa_resp = session.send_prompt_and_wait(
-                    qa_prompt,
-                    step_label=f"QA_THUMB_1_{attempt}",
-                    timeout_sec=120,
+            for attempt in range(1, max_attempts + 1):
+                if self.should_stop:
+                    raise RuntimeError("Đã dừng theo yêu cầu người dùng.")
+
+                acc_lbl = getattr(session, "cfg", {}).get(
+                    "label", getattr(session, "acc_id", "AI")
+                )
+                step_desc = (
+                    "1 Ảnh Thumbnail 16:9"
+                    if is_homeless_proj
+                    else "1 Thumbnail 80/20 + 1 Ảnh Nền Xanh 9:16"
+                )
+                self._update_idea_record(
+                    ma_id,
+                    current_step=f"New Chat #4 (Vẽ Thumbnail): Đang tạo {step_desc} trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
+                )
+                self._emit(
+                    current_step=f"New Chat #4 — Vẽ {step_desc}",
+                    progress=94.0,
+                    message=f"[{ma_id}] 🎨 [New Chat #4] Đang vẽ {step_desc} trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
+                )
+
+                # Lượt 1: Nếu đang đứng sẵn ở New Chat #4 thì vẽ trực tiếp; lượt 2 mới mở chat sạch
+                if not (attempt == 1 and reuse_current_chat):
+                    session.start_fresh_chat(f"STEP7_THUMB_1_TRY_{attempt}")
+
+                prompt_to_send = prompts_list[min(attempt - 1, len(prompts_list) - 1)]
+                if attempt > 1 and not is_homeless_proj:
+                    prompt_to_send += (
+                        "\n\nLAYOUT REQUIREMENT:\n"
+                        "- Draw a completely new standalone 1536x1024 image from scratch.\n"
+                        "- Left 78% solid white background (#FFFFFF) with bold uppercase Spanish text and a bottom red banner; right 22% realistic photographic portrait of the elderly Mexican father."
+                    )
+
+                img_res = session.generate_image_and_harvest_base64(
+                    prompt_to_send,
+                    step_label=f"THUMB_1_TRY_{attempt}",
+                    timeout_sec=260,
+                    progress_cb=lambda st, sec, at=attempt, al=acc_lbl: self._emit(
+                        message=f"[{ma_id}] 🎨 {al} đang vẽ Thumbnail (Lượt {at}: {sec}s)..."
+                    ),
                     should_stop_cb=lambda: self.should_stop,
                 )
-            except Exception:
-                qa_resp = "THUMBNAIL_QA: PASS"
 
-            is_qa_pass = (
-                "THUMBNAIL_QA: FAIL" not in qa_resp.upper()
-                and "THUMBNAIL_QA：FAIL" not in qa_resp.upper()
-            )
+                if not img_res.get("success") or not img_res.get("b64_data"):
+                    err_txt = str(img_res.get("error", "retry"))
+                    is_rl = bool(img_res.get("rate_limited"))
+                    if attempt < max_attempts:
+                        self._emit(
+                            message=f"[{ma_id}] ⚠️ Lượt {attempt} ({acc_lbl}): Chưa thu được ảnh Thumbnail ({err_txt}) -> {'Tài khoản bị Limit 30p, đang đổi sang nick khác...' if is_rl else 'Đang đổi nick / tạo lại...'}"
+                        )
+                        if isinstance(session, ChatGPTWebSession) and hasattr(
+                            session, "switch_to_another_account"
+                        ):
+                            if not is_rl and attempt >= 2:
+                                mark_account_rate_limited(
+                                    session.acc_id,
+                                    reason=f"Lỗi tạo Thumbnail liên tiếp ({err_txt})",
+                                    cooldown_sec=ACCOUNT_LIMIT_COOLDOWN_SEC,
+                                )
+                            switched = session.switch_to_another_account(
+                                extra_exclude=tried_thumb_accs
+                            )
+                            if switched:
+                                tried_thumb_accs.add(session.acc_id)
+                                self._emit(
+                                    message=f"[{ma_id}] 🔄 Đã chuyển sang tài khoản {session.cfg['label']} (Cổng {session.port}) để tạo lại Thumbnail!"
+                                )
+                    continue
 
-            if is_qa_pass:
+                try:
+                    raw_img_bytes = base64.b64decode(img_res["b64_data"])
+                    img_bytes = self._normalize_thumbnail_to_16_9_1080p(raw_img_bytes)
+                except Exception:
+                    continue
+
+                if len(img_bytes) < 4_000:
+                    continue
+
+                # Đã có ảnh Thumbnail hợp lệ -> Lưu NGAY 1 ảnh THUMBNAIL.png, tuyệt đối KHÔNG chấm QA lặp để vẽ lại nhiều lần!
                 if is_homeless_proj:
                     saved_paths = _save_matched_pair(
-                        img_bytes, chatgpt_green_9_16_bytes=None
+                        img_bytes,
+                        chatgpt_green_9_16_bytes=None,
+                        green_already_attempted=True,
                     )
                     self._update_idea_record(ma_id, has_thumbnail=True)
                     self._emit(
-                        message=f"[{ma_id}] ✅ Ảnh THUMBNAIL.png (16:9 Homeless US — Không dùng ảnh nền xanh) ĐẠT CHUẨN QA -> Đã lưu vào {renders_dir}!"
+                        message=f"[{ma_id}] ✅ Đã tạo & lưu ĐÚNG 1 ảnh THUMBNAIL.png (16:9 — Không dùng ảnh nền xanh) vào {proj_dir}!"
                     )
                     break
-                # Lượt 2 (chỉ dành cho padre_mx): BẮT BUỘC dùng ChatGPT vẽ ảnh khổ dọc 9:16 nền xanh #00FF00 không text,
-                # lấy vùng nhân vật ông già bên phải của THUMBNAIL.png làm ảnh tham chiếu (mặt & trang phục).
+
+                # Key `padre_mx`: Mở 1 tab mới sạch vẽ ĐÚNG 1 ảnh THUMBNAIL-NENXANH.png khổ dọc 9:16 từ ảnh tham chiếu
                 chatgpt_green_9_16 = (
                     self._generate_chatgpt_9_16_green_from_reference_sync(
                         session=session,
@@ -9935,218 +10009,227 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         proj_dir=proj_dir,
                         renders_dir=renders_dir,
                         idea=idea,
-                        open_fresh_tab_first=False,
+                        open_fresh_tab_first=True,
                     )
                 )
                 saved_paths = _save_matched_pair(
-                    img_bytes, chatgpt_green_9_16_bytes=chatgpt_green_9_16
+                    img_bytes,
+                    chatgpt_green_9_16_bytes=chatgpt_green_9_16,
+                    green_already_attempted=True,
                 )
                 self._update_idea_record(ma_id, has_thumbnail=True)
                 self._emit(
-                    message=f"[{ma_id}] ✅ Cặp ảnh THUMBNAIL.png (16:9) + THUMBNAIL-NENXANH.png (9:16 ChatGPT) ĐẠT CHUẨN QA -> Đã lưu vào {renders_dir}!"
+                    message=f"[{ma_id}] ✅ Đã hoàn tất cặp 1 ảnh THUMBNAIL.png + {1 if len(saved_paths) > 1 else 0} ảnh THUMBNAIL-NENXANH.png -> Lưu vào {proj_dir}!"
                 )
                 break
-            else:
-                self._emit(
-                    message=f"[{ma_id}] ⚠️ Thumbnail (Lượt {attempt}) chưa đạt QA -> Đang tạo lại..."
-                )
 
-        if not target_file.exists() and best_fallback_bytes:
-            saved_paths = _save_matched_pair(best_fallback_bytes)
-            self._update_idea_record(ma_id, has_thumbnail=True)
-            self._emit(
-                message=f"[{ma_id}] 💾 Đã lưu cặp ảnh THUMBNAIL.png + THUMBNAIL-NENXANH.png (9:16 ChatGPT) vào thư mục dự án!"
-            )
-
-        return [str(p) for p in saved_paths]
+            return [str(p) for p in saved_paths]
 
     def ensure_project_thumbnail_with_failover_sync(
         self,
         ma_id: str,
         preferred_acc_id: Optional[str] = None,
         exclude_accs: Optional[set] = None,
+        max_failover_rounds: int = 2,
     ) -> List[str]:
         """
-        Đảm bảo 100% dự án `ma_id` có đủ cặp Thumbnail (`{ma_id}_THUMBNAIL_1.png` / `THUMBNAIL.png` + `THUMBNAIL-NENXANH.png` 9:16 do ChatGPT tạo).
-        Nếu đã có `THUMBNAIL.png` nhưng chưa có `THUMBNAIL-NENXANH.png` chuẩn 9:16 ChatGPT:
-        - BẮT BUỘC mở ChatGPT đính kèm ảnh tham chiếu nhân vật từ `THUMBNAIL.png` để tạo mới ảnh dọc 9:16 nền xanh không chữ!
+        Đảm bảo dự án `ma_id` có ĐÚNG 1 ảnh `THUMBNAIL.png` (và ĐÚNG 1 ảnh `THUMBNAIL-NENXANH.png` 9:16 nếu là `padre_mx`).
+        Nếu đã có `THUMBNAIL.png` nhưng thiếu `THUMBNAIL-NENXANH.png` (cho `padre_mx`) -> chỉ tạo đúng ảnh nền xanh 9:16, không vẽ lại `THUMBNAIL.png`.
         """
         from backend.renderer import _is_green_plate_clean_and_large
 
-        proj_dir = self.projects_dir / ma_id
-        proj_dir.mkdir(parents=True, exist_ok=True)
-        renders_dir = proj_dir / "renders"
-
-        target_thumb = proj_dir / "THUMBNAIL.png"
-        if not target_thumb.exists():
-            for th_cand in (
-                proj_dir / f"{ma_id}_THUMBNAIL.png",
-                proj_dir / f"{ma_id}_THUMBNAIL_1.png",
-                renders_dir / "THUMBNAIL.png",
-                renders_dir / f"{ma_id}_THUMBNAIL_1.png",
-            ):
-                if th_cand.exists() and th_cand.stat().st_size > 20000:
-                    shutil.copy2(th_cand, target_thumb)
-                    break
-        target_green = proj_dir / "THUMBNAIL-NENXANH.png"
-        if not target_green.exists() and (renders_dir / "THUMBNAIL-NENXANH.png").exists():
-            try:
-                shutil.copy2(renders_dir / "THUMBNAIL-NENXANH.png", target_green)
-            except Exception:
-                pass
-        if target_thumb.exists() and target_thumb.stat().st_size > 20000:
-            if self._get_idea_channel_key(ma_id=ma_id) in ("homeless", "mafia"):
-                self._update_idea_record(ma_id, has_thumbnail=True)
-                return [str(target_thumb)]
-            if not _is_green_plate_clean_and_large(target_green):
-                session_gr = None
-                try:
-                    session_gr = ChatGPTWebSession(
-                        project_id=f"{ma_id}_GREEN_9_16", acc_id=preferred_acc_id
-                    )
-                    self._generate_chatgpt_9_16_green_from_reference_sync(
-                        session=session_gr,
-                        ma_id=ma_id,
-                        thumb_1080p_bytes=target_thumb.read_bytes(),
-                        proj_dir=proj_dir,
-                        renders_dir=proj_dir,
-                        open_fresh_tab_first=True,
-                    )
-                except Exception as e_gr_failover:
-                    log_warn(
-                        "SCRIPT",
-                        f"[{ma_id}] ⚠️ Lỗi gọi ChatGPT tạo THUMBNAIL-NENXANH.png 9:16: {e_gr_failover}",
-                        project_id=ma_id,
-                    )
-                finally:
-                    if session_gr is not None:
-                        try:
-                            session_gr.close_session_tab(keep_open=False)
-                        except Exception:
-                            pass
-            self._update_idea_record(ma_id, has_thumbnail=True)
-            return (
-                [str(target_thumb), str(target_green)]
-                if target_green.exists()
-                else [str(target_thumb)]
+        with self._get_project_thumb_lock(ma_id):
+            self._thumb_session_attempted_ids.add(ma_id)
+            proj_dir = self.projects_dir / ma_id
+            proj_dir.mkdir(parents=True, exist_ok=True)
+            renders_dir = proj_dir / "renders"
+            is_homeless_proj = self._get_idea_channel_key(ma_id=ma_id) in (
+                "homeless",
+                "mafia",
             )
 
-        # Chuẩn bị dữ liệu Idea + Step 2 + Step 6 để tạo Thumbnail
-        ideas = self.load_saved_ideas()
-        idea = next((it for it in ideas if it.get("ma_id") == ma_id), None) or {
-            "ma_id": ma_id
-        }
-        step2_file = proj_dir / "step2_title_thumbnail.txt"
-        step2_out = (
-            step2_file.read_text(encoding="utf-8", errors="ignore")
-            if step2_file.exists()
-            else ""
-        )
-        locked_title = idea.get("locked_title") or extract_locked_title_from_step2(
-            step2_out, fallback_title=idea.get("draft_title_ja", ma_id)
-        )
-        _, _, sc_chars = self.has_valid_script_on_disk(ma_id)
-        step6_file = proj_dir / "seo_publish_pack.txt"
-        if step6_file.exists() and step6_file.stat().st_size > 200:
-            step6_out = step6_file.read_text(encoding="utf-8", errors="ignore")
-        else:
-            step6_out = self._build_fallback_seo_pack(
-                ma_id, locked_title, sc_chars or 45000, idea, step2_out
-            )
-            step6_file.write_text(step6_out, encoding="utf-8")
-
-        try:
-            ensure_all_saved_chatgpt_accounts_open(
-                run_hidden=False, open_browsers_now=False
-            )
-        except Exception:
-            pass
-
-        tried_accs: set = set(exclude_accs or set())
-        total_acc_slots = len(CHATGPT_ACCOUNTS) + 1
-
-        for round_idx in range(total_acc_slots):
-            if self.should_stop:
-                break
-            if target_thumb.exists() and target_thumb.stat().st_size > 20000:
-                self._update_idea_record(ma_id, has_thumbnail=True)
-                return [str(target_thumb)]
-
-            # Nếu mọi tài khoản đều đã thử hoặc đang trong 30p cooldown, mở lại tập exclude để chọn nick rảnh nhất
-            use_exclude = (
-                tried_accs if len(tried_accs) < len(CHATGPT_ACCOUNTS) else set()
-            )
-            sess = ChatGPTWebSession(
-                project_id=f"{ma_id}_THUMB",
-                acc_id=preferred_acc_id
-                if (round_idx == 0 and preferred_acc_id not in use_exclude)
-                else None,
-                exclude_accs=use_exclude,
-            )
-            tried_accs.add(sess.acc_id)
-            try:
-                self._emit(
-                    current_ma_id=ma_id,
-                    current_step=f"🎨 Đang tạo bù Thumbnail trên {sess.cfg['label']}",
-                    progress=93.0,
-                    message=f"[{ma_id}] 🎨 Kiểm tra thấy thiếu Thumbnail -> Đang mở {sess.cfg['label']} (Cổng {sess.port}) để tạo Thumbnail 16:9...",
-                )
-                if not sess.open_session_tab():
-                    mark_account_rate_limited(
-                        sess.acc_id,
-                        reason="Không mở được tab Chrome tạo Thumbnail",
-                        cooldown_sec=300,
-                    )
-                    continue
-                res_paths = self.generate_and_verify_three_thumbnails_sync(
-                    session=sess,
-                    ma_id=ma_id,
-                    locked_title=locked_title,
-                    step2_out=step2_out,
-                    step6_out=step6_out,
-                    idea=idea,
-                    proj_dir=proj_dir,
-                    renders_dir=renders_dir,
-                )
-                if (
-                    res_paths
-                    and target_thumb.exists()
-                    and target_thumb.stat().st_size > 20000
+            target_thumb = proj_dir / "THUMBNAIL.png"
+            if not target_thumb.exists():
+                for th_cand in (
+                    proj_dir / f"{ma_id}_THUMBNAIL.png",
+                    proj_dir / f"{ma_id}_THUMBNAIL_1.png",
+                    renders_dir / "THUMBNAIL.png",
+                    renders_dir / f"{ma_id}_THUMBNAIL_1.png",
                 ):
-                    self._update_idea_record(ma_id, has_thumbnail=True)
-                    log_info(
-                        "SCRIPT",
-                        f"[{ma_id}] ✅ Đã tạo bù thành công Thumbnail trên {sess.cfg['label']}: {target_thumb.name}",
-                        project_id=ma_id,
-                    )
-                    return [str(target_thumb)]
-            except Exception as e_th_fail:
-                log_warn(
-                    "SCRIPT",
-                    f"[{ma_id}] ⚠️ Lỗi tạo Thumbnail trên {sess.cfg['label']}: {e_th_fail} -> Đổi sang tài khoản khác!",
-                    project_id=ma_id,
-                )
-            finally:
+                    if th_cand.exists() and th_cand.stat().st_size > 4_000:
+                        shutil.copy2(th_cand, target_thumb)
+                        break
+            target_green = proj_dir / "THUMBNAIL-NENXANH.png"
+            if (
+                not target_green.exists()
+                and (renders_dir / "THUMBNAIL-NENXANH.png").exists()
+            ):
                 try:
-                    sess.close_session_tab(keep_open=False)
+                    shutil.copy2(renders_dir / "THUMBNAIL-NENXANH.png", target_green)
                 except Exception:
                     pass
 
-        if target_thumb.exists() and target_thumb.stat().st_size > 20000:
-            self._update_idea_record(ma_id, has_thumbnail=True)
-            return [str(target_thumb)]
-        return []
+            def _current_thumb_result() -> List[str]:
+                if not (target_thumb.exists() and target_thumb.stat().st_size > 4_000):
+                    return []
+                if not is_homeless_proj and target_green.exists():
+                    return [str(target_thumb), str(target_green)]
+                return [str(target_thumb)]
+
+            if target_thumb.exists() and target_thumb.stat().st_size > 4_000:
+                if is_homeless_proj:
+                    self._update_idea_record(ma_id, has_thumbnail=True)
+                    return [str(target_thumb)]
+                if not _is_green_plate_clean_and_large(target_green):
+                    session_gr = None
+                    try:
+                        session_gr = ChatGPTWebSession(
+                            project_id=f"{ma_id}_GREEN_9_16", acc_id=preferred_acc_id
+                        )
+                        self._generate_chatgpt_9_16_green_from_reference_sync(
+                            session=session_gr,
+                            ma_id=ma_id,
+                            thumb_1080p_bytes=target_thumb.read_bytes(),
+                            proj_dir=proj_dir,
+                            renders_dir=proj_dir,
+                            open_fresh_tab_first=True,
+                            max_green_tries=2,
+                        )
+                    except Exception as e_gr_failover:
+                        log_warn(
+                            "SCRIPT",
+                            f"[{ma_id}] ⚠️ Lỗi gọi ChatGPT tạo THUMBNAIL-NENXANH.png 9:16: {e_gr_failover}",
+                            project_id=ma_id,
+                        )
+                    finally:
+                        if session_gr is not None:
+                            try:
+                                session_gr.close_session_tab(keep_open=False)
+                            except Exception:
+                                pass
+                self._update_idea_record(ma_id, has_thumbnail=True)
+                return _current_thumb_result()
+
+            # Chuẩn bị dữ liệu Idea + Step 2 + Step 6 để tạo Thumbnail
+            ideas = self.load_saved_ideas()
+            idea = next((it for it in ideas if it.get("ma_id") == ma_id), None) or {
+                "ma_id": ma_id
+            }
+            step2_file = proj_dir / "step2_title_thumbnail.txt"
+            step2_out = (
+                step2_file.read_text(encoding="utf-8", errors="ignore")
+                if step2_file.exists()
+                else ""
+            )
+            locked_title = idea.get("locked_title") or extract_locked_title_from_step2(
+                step2_out, fallback_title=idea.get("draft_title_ja", ma_id)
+            )
+            _, _, sc_chars = self.has_valid_script_on_disk(ma_id)
+            step6_file = proj_dir / "seo_publish_pack.txt"
+            if step6_file.exists() and step6_file.stat().st_size > 200:
+                step6_out = step6_file.read_text(encoding="utf-8", errors="ignore")
+            else:
+                step6_out = self._build_fallback_seo_pack(
+                    ma_id, locked_title, sc_chars or 45000, idea, step2_out
+                )
+                step6_file.write_text(step6_out, encoding="utf-8")
+
+            try:
+                ensure_all_saved_chatgpt_accounts_open(
+                    run_hidden=False, open_browsers_now=False
+                )
+            except Exception:
+                pass
+
+            tried_accs: set = set(exclude_accs or set())
+            max_rounds = max(
+                1, min(int(max_failover_rounds or 2), max(1, len(CHATGPT_ACCOUNTS)))
+            )
+
+            for round_idx in range(max_rounds):
+                if self.should_stop:
+                    break
+                if target_thumb.exists() and target_thumb.stat().st_size > 4_000:
+                    self._update_idea_record(ma_id, has_thumbnail=True)
+                    return _current_thumb_result()
+
+                use_exclude = (
+                    tried_accs if len(tried_accs) < len(CHATGPT_ACCOUNTS) else set()
+                )
+                sess = ChatGPTWebSession(
+                    project_id=f"{ma_id}_THUMB",
+                    acc_id=preferred_acc_id
+                    if (round_idx == 0 and preferred_acc_id not in use_exclude)
+                    else None,
+                    exclude_accs=use_exclude,
+                )
+                tried_accs.add(sess.acc_id)
+                try:
+                    self._emit(
+                        current_ma_id=ma_id,
+                        current_step=f"🎨 Đang tạo Thumbnail trên {sess.cfg['label']}",
+                        progress=93.0,
+                        message=f"[{ma_id}] 🎨 Kiểm tra thiếu Thumbnail -> Đang mở {sess.cfg['label']} (Cổng {sess.port}) để tạo 1 Thumbnail 16:9...",
+                    )
+                    if not sess.open_session_tab():
+                        mark_account_rate_limited(
+                            sess.acc_id,
+                            reason="Không mở được tab Chrome tạo Thumbnail",
+                            cooldown_sec=300,
+                        )
+                        continue
+                    res_paths = self.generate_and_verify_three_thumbnails_sync(
+                        session=sess,
+                        ma_id=ma_id,
+                        locked_title=locked_title,
+                        step2_out=step2_out,
+                        step6_out=step6_out,
+                        idea=idea,
+                        proj_dir=proj_dir,
+                        renders_dir=renders_dir,
+                        max_attempts=1 if round_idx > 0 else 2,
+                    )
+                    if (
+                        res_paths
+                        and target_thumb.exists()
+                        and target_thumb.stat().st_size > 4_000
+                    ):
+                        self._update_idea_record(ma_id, has_thumbnail=True)
+                        log_info(
+                            "SCRIPT",
+                            f"[{ma_id}] ✅ Đã tạo thành công Thumbnail trên {sess.cfg['label']}: {target_thumb.name}",
+                            project_id=ma_id,
+                        )
+                        return _current_thumb_result()
+                except Exception as e_th_fail:
+                    log_warn(
+                        "SCRIPT",
+                        f"[{ma_id}] ⚠️ Lỗi tạo Thumbnail trên {sess.cfg['label']}: {e_th_fail}",
+                        project_id=ma_id,
+                    )
+                finally:
+                    try:
+                        sess.close_session_tab(keep_open=False)
+                    except Exception:
+                        pass
+
+            if target_thumb.exists() and target_thumb.stat().st_size > 4_000:
+                self._update_idea_record(ma_id, has_thumbnail=True)
+                return _current_thumb_result()
+            return []
 
     def ensure_all_projects_have_thumbnails_sync(
         self,
         target_ids: Optional[List[str]] = None,
+        skip_ids: Optional[set] = None,
     ) -> Dict[str, Any]:
         """
         Quét toàn bộ các kịch bản đã hoàn thành (trong `target_ids` và trên ổ cứng):
-        Bất kỳ kịch bản nào chưa có Thumbnail (`{ma_id}_THUMBNAIL_1.png`) đều được tự động
-        chạy tạo lại (tự động chuyển sang nick khác nếu nick hiện tại lỗi/limit).
+        Bất kỳ kịch bản nào chưa có Thumbnail đều được tự động tạo bù tối đa 1 lần,
+        bỏ qua các mã nằm trong `skip_ids` (đã thử tạo ở ngay phiên hiện tại).
         """
         self._sync_projects_disk_state()
+        skip_set = set(skip_ids or set())
         all_ids: List[str] = []
         if target_ids:
             for mid in target_ids:
@@ -10161,6 +10244,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         missing_ids: List[str] = []
         for mid in all_ids:
+            if mid in skip_set:
+                continue
             has_sc, _, _ = self.has_valid_script_on_disk(mid)
             if not has_sc:
                 continue
@@ -10593,13 +10678,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     proj_dir / f"{ma_id}_THUMBNAIL.png",
                     proj_dir / f"{ma_id}_THUMBNAIL_1.png",
                 )
-                if p.exists() and p.stat().st_size > 20000
+                if p.exists() and p.stat().st_size > 4_000
             ]
             if not thumb_files and renders_dir.exists():
                 thumb_files = [
                     str(p)
                     for p in sorted(renders_dir.glob("*THUMBNAIL*.png"))
-                    if "NENXANH" not in p.name.upper() and p.stat().st_size > 20000
+                    if "NENXANH" not in p.name.upper() and p.stat().st_size > 4_000
                 ]
 
             # BẮT BUỘC MỌI KỊCH BẢN PHẢI CÓ THUMBNAIL: Nếu dự án đã có kịch bản nhưng chưa có Thumbnail -> Tự động tạo bù (kèm đổi nick nếu limit/lỗi)!
@@ -11481,13 +11566,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     message=f"[{ma_id}] ⚠️ Tạo Thumbnail trên {session.cfg['label']} gặp gián đoạn ({e_thumb}) -> Sẽ chuyển sang tài khoản khác để tạo lại!"
                 )
 
-            # KIỂM TRA LẠI SAU KHI XONG: Nếu chưa có Thumbnail -> Chuyển sang nick khác tạo lại ngay lập tức (Không thể để thiếu Thumbnail)
-            if not thumbnail_paths and not self.should_stop:
+            # KIỂM TRA LẠI SAU KHI XONG: Nếu chưa có THUMBNAIL.png -> Chuyển sang nick khác thử bù đúng 1 vòng
+            has_main_thumb_disk = (
+                (proj_dir / "THUMBNAIL.png").exists()
+                and (proj_dir / "THUMBNAIL.png").stat().st_size > 4_000
+            )
+            if not thumbnail_paths and not has_main_thumb_disk and not self.should_stop:
                 self._emit(
                     current_ma_id=ma_id,
                     current_step="STEP 7 — Đổi sang nick khác tạo lại Thumbnail",
                     progress=95.0,
-                    message=f"[{ma_id}] 🔄 Kiểm tra thấy chưa có Thumbnail trên {session.cfg['label']} -> Đang chuyển sang tài khoản (nick) khác để tạo lại Thumbnail!",
+                    message=f"[{ma_id}] 🔄 Kiểm tra thấy chưa có Thumbnail trên {session.cfg['label']} -> Đang chuyển sang tài khoản dự phòng (tối đa 1 vòng)...",
                 )
                 try:
                     session.close_session_tab(keep_open=False)
@@ -11497,6 +11586,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     ma_id=ma_id,
                     preferred_acc_id=None,
                     exclude_accs={getattr(session, "acc_id", "")},
+                    max_failover_rounds=1,
                 )
 
             self._update_idea_record(
@@ -11801,6 +11891,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             self.is_running = True
             self.should_stop = False
             self.live_auto_produce_video = bool(auto_produce_video)
+            self._thumb_session_attempted_ids.clear()
 
         def _worker():
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12059,15 +12150,21 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         mid_item
                                     )
                                     if has_sc_ok:
-                                        # Kiểm tra lại Thumbnail ngay sau khi xong kịch bản: nếu thiếu thì tạo lại trên nick khác
+                                        # Chỉ bù Thumbnail nếu mã này chưa chạy qua pha Thumbnail trong phiên hiện tại
                                         has_th_ok, _, _ = (
                                             self.has_thumbnail_and_seo_on_disk(mid_item)
                                         )
-                                        if not has_th_ok and not self.should_stop:
+                                        if (
+                                            not has_th_ok
+                                            and not self.should_stop
+                                            and mid_item
+                                            not in self._thumb_session_attempted_ids
+                                        ):
                                             self.ensure_project_thumbnail_with_failover_sync(
                                                 ma_id=mid_item,
                                                 preferred_acc_id=None,
                                                 exclude_accs=set(failed_accs_for_mid),
+                                                max_failover_rounds=1,
                                             )
                                         if auto_produce_video and not (
                                             isinstance(res_single, dict)
@@ -12105,11 +12202,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         has_th_now, _, _ = (
                                             self.has_thumbnail_and_seo_on_disk(mid_item)
                                         )
-                                        if not has_th_now and not self.should_stop:
+                                        if (
+                                            not has_th_now
+                                            and not self.should_stop
+                                            and mid_item
+                                            not in self._thumb_session_attempted_ids
+                                        ):
                                             self.ensure_project_thumbnail_with_failover_sync(
                                                 ma_id=mid_item,
                                                 preferred_acc_id=None,
                                                 exclude_accs=set(failed_accs_for_mid),
+                                                max_failover_rounds=1,
                                             )
                                         if auto_produce_video:
                                             self.start_render_video_for_ideas_async(
@@ -12256,7 +12359,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 if not self.should_stop:
                     try:
                         self.ensure_all_projects_have_thumbnails_sync(
-                            target_ids=clean_ids
+                            target_ids=clean_ids,
+                            skip_ids=set(self._thumb_session_attempted_ids),
                         )
                         close_all_chatgpt_browsers(
                             only_if_idle=True,
@@ -12411,12 +12515,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         green_thumb_path = cand_g
                         break
 
-        # Kiểm tra nếu ảnh nền xanh cũ là bản cắt cục bộ (không phải bản dọc 9:16 do ChatGPT tạo chuẩn V1.0.28) thì xóa bỏ để tạo lại bằng ChatGPT
+        # Chỉ lọc ảnh cắt ngang đời cũ (w >= h); KHÔNG tự ý xóa ảnh nền xanh khổ dọc 9:16 khi mở xem chi tiết
         if green_thumb_path is not None:
             try:
+                from PIL import Image as _PILImgOut
                 from backend.renderer import _is_green_plate_clean_and_large
 
-                if not _is_green_plate_clean_and_large(green_thumb_path):
+                with _PILImgOut.open(green_thumb_path) as _im_out_chk:
+                    is_horiz_legacy = _im_out_chk.width >= _im_out_chk.height
+                if is_horiz_legacy and not _is_green_plate_clean_and_large(
+                    green_thumb_path
+                ):
                     for old_bad_g in (
                         renders_dir / "THUMBNAIL-NENXANH.png",
                         renders_dir / f"{ma_id}_THUMBNAIL_NENXANH.png",
@@ -12634,6 +12743,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
                 from backend.renderer import _is_green_plate_clean_and_large
 
+                is_homeless_proj = self._get_idea_channel_key(
+                    ma_id=ma_id, idea=idea
+                ) in ("homeless", "mafia")
+
                 existing_main = next(
                     (
                         p
@@ -12643,7 +12756,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             renders_dir / "THUMBNAIL.png",
                             renders_dir / f"{ma_id}_THUMBNAIL_1.png",
                         )
-                        if p.exists() and p.stat().st_size > 10_000
+                        if p.exists() and p.stat().st_size > 4_000
                     ),
                     None,
                 )
@@ -12658,7 +12771,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     ),
                     None,
                 )
-                if existing_main is not None and existing_green is None:
+                if (
+                    not is_homeless_proj
+                    and existing_main is not None
+                    and existing_green is None
+                ):
                     self._emit(
                         status="running",
                         current_ma_id=ma_id,
@@ -12678,6 +12795,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         renders_dir=proj_dir,
                         idea=idea,
                         open_fresh_tab_first=True,
+                        max_green_tries=2,
                     )
                     if not g_bytes:
                         raise RuntimeError(
