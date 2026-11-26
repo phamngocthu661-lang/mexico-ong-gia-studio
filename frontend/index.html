@@ -111,7 +111,7 @@
         <div class="flex flex-col">
           <div class="flex items-center gap-2">
             <span class="font-label-lg text-sm tracking-wider font-bold text-primary">ZC TEAM - MEXICO ÔNG GIÀ</span>
-            <span class="px-1.5 py-0.2 rounded bg-primary-container/15 text-primary-container text-[10px] font-mono font-bold tracking-widest border border-primary-container/30" id="app-version-badge">1.0.28</span>
+            <span class="px-1.5 py-0.2 rounded bg-primary-container/15 text-primary-container text-[10px] font-mono font-bold tracking-widest border border-primary-container/30" id="app-version-badge">V2.2.5</span>
           </div>
           <span class="font-label-sm text-[10px] tracking-widest text-secondary font-medium">PADRE MX V3.0 • SKILL 04 BỐ CỤC 80/20 (7 PARTS GREEN SCREEN + ICON GREEN)</span>
         </div>
@@ -125,7 +125,7 @@
         <!-- Nút kiểm tra cập nhật thủ công -->
         <button class="flex items-center gap-1 px-2 py-1 rounded bg-surface-container border border-surface-container-high hover:border-primary-container/50 text-on-surface-variant hover:text-primary transition-all" id="btn-check-update-header" title="Kiểm tra bản cập nhật mới trên GitHub" type="button">
           <span class="material-symbols-outlined text-[14px] text-secondary" id="icon-check-update-header">sync</span>
-          <span class="font-label-sm text-[10.5px] font-mono" id="text-check-update-header">Cập nhật: 1.0.28</span>
+          <span class="font-label-sm text-[10.5px] font-mono" id="text-check-update-header">Cập nhật: V2.2.5</span>
         </button>
         <div class="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-container-low border border-surface-container-high" id="gpu-badge">
           <span class="inline-block w-2 h-2 rounded-full bg-primary-container shadow-[0_0_8px_rgba(0,255,135,0.7)] animate-pulse"></span>
@@ -240,11 +240,11 @@
       <div class="flex items-center gap-2 shrink-0">
         <!-- Cụm Chọn Nhanh 2 Chức Năng Chạy: [1] Full 100% | [2] Chạy 70% (Vừa làm việc khác) -->
         <div class="flex items-center gap-1 p-0.5 rounded-lg bg-surface-container border border-surface-container-highest" id="header-perf-mode-group">
-          <button class="perf-mode-btn active whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded bg-primary-container text-on-primary-fixed font-label-md text-[11px] font-bold shadow-[0_0_10px_rgba(0,255,135,0.35)] transition-all" data-perf-mode="full_100" title="Chức năng 1: Chạy Full 100% công suất như hiện tại (Tối đa 5 video • 3 tab AI/Acc • &lt;90% CPU/GPU)" type="button">
+          <button class="perf-mode-btn active whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded bg-primary-container text-on-primary-fixed font-label-md text-[11px] font-bold shadow-[0_0_10px_rgba(0,255,135,0.35)] transition-all" data-perf-mode="full_100" title="Chức năng 1: Chạy Full 100% công suất như hiện tại (Tối đa 5 video • 15 luồng AI [5 Acc × 3 tab] • &lt;90% CPU/GPU)" type="button">
             <span>🔥 1. Chạy Full 100%</span>
           </button>
-          <button class="perf-mode-btn whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded bg-transparent hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface font-label-md text-[11px] font-semibold transition-all" data-perf-mode="work_70" title="Chức năng 2: Chạy 70% công suất để vừa chạy vừa làm việc khác mượt mà (Giới hạn tối đa 3 luồng • &lt;70% CPU/GPU)" type="button">
-            <span>💼 2. Chạy 70% (Tối Đa 3 Luồng)</span>
+          <button class="perf-mode-btn whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded bg-transparent hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface font-label-md text-[11px] font-semibold transition-all" data-perf-mode="work_70" title="Chức năng 2: Chạy 70% công suất để vừa chạy vừa làm việc khác mượt mà (Tối đa 5 luồng AI [1 tab/Acc] • 3 video • &lt;70% CPU/GPU)" type="button">
+            <span>💼 2. Chạy 70% (3 Video • 5 AI)</span>
           </button>
         </div>
         <!-- Nút Check Toàn Bộ (Quét & Dọn sạch lỗi [LOCKED_TITLE] trong Kịch Bản + Cắt đoạn lỗi trong Video MP4) -->
@@ -259,7 +259,7 @@
         </button>
         <button class="whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded bg-primary-container/15 hover:bg-primary-container/25 border border-primary-container/50 text-primary-container font-label-md text-xs font-bold transition-all shadow-sm active:scale-95" id="btn-check-update-nav" title="Bấm để kiểm tra và cập nhật phiên bản mới nhất từ GitHub" type="button">
           <span class="material-symbols-outlined text-[15px]" id="icon-check-update-nav">sync</span>
-          <span class="font-mono" id="text-check-update-nav">🔄 CẬP NHẬT (1.0.28)</span>
+          <span class="font-mono" id="text-check-update-nav">🔄 CẬP NHẬT (V2.2.5)</span>
         </button>
       </div>
     </nav>
@@ -468,11 +468,12 @@
                 </select>
               </div>
               <div class="flex flex-col gap-1">
-                <label class="font-label-sm text-[10px] text-on-surface-variant uppercase font-semibold" for="adas-output-mode-select">Chế Độ Chạy (3 Chế Độ)</label>
+                <label class="font-label-sm text-[10px] text-on-surface-variant uppercase font-semibold" for="adas-output-mode-select">Chế Độ Chạy (4 Chế Độ)</label>
                 <select class="h-8 px-2 bg-surface-container-lowest text-primary font-label-md text-xs rounded border border-surface-container-high focus:outline-none focus:ring-1 focus:ring-primary-container" id="adas-output-mode-select">
-                  <option value="script_seo_thumb_only">1. Chỉ Viết Kịch Bản + 2 Thumbnail + SEO (Không Render)</option>
-                  <option value="full_video" selected>2. Viết Kịch Bản + 2 Thumbnail + SEO &amp; Render Luôn (Song Song)</option>
-                  <option value="render_ready_only">3. Chỉ Render Các Kịch Bản Đã Xong (Không Mở AI)</option>
+                  <option value="script_seo_thumb_only">1. Chỉ Viết Kịch Bản + Thumbnail + SEO (Không Render)</option>
+                  <option value="script_seo_thumb_voice_only">2. Viết Kịch Bản + Thumbnail + SEO -&gt; Tạo Voice GPU Luôn (Chưa Render)</option>
+                  <option value="full_video" selected>3. Viết Kịch Bản + Thumbnail + SEO &amp; Render Luôn (Song Song)</option>
+                  <option value="render_ready_only">4. Chỉ Tạo Voice &amp; Render MP4 Các Kịch Bản Đã Xong (Không Mở AI)</option>
                 </select>
               </div>
               <div class="flex flex-col gap-1">
@@ -502,6 +503,16 @@
                   <option value="18000">Bản Dài: 60k–70k ký tự es-MX (7 Parts • Stage A/B/C)</option>
                 </select>
               </div>
+              <div class="flex flex-col gap-1 md:col-span-2" id="adas-thumb-mode-wrap">
+                <label class="font-label-sm text-[10px] text-on-surface-variant uppercase font-semibold flex items-center justify-between gap-2" for="adas-thumb-mode-select">
+                  <span>Chế Độ Tạo Ảnh Thumbnail (Key Mexico Ông Già)</span>
+                  <span class="font-mono text-[9.5px] text-secondary truncate" id="adas-thumb-mode-note">Key MXC: Chọn tạo 2 ảnh hoặc chỉ tạo 1 ảnh nền xanh gắn video</span>
+                </label>
+                <select class="h-8 px-2 bg-surface-container-lowest text-primary font-label-md text-xs rounded border border-surface-container-high focus:outline-none focus:ring-1 focus:ring-primary-container" id="adas-thumb-mode-select">
+                  <option value="both" selected>1. Tạo 2 Ảnh (Thumbnail Chính 16:9 + Ảnh Nền Xanh 9:16)</option>
+                  <option value="green_only">2. Chỉ Tạo 1 Ảnh Nền Xanh 9:16 (Dùng Gắn Nhân Vật Vào Video)</option>
+                </select>
+              </div>
             </div>
             <!-- CHỌN 2 CHỨC NĂNG CHẠY CÔNG SUẤT MÁY (100% FULL HOẶC 70% VỪA LÀM VIỆC KHÁC) -->
             <div class="flex flex-col gap-1.5 p-2.5 rounded-lg bg-surface-container-low border border-primary-container/30">
@@ -515,14 +526,14 @@
                     <span>🔥 1. Chạy Full 100%</span>
                     <span class="perf-dot w-2 h-2 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]"></span>
                   </div>
-                  <div class="text-[10px] text-on-surface-variant mt-0.5">Tối đa tốc độ như hiện tại (5 video • 3 tab AI/Acc • &lt;90% CPU/GPU)</div>
+                  <div class="text-[10px] text-on-surface-variant mt-0.5">Tối đa tốc độ (5 video • 15 luồng AI [5 Acc × 3 tab] • &lt;90% CPU/GPU)</div>
                 </button>
                 <button class="perf-mode-card p-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container border border-surface-container-high text-left transition-all" data-perf-mode="work_70" type="button">
                   <div class="text-xs font-bold text-on-surface flex items-center justify-between">
-                    <span>💼 2. Chạy 70% (Tối Đa 3 Luồng)</span>
+                    <span>💼 2. Chạy 70% (3 Video • 5 Luồng AI)</span>
                     <span class="perf-dot w-2 h-2 rounded-full bg-surface-container-highest"></span>
                   </div>
-                  <div class="text-[10px] text-on-surface-variant mt-0.5">Vừa chạy vừa làm việc khác mượt mà (Tối đa 3 luồng • 1 tab AI/Acc • &lt;70% CPU/GPU)</div>
+                  <div class="text-[10px] text-on-surface-variant mt-0.5">Vừa chạy vừa làm việc khác mượt mà (5 luồng AI [1 tab/Acc] • 3 video • &lt;70% CPU/GPU)</div>
                 </button>
               </div>
             </div>
@@ -668,7 +679,7 @@
                   <span class="material-symbols-outlined text-[13px] text-primary-container">movie_edit</span> Render Sẵn Sàng
                 </button>
                 <button class="flex items-center justify-center gap-1 h-7 rounded bg-primary-container text-on-primary-container font-label-sm text-[11px] font-bold shadow-[0_0_8px_rgba(0,255,135,0.3)] hover:brightness-105 transition-all" id="btn-adas-run-all" type="button">
-                  <span class="material-symbols-outlined text-[13px]">rocket_launch</span> Đa Luồng 3 Nick
+                  <span class="material-symbols-outlined text-[13px]">rocket_launch</span> Đa Luồng 5 Nick
                 </button>
               </div>
             </div>
@@ -1369,10 +1380,10 @@
                 </button>
                 <button class="perf-mode-card p-2 rounded-lg bg-surface-container-low hover:bg-surface-container border border-surface-container-high text-left transition-all" data-perf-mode="work_70" type="button">
                   <div class="text-xs font-bold text-on-surface flex items-center justify-between">
-                    <span>💼 2. Chạy 70% (Tối Đa 3 Luồng)</span>
+                    <span>💼 2. Chạy 70% (3 Video • 5 Luồng AI)</span>
                     <span class="perf-dot w-2 h-2 rounded-full bg-surface-container-highest"></span>
                   </div>
-                  <div class="text-[10px] text-on-surface-variant mt-0.5">Chừa 30% tài nguyên máy: Tối đa 3 luồng • Ưu tiên mượt chuột/trình duyệt</div>
+                  <div class="text-[10px] text-on-surface-variant mt-0.5">Chừa 30% tài nguyên máy: Tối đa 3 video • 5 luồng AI • Ưu tiên mượt chuột/trình duyệt</div>
                 </button>
               </div>
             </div>
@@ -1533,18 +1544,20 @@
                   <span class="text-on-surface-variant uppercase font-semibold flex items-center gap-1">
                     <span class="material-symbols-outlined text-[14px] text-primary-container">hub</span> CDP AI CHROME
                   </span>
-                  <span class="text-primary-container font-bold font-label-md text-label-md" id="gauge-cdp-count">3/3 ACTIVE</span>
+                  <span class="text-primary-container font-bold font-label-md text-label-md" id="gauge-cdp-count">0/5 ACTIVE</span>
                 </div>
                 <div class="flex items-center gap-3">
                   <div class="relative w-12 h-12 flex-shrink-0 flex items-center justify-center bg-surface-container-lowest rounded border border-surface-container">
                     <span class="material-symbols-outlined text-[26px] text-primary-container">lan</span>
                   </div>
                   <div class="flex flex-col min-w-0 w-full">
-                    <span class="font-label-sm text-label-sm text-primary font-bold truncate">Port 9222, 9223, 9224</span>
-                    <div class="flex items-center gap-1.5 mt-1 font-label-sm text-label-sm text-secondary" id="gauge-cdp-ports-status">
-                      <span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]"></span> P1 Ready
-                      <span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]"></span> P2 Ready
-                      <span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]"></span> P3 Ready
+                    <span class="font-label-sm text-label-sm text-primary font-bold truncate">Port 9232, 9233, 9234, 9235, 9236</span>
+                    <div class="flex flex-wrap items-center gap-1.5 mt-1 font-label-sm text-label-sm text-secondary" id="gauge-cdp-ports-status">
+                      <span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span> P1 Idle
+                      <span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span> P2 Idle
+                      <span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span> P3 Idle
+                      <span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span> P4 Idle
+                      <span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span> P5 Idle
                     </div>
                   </div>
                 </div>

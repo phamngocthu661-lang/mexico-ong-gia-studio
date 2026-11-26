@@ -14,6 +14,10 @@ BROWSER_PROFILE_3/
 BROWSER_PROFILE_4/
 BROWSER_PROFILE_5/
 GEMINI_PROFILE_1/
+GEMINI_PROFILE_2/
+GEMINI_PROFILE_3/
+.ruff_cache/
+.pytest_cache/
 config/*
 _ota_update_tmp/
 _ota_backup/

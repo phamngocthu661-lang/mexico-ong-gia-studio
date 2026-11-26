@@ -343,12 +343,17 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         custom_id: Optional[str] = None
         use_original_title: bool = False
         channel_key: Optional[str] = None
+        thumb_mode: Optional[str] = None
 
     class SwitchChannelKeyRequest(BaseModel):
         channel_key: str
 
     class SetIdeasChannelKeyRequest(BaseModel):
         channel_key: str
+        ma_ids: Optional[list[str]] = None
+
+    class SetIdeasThumbModeRequest(BaseModel):
+        thumb_mode: str = "both"
         ma_ids: Optional[list[str]] = None
 
     class SetIdeaTitleModeRequest(BaseModel):
@@ -374,12 +379,16 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         force_rewrite_script: bool = False
         max_retries: int = 3
         use_original_title: Optional[bool] = None
+        voice_only: bool = False
+        thumb_mode: Optional[str] = None
 
     class RenderOnlyRequest(BaseModel):
         ma_ids: Optional[list[str]] = None
         only_unrendered: bool = False
         video_settings: Optional[Dict[str, Any]] = None
         override_qa: bool = False
+        voice_only: bool = False
+        thumb_mode: Optional[str] = None
 
     # ==========================================================================
     # API HỆ THỐNG LOG & CHẨN ĐOÁN LỖI (SYSTEM LOGS & DIAGNOSTICS)
@@ -749,6 +758,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             custom_id=req.custom_id,
             use_original_title=bool(req.use_original_title),
             channel_key=req.channel_key,
+            thumb_mode=req.thumb_mode,
         )
         first_idea = saved_list[0]
         if req.use_original_title:
@@ -930,6 +940,8 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             force_rewrite_script=req.force_rewrite_script,
             max_retries=max(1, min(5, req.max_retries)),
             use_original_title=req.use_original_title,
+            voice_only=bool(req.voice_only),
+            thumb_mode=req.thumb_mode,
         )
         if not started:
             raise HTTPException(
@@ -959,6 +971,8 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             video_settings=req.video_settings,
             only_unrendered=req.only_unrendered,
             override_qa=req.override_qa,
+            voice_only=bool(req.voice_only),
+            thumb_mode=req.thumb_mode,
         )
         if res.get("queued_count", 0) == 0 and res.get("skipped_qa_blocked_ids"):
             raise HTTPException(
@@ -1091,12 +1105,16 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/adas/project/{ma_id}/generate-thumbnails")
     def api_adas_generate_thumbnails(
-        ma_id: str, preferred_acc_id: Optional[str] = None, force: bool = True
+        ma_id: str,
+        preferred_acc_id: Optional[str] = None,
+        force: bool = True,
+        thumb_mode: Optional[str] = None,
     ):
         started = adas_engine.start_generate_thumbnails_only_async(
             ma_id=ma_id,
             preferred_acc_id=preferred_acc_id,
             force_regenerate=force,
+            thumb_mode=thumb_mode,
         )
         if not started:
             raise HTTPException(
@@ -1106,7 +1124,19 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         return {
             "success": True,
             "ma_id": ma_id,
-            "message": f"Đã bắt đầu tạo & đánh giá 3 Thumbnail (6 dòng chữ) cho {ma_id}!",
+            "thumb_mode": thumb_mode,
+            "message": f"Đã bắt đầu tạo lại ảnh Thumbnail cho {ma_id}!",
+        }
+
+    @app.post("/api/adas/ideas/thumb-mode")
+    def api_adas_set_ideas_thumb_mode(req: SetIdeasThumbModeRequest):
+        updated = adas_engine.set_ideas_thumb_mode(
+            thumb_mode=req.thumb_mode, ma_ids=req.ma_ids
+        )
+        return {
+            "success": True,
+            "thumb_mode": req.thumb_mode,
+            "ideas": updated,
         }
 
     @app.get("/api/license/status")

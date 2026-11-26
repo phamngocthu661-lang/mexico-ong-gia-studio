@@ -1343,17 +1343,56 @@ def _is_green_plate_clean_and_large(plate_path: Path) -> bool:
         return False
 
 
+def normalize_thumb_mode(raw_mode: Optional[str]) -> str:
+    """Chuẩn hóa chế độ tạo Thumbnail cho kênh `padre_mx`: `both` (2 ảnh) hoặc `green_only` (chỉ 1 ảnh nền xanh 9:16)."""
+    s = str(raw_mode or "").strip().lower()
+    if s in (
+        "green_only",
+        "only_green",
+        "nen_xanh_only",
+        "nenxanh",
+        "nen_xanh",
+        "green",
+        "single_green",
+    ):
+        return "green_only"
+    return "both"
+
+
+def resolve_project_thumb_mode(
+    proj_dir: Optional[Path] = None,
+    final_dir: Optional[Path] = None,
+    explicit_mode: Optional[str] = None,
+) -> str:
+    """Đọc `thumb_mode` (`both` | `green_only`) từ tham số hoặc `idea_info.json` của dự án."""
+    if explicit_mode is not None and str(explicit_mode).strip():
+        return normalize_thumb_mode(explicit_mode)
+    for d in (proj_dir, final_dir):
+        if d is None:
+            continue
+        info_p = Path(d) / "idea_info.json"
+        if info_p.exists():
+            try:
+                data = json.loads(info_p.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("thumb_mode"):
+                    return normalize_thumb_mode(data.get("thumb_mode"))
+            except Exception:
+                pass
+    return "both"
+
+
 def check_render_thumbnail_prerequisites(
     proj_dir: Path,
     final_proj_dir: Optional[Path] = None,
     proj_name: str = "",
     channel_key: str = "padre_mx",
+    thumb_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Chốt chặn kiểm tra điều kiện ảnh BẮT BUỘC trước khi cho phép Render Video MP4:
-    - Mọi Key đều BẮT BUỘC phải có `THUMBNAIL.png` hợp lệ (> 4KB).
-    - Key `padre_mx` BẮT BUỘC phải có thêm ảnh nhân vật nền xanh `THUMBNAIL-NENXANH.png` (9:16 sạch).
-    - Key `homeless` / `mafia` không dùng ảnh nền xanh theo quy chuẩn Preview.
+    - Key `padre_mx` chế độ `both`: BẮT BUỘC phải có đủ `THUMBNAIL.png` VÀ `THUMBNAIL-NENXANH.png` (9:16 sạch).
+    - Key `padre_mx` chế độ `green_only`: Chỉ cần `THUMBNAIL-NENXANH.png` (9:16 sạch) để gắn nhân vật vào video.
+    - Key `homeless` / `mafia`: Bắt buộc phải có `THUMBNAIL.png` (không dùng ảnh nền xanh theo quy chuẩn Preview).
     """
     proj_dir = Path(proj_dir)
     if not proj_name:
@@ -1364,6 +1403,15 @@ def check_render_thumbnail_prerequisites(
     ck = str(channel_key or "padre_mx").strip().lower()
     if ck not in ("homeless", "mafia"):
         ck = "padre_mx"
+
+    eff_thumb_mode = (
+        "both"
+        if ck in ("homeless", "mafia")
+        else resolve_project_thumb_mode(
+            proj_dir=proj_dir, final_dir=final_dir, explicit_mode=thumb_mode
+        )
+    )
+    requires_main = True if ck in ("homeless", "mafia") else (eff_thumb_mode != "green_only")
 
     target_thumb = proj_dir / "THUMBNAIL.png"
     main_thumb: Optional[Path] = None
@@ -1437,23 +1485,29 @@ def check_render_thumbnail_prerequisites(
                 pass
 
     missing: List[str] = []
-    if main_thumb is None:
+    if requires_main and main_thumb is None:
         missing.append("THUMBNAIL.png")
     if requires_green and green_thumb is None:
         missing.append("THUMBNAIL-NENXANH.png")
 
     ok = len(missing) == 0
-    reason = (
-        ""
-        if ok
-        else (
-            f"[{proj_name}] Không thể Render MP4 vì còn thiếu: {', '.join(missing)}. "
-            f"Hãy tạo đủ {'cặp ảnh Thumbnail + Ảnh Nền Xanh' if requires_green else 'ảnh Thumbnail'} trước khi Render!"
+    if ok:
+        reason = ""
+    else:
+        need_desc = (
+            "cặp ảnh Thumbnail + Ảnh Nền Xanh"
+            if (requires_main and requires_green)
+            else ("ảnh nền xanh 9:16 (THUMBNAIL-NENXANH.png)" if requires_green else "ảnh Thumbnail")
         )
-    )
+        reason = (
+            f"[{proj_name}] Không thể Render MP4 vì còn thiếu: {', '.join(missing)}. "
+            f"Hãy tạo đủ {need_desc} trước khi Render!"
+        )
     return {
         "ok": ok,
         "channel_key": ck,
+        "thumb_mode": eff_thumb_mode,
+        "requires_main": requires_main,
         "requires_green": requires_green,
         "thumbnail_path": str(main_thumb) if main_thumb else "",
         "green_path": str(green_thumb) if green_thumb else "",

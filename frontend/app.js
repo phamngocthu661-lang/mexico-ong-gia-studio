@@ -2440,6 +2440,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const isVideoError = it.status === "ERROR_VIDEO" && !hasMp4;
       const isError = (it.status === "ERROR" || it.status === "ERROR_VIDEO") && !hasScript && !isPartialScript;
       const isRunning = (it.status === "RUNNING" || (it.status === "VIDEO_RENDERING" && isVideoRenderingNow) || isVideoRenderingNow) && !hasMp4;
+      const isVoiceQueued = (it.status === "VOICE_QUEUED") && !hasMp4;
+      const hasVoice = !!it.has_voice || it.status === "VOICE_DONE";
       const hasThumb = !!it.has_thumbnail;
       const hasSeo = !!it.has_seo;
 
@@ -2448,9 +2450,14 @@ document.addEventListener("DOMContentLoaded", () => {
         statusPill = `<span class="px-1.5 py-0.5 rounded bg-primary-container/20 text-primary-container border border-primary-container/40 text-[10px] font-mono font-bold shrink-0">🎬 Đã có MP4</span>`;
       } else if (isRunning) {
         statusPill = `<span class="px-1.5 py-0.5 rounded bg-secondary-container/20 text-secondary-container border border-secondary-container/40 text-[10px] font-mono font-bold animate-pulse shrink-0">🔄 Đang chạy</span>`;
+      } else if (isVoiceQueued) {
+        statusPill = `<span class="px-1.5 py-0.5 rounded bg-secondary-container/20 text-secondary-container border border-secondary-container/40 text-[10px] font-mono font-bold animate-pulse shrink-0">🎙️ Chờ Voice</span>`;
       } else if (isVideoError && hasScript) {
         const kChars = (pureCount / 1000).toFixed(1) + "k";
         statusPill = `<span class="px-1.5 py-0.5 rounded bg-error/20 text-error border border-error/40 text-[10px] font-mono font-bold shrink-0" title="Video trước đó bị lỗi hoặc ngắt giữa chừng — Đã lọc vào Chưa Render để chạy lại">⚠️ Lỗi Render (${kChars})</span>`;
+      } else if (hasScript && hasVoice) {
+        const kChars = (pureCount / 1000).toFixed(1) + "k";
+        statusPill = `<span class="px-1.5 py-0.5 rounded bg-secondary-container/15 text-secondary-container border border-secondary-container/40 text-[10px] font-mono font-bold shrink-0" title="Đã tạo xong Kịch bản + Voice GPU — Chưa Render MP4">🎙️ Xong Voice (${kChars})</span>`;
       } else if (hasScript) {
         const kChars = (pureCount / 1000).toFixed(1) + "k";
         statusPill = `<span class="px-1.5 py-0.5 rounded bg-primary-container/15 text-primary-container border border-primary-container/30 text-[10px] font-mono font-semibold shrink-0">✓ Xong (${kChars})</span>`;
@@ -2463,17 +2470,24 @@ document.addEventListener("DOMContentLoaded", () => {
       const safeTooltip = String(`${maId}: ${fullTitle} (${it.current_step || ""})`).replace(/"/g, "&quot;");
       const rawCk = String(it.channel_key || "padre_mx").toLowerCase();
       const itemChannelKey = rawCk.includes("mafia") ? "mafia" : (rawCk.includes("homeless") ? "homeless" : "padre_mx");
+      const itemThumbMode = (it.thumb_mode === "green_only") ? "green_only" : "both";
       const channelBadgeHtml = itemChannelKey === "mafia"
         ? `<button type="button" class="btn-idea-toggle-channel-key px-1.5 py-0.5 rounded bg-purple-500/20 hover:bg-purple-500/35 text-purple-300 font-mono font-bold text-[9.5px] border border-purple-400/50 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-ck="mafia" title="Dự án chạy theo Key MAFIA US (5 Skills Mafia V2.0 • Giọng Mafia • Không dùng Ảnh Green KB) • Bấm để đổi sang Key Mexico">🕴️ MAFIA</button>`
         : itemChannelKey === "homeless"
         ? `<button type="button" class="btn-idea-toggle-channel-key px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 font-mono font-bold text-[9.5px] border border-amber-400/50 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-ck="homeless" title="Dự án chạy theo Key HOMELESS US (5 Skills Homeless V3.0 • Giọng Homeless • Không dùng Ảnh Green KB) • Bấm để đổi sang Key Mafia">🏚️ HOMELESS</button>`
         : `<button type="button" class="btn-idea-toggle-channel-key px-1.5 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/30 text-[#00ff87] font-mono font-bold text-[9.5px] border border-[#00ff87]/40 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-ck="padre_mx" title="Dự án chạy theo Key MEXICO ÔNG GIÀ (5 Skills Mexico es-MX • Có Ảnh Green KB) • Bấm để đổi sang Key Homeless">🇲🇽 MXC</button>`;
+      const thumbModeBadgeHtml = itemChannelKey === "padre_mx"
+        ? (itemThumbMode === "green_only"
+          ? `<button type="button" class="btn-idea-toggle-thumb-mode px-1.5 py-0.5 rounded bg-[#00ff87]/15 hover:bg-[#00ff87]/30 text-[#00ff87] font-mono font-bold text-[9.5px] border border-[#00ff87]/40 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-tm="green_only" title="Chỉ tạo 1 ảnh Nhân vật Nền Xanh 9:16 để gắn video (Bỏ qua THUMBNAIL.png) • Bấm để đổi sang Tạo 2 Ảnh">🟩 1 Nền Xanh</button>`
+          : `<button type="button" class="btn-idea-toggle-thumb-mode px-1.5 py-0.5 rounded bg-secondary-container/15 hover:bg-secondary-container/30 text-secondary-container font-mono text-[9.5px] border border-secondary-container/35 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-tm="both" title="Tạo đủ 2 ảnh (Thumbnail 16:9 + Nền Xanh 9:16) • Bấm để đổi sang Chỉ Tạo 1 Ảnh Nền Xanh">🖼 2 Ảnh</button>`)
+        : "";
 
       return `
         <div class="adas-idea-card px-2.5 py-1.5 rounded bg-surface-container-high border border-outline-variant/25 hover:border-secondary-container/40 transition-all flex items-center justify-between gap-2" style="display:flex;" title="${safeTooltip}">
           <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
             <span class="px-1.5 py-0.5 rounded bg-secondary-container/15 text-secondary-container font-mono font-bold text-[10.5px] border border-secondary-container/30 shrink-0">#${maId}</span>
             ${channelBadgeHtml}
+            ${thumbModeBadgeHtml}
             ${it.use_original_title
               ? `<button type="button" class="btn-idea-toggle-title-mode px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 font-mono font-bold text-[9.5px] border border-amber-400/50 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-orig="1" title="Đang dùng Tiêu Đề Gốc (Bỏ Skill 01, tạo thẳng Giàn ý Skill 02) • Bấm để đổi sang Chạy Như Cũ (Skill 01)">📌 Gốc</button>`
               : `<button type="button" class="btn-idea-toggle-title-mode px-1.5 py-0.5 rounded bg-primary-container/10 hover:bg-primary-container/25 text-primary-container/90 font-mono text-[9.5px] border border-primary-container/30 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-orig="0" title="Đang chọn Chạy Như Cũ (Qua Skill 01 viết lại 5 tiêu đề) • Bấm để đổi sang Dùng Tiêu Đề Gốc (Bỏ Skill 01)">🔄 Skill 1</button>`}
@@ -2547,6 +2561,35 @@ document.addEventListener("DOMContentLoaded", () => {
                 : nextCk === "homeless"
                 ? `🏚️ [#${mid}] Đã chuyển sang Key HOMELESS US (5 Skills Homeless V3.0 • Voice Homeless • Không dùng Ảnh Green KB).`
                 : `🇲🇽 [#${mid}] Đã chuyển sang Key MEXICO ÔNG GIÀ (5 Skills Mexico es-MX • Có Ảnh Green KB).`,
+              "SCRIPT",
+              "INFO",
+              mid
+            );
+          }
+        } catch (e) {}
+      });
+    });
+
+    // Gắn sự kiện cho nút đổi nhanh Chế độ Thumbnail trên từng mã Mexico (🖼 2 Ảnh <-> 🟩 1 Nền Xanh)
+    listEl.querySelectorAll(".btn-idea-toggle-thumb-mode").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const mid = btn.dataset.id;
+        if (!mid) return;
+        const nextTm = btn.dataset.tm === "green_only" ? "both" : "green_only";
+        try {
+          const res = await fetch("/api/adas/ideas/thumb-mode", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thumb_mode: nextTm, ma_ids: [mid] })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            renderSavedIdeasList(data.ideas || []);
+            appendInstantLogToUI(
+              nextTm === "green_only"
+                ? `🟩 [#${mid}] Đã chuyển sang chế độ Thumbnail: CHỈ TẠO 1 ẢNH NỀN XANH 9:16 (Dùng gắn video).`
+                : `🖼 [#${mid}] Đã chuyển sang chế độ Thumbnail: TẠO ĐỦ 2 ẢNH (Thumbnail 16:9 + Nền Xanh 9:16).`,
               "SCRIPT",
               "INFO",
               mid
@@ -2841,29 +2884,46 @@ document.addEventListener("DOMContentLoaded", () => {
     const accSel = document.getElementById("adas-acc-select");
     const autoVid = document.getElementById("adas-auto-video");
     const outputModeSel = document.getElementById("adas-output-mode-select");
+    const thumbModeSel = document.getElementById("adas-thumb-mode-select");
     const lenMode = document.getElementById("adas-length-mode");
     const aiProvSel = document.getElementById("adas-ai-provider-select");
     const chosenProvider = (aiProvSel && aiProvSel.value) ? aiProvSel.value : "chatgpt_web";
+    const outputModeVal = outputModeSel ? outputModeSel.value : "full_video";
 
-    // Nếu người dùng đang chọn chế độ 3 ("render_ready_only" — Chỉ Render các kịch bản đã xong) và không ép chế độ khác
-    if (forceAutoVideo === null && !forceRewriteScript && outputModeSel && outputModeSel.value === "render_ready_only") {
+    // Nếu người dùng đang chọn chế độ 4 ("render_ready_only" — Chỉ Render các kịch bản đã xong) và không ép chế độ khác
+    if (forceAutoVideo === null && !forceRewriteScript && outputModeVal === "render_ready_only") {
       await triggerRenderOnly(maIds, true);
       return;
     }
 
     let shouldProduceVideo = true;
+    let voiceOnlyMode = false;
     if (typeof forceAutoVideo === "boolean") {
       shouldProduceVideo = forceAutoVideo;
-    } else if (outputModeSel && outputModeSel.value === "script_seo_thumb_only") {
+    } else if (outputModeVal === "script_seo_thumb_only") {
       shouldProduceVideo = false;
+    } else if (outputModeVal === "script_seo_thumb_voice_only") {
+      shouldProduceVideo = true;
+      voiceOnlyMode = true;
+    } else if (outputModeVal === "full_video") {
+      shouldProduceVideo = true;
+      voiceOnlyMode = false;
     } else if (autoVid) {
       shouldProduceVideo = autoVid.checked;
     }
+
+    const activeThumbMode = (thumbModeSel && !thumbModeSel.disabled) ? (thumbModeSel.value || "both") : null;
 
     if (!shouldProduceVideo) {
       appendInstantLogToUI(
         `📝 Khởi chạy chế độ CHỈ VIẾT KỊCH BẢN + SEO + THUMBNAIL (Không Render Video) cho ${maIds.length} mã: ${maIds.join(", ")} (Tự động Retry 3 lần nếu lỗi)`,
         "SCRIPT",
+        "INFO"
+      );
+    } else if (voiceOnlyMode) {
+      appendInstantLogToUI(
+        `🎙️ Khởi chạy chế độ VIẾT KỊCH BẢN + SEO + THUMBNAIL -> TẠO VOICE GPU LUÔN (Chưa Render MP4) cho ${maIds.length} mã: ${maIds.join(", ")}`,
+        "VOICE",
         "INFO"
       );
     }
@@ -2881,7 +2941,9 @@ document.addEventListener("DOMContentLoaded", () => {
           ai_provider: chosenProvider,
           force_rewrite_script: !!forceRewriteScript,
           max_retries: 3,
-          use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original"
+          use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
+          voice_only: voiceOnlyMode,
+          thumb_mode: activeThumbMode
         })
       });
       const data = await res.json();
@@ -3055,7 +3117,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (badgeThumbs) {
         const cards = Array.isArray(currentProjectDetailData.thumbnail_cards) ? currentProjectDetailData.thumbnail_cards : [];
         const readyCnt = cards.filter((c) => c.exists).length;
-        badgeThumbs.innerText = `🖼️ ${readyCnt}/2 Ảnh Thumbnail & Nền Xanh`;
+        const totalCards = Math.max(1, cards.length || 1);
+        const labelThumbs = (currentProjectDetailData.channel_key === "padre_mx" && currentProjectDetailData.thumb_mode === "green_only" && totalCards === 1)
+          ? `🖼️ ${readyCnt}/1 Ảnh Nền Xanh 9:16`
+          : (totalCards === 1 ? `🖼️ ${readyCnt}/1 Ảnh Thumbnail` : `🖼️ ${readyCnt}/2 Ảnh Thumbnail & Nền Xanh`);
+        badgeThumbs.innerText = labelThumbs;
       }
       if (footerPath) {
         footerPath.innerText = `📁 Thư mục dự án: ${currentProjectDetailData.raw_project_dir || currentProjectDetailData.project_dir || ""}`;
@@ -3169,12 +3235,12 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    // 0b. Lưu & đồng bộ Chế Độ Chạy (3 Chế Độ: Chỉ Viết KB+Thumb+SEO / Viết + Render Song Song / Chỉ Render Kịch Bản Đã Xong)
+    // 0b. Lưu & đồng bộ Chế Độ Chạy (4 Chế Độ: Chỉ Viết KB+Thumb+SEO / Viết + Tạo Voice GPU [Chưa Render] / Viết + Render Song Song / Chỉ Tạo Voice & Render MP4)
     const outputModeSel = document.getElementById("adas-output-mode-select");
     const autoVidChk = document.getElementById("adas-auto-video");
     if (outputModeSel) {
       const savedOutMode = localStorage.getItem("adas_output_mode");
-      if (savedOutMode && ["full_video", "script_seo_thumb_only", "render_ready_only"].includes(savedOutMode)) {
+      if (savedOutMode && ["full_video", "script_seo_thumb_only", "script_seo_thumb_voice_only", "render_ready_only"].includes(savedOutMode)) {
         outputModeSel.value = savedOutMode;
         if (autoVidChk) {
           autoVidChk.checked = (savedOutMode !== "script_seo_thumb_only");
@@ -3187,10 +3253,12 @@ document.addEventListener("DOMContentLoaded", () => {
           autoVidChk.checked = (modeVal !== "script_seo_thumb_only");
         }
         const logMsg = modeVal === "script_seo_thumb_only"
-          ? "📝 Đã chọn Chế độ 1: CHỈ VIẾT KỊCH BẢN + THUMBNAIL + SEO (Không Render Video)"
-          : (modeVal === "render_ready_only"
-            ? "🎬 Đã chọn Chế độ 3: CHỈ RENDER CÁC KỊCH BẢN ĐÃ XONG (Không mở AI viết lại)"
-            : "🚀 Đã chọn Chế độ 2: VIẾT KỊCH BẢN + THUMBNAIL + SEO & RENDER VIDEO LUÔN (Cứ xong kịch bản nào Render ngay kịch bản đó)");
+          ? "📝 Đã chọn Chế độ 1: CHỈ VIẾT KỊCH BẢN + THUMBNAIL + SEO (Chưa Tạo Voice / Video)"
+          : (modeVal === "script_seo_thumb_voice_only"
+            ? "🎙️ Đã chọn Chế độ 2: VIẾT KỊCH BẢN + THUMBNAIL + SEO -> TẠO VOICE GPU LUÔN (Chưa Render MP4)"
+            : (modeVal === "render_ready_only"
+              ? "🎬 Đã chọn Chế độ 4: CHỈ TẠO VOICE & RENDER CÁC KỊCH BẢN ĐÃ XONG (Không mở AI viết lại)"
+              : "🚀 Đã chọn Chế độ 3: VIẾT KỊCH BẢN + THUMBNAIL + SEO & RENDER VIDEO LUÔN (Song song)"));
         appendInstantLogToUI(logMsg, "SCRIPT", "INFO");
       });
     }
@@ -3198,6 +3266,26 @@ document.addEventListener("DOMContentLoaded", () => {
       autoVidChk.addEventListener("change", () => {
         outputModeSel.value = autoVidChk.checked ? "full_video" : "script_seo_thumb_only";
         localStorage.setItem("adas_output_mode", outputModeSel.value);
+      });
+    }
+
+    // 0c. Lưu & đồng bộ Chế Độ Tạo Ảnh Thumbnail (both: 2 ảnh | green_only: chỉ 1 ảnh nền xanh cho Mexico)
+    const thumbModeSel = document.getElementById("adas-thumb-mode-select");
+    if (thumbModeSel) {
+      const savedThumbMode = localStorage.getItem("adas_thumb_mode");
+      if (savedThumbMode && ["both", "green_only"].includes(savedThumbMode)) {
+        thumbModeSel.value = savedThumbMode;
+      }
+      thumbModeSel.addEventListener("change", () => {
+        const tmVal = thumbModeSel.value === "green_only" ? "green_only" : "both";
+        localStorage.setItem("adas_thumb_mode", tmVal);
+        appendInstantLogToUI(
+          tmVal === "green_only"
+            ? "🟩 Đã chọn Chế độ Thumbnail: CHỈ TẠO 1 ẢNH NỀN XANH 9:16 (Dùng gắn nhân vật vào video)"
+            : "🖼 Đã chọn Chế độ Thumbnail: TẠO ĐỦ 2 ẢNH (Thumbnail Chính 16:9 + Nền Xanh 9:16)",
+          "SCRIPT",
+          "INFO"
+        );
       });
     }
 
@@ -3510,6 +3598,22 @@ document.addEventListener("DOMContentLoaded", () => {
       if (typeof window.refreshMachineCodePreview === "function") {
         window.refreshMachineCodePreview();
       }
+      const tmSel = document.getElementById("adas-thumb-mode-select");
+      const tmNote = document.getElementById("adas-thumb-mode-note");
+      if (tmSel) {
+        if (normCk === "padre_mx") {
+          tmSel.disabled = false;
+          tmSel.style.opacity = "1";
+          const savedTm = localStorage.getItem("adas_thumb_mode");
+          if (savedTm && ["both", "green_only"].includes(savedTm)) tmSel.value = savedTm;
+          if (tmNote) tmNote.innerText = "Key MXC: Chọn tạo 2 ảnh hoặc chỉ tạo 1 ảnh nền xanh gắn video";
+        } else {
+          tmSel.value = "both";
+          tmSel.disabled = true;
+          tmSel.style.opacity = "0.6";
+          if (tmNote) tmNote.innerText = "Key Homeless/Mafia chỉ tạo 1 ảnh THUMBNAIL.png 16:9 (không dùng Nền Xanh)";
+        }
+      }
       if (userClicked) {
         try {
           const res = await fetch("/api/license/switch-key", {
@@ -3688,7 +3792,8 @@ document.addEventListener("DOMContentLoaded", () => {
             raw_text: raw,
             custom_id: null,
             use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
-            channel_key: window.currentActiveChannelKey || "padre_mx"
+            channel_key: window.currentActiveChannelKey || "padre_mx",
+            thumb_mode: (document.getElementById("adas-thumb-mode-select") && !document.getElementById("adas-thumb-mode-select").disabled) ? document.getElementById("adas-thumb-mode-select").value : null
           })
         });
         const data = await res.json();
@@ -3765,7 +3870,8 @@ document.addEventListener("DOMContentLoaded", () => {
             raw_text: raw,
             custom_id: null,
             use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
-            channel_key: window.currentActiveChannelKey || "padre_mx"
+            channel_key: window.currentActiveChannelKey || "padre_mx",
+            thumb_mode: (document.getElementById("adas-thumb-mode-select") && !document.getElementById("adas-thumb-mode-select").disabled) ? document.getElementById("adas-thumb-mode-select").value : null
           })
         });
         const data = await res.json();
@@ -3798,7 +3904,8 @@ document.addEventListener("DOMContentLoaded", () => {
             raw_text: raw,
             custom_id: null,
             use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
-            channel_key: window.currentActiveChannelKey || "padre_mx"
+            channel_key: window.currentActiveChannelKey || "padre_mx",
+            thumb_mode: (document.getElementById("adas-thumb-mode-select") && !document.getElementById("adas-thumb-mode-select").disabled) ? document.getElementById("adas-thumb-mode-select").value : null
           })
         });
         const data = await res.json();
@@ -4446,8 +4553,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (cdpPortsBox && Array.isArray(t.cdp_ports)) {
           cdpPortsBox.innerHTML = t.cdp_ports.map((p) => {
-            const label = p.label || p.acc || `P${p.port}`;
-            if (p.open) {
+            const label = p.label || p.acc || p.id || `P${p.port}`;
+            if (p.open || p.active) {
               return `<span class="flex items-center gap-1 text-[10px] font-mono text-primary-container"><span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_6px_rgba(0,255,135,0.8)]"></span>${label} Ready</span>`;
             }
             return `<span class="flex items-center gap-1 text-[10px] font-mono text-on-surface-variant"><span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span>${label} Idle</span>`;
@@ -5456,15 +5563,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
       document.querySelectorAll(".perf-mode-status-label").forEach((lbl) => {
         lbl.innerText = is70
-          ? "Đang chọn: 💼 Chạy 70% (Tối đa 3 luồng)"
-          : "Đang chọn: 🔥 Chạy Full 100% (Như hiện tại)";
+          ? "Đang chọn: 💼 Chạy 70% (3 Video • 5 Luồng AI)"
+          : "Đang chọn: 🔥 Chạy Full 100% (5 Video • 15 Luồng AI)";
       });
 
       const balancerBadge = document.getElementById("gpu-balancer-badge");
       if (balancerBadge) {
         balancerBadge.innerText = is70
-          ? "💼 Chế độ 70% (Vừa làm việc khác): Giới hạn ~70% GPU & CPU (Tối đa 3 luồng)"
-          : "⚡ Chế độ Full 100%: Mục tiêu ~90% GPU & CPU (Tối đa 5 video)";
+          ? "💼 Chế độ 70% (Vừa làm việc khác): Giới hạn ~70% GPU & CPU (3 Video • 5 AI)"
+          : "⚡ Chế độ Full 100%: Mục tiêu ~90% GPU & CPU (5 Video • 15 AI)";
       }
     };
 
@@ -5481,8 +5588,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (notifyUser) {
         appendInstantLogToUI(
           norm === "work_70"
-            ? "💼 Đã bật Chức năng 2: Chạy 70% Công Suất (Khóa cứng tối đa 3 luồng • Giới hạn 70% CPU/GPU • 1 tab AI/Acc) — Vừa chạy vừa làm việc khác mượt mà!"
-            : "🔥 Đã bật Chức năng 1: Chạy Full 100% Công Suất như hiện tại (Ngưỡng 90% CPU/GPU • Tối đa 5 video • 3 tab AI/Acc)!",
+            ? "💼 Đã bật Chức năng 2: Chạy 70% Công Suất (Tối đa 5 luồng AI [1 tab/Acc] • 3 video • Giới hạn 70% CPU/GPU) — Vừa chạy vừa làm việc khác mượt mà!"
+            : "🔥 Đã bật Chức năng 1: Chạy Full 100% Công Suất (Ngưỡng 90% CPU/GPU • Tối đa 5 video • 15 luồng AI [5 Acc × 3 tab])!",
           "SYSTEM",
           "INFO"
         );

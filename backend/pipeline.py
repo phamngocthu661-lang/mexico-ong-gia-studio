@@ -379,9 +379,9 @@ class ProductionPipeline:
         default_target_pct = 70.0 if is_70 else 90.0
         return {
             "mode": "work_70" if is_70 else "full_100",
-            "label": "💼 Chạy 70% (Tối Đa 3 Luồng — Vừa Chạy Vừa Làm Việc Khác)"
+            "label": "💼 Chạy 70% (3 Video • 5 Luồng AI — Vừa Chạy Vừa Làm Việc Khác)"
             if is_70
-            else "🔥 Chạy Full 100% (Tối Đa Tốc Độ)",
+            else "🔥 Chạy Full 100% (Tối Đa Tốc Độ — 5 Video • 15 Luồng AI)",
             "target_max_percent": float(
                 getattr(
                     self.resource_balancer, "target_max_percent", default_target_pct
@@ -389,15 +389,16 @@ class ProductionPipeline:
                 or default_target_pct
             ),
             "max_concurrent_videos": 3 if is_70 else 5,
-            "max_total_threads": 3 if is_70 else 9,
+            "max_total_threads": 5 if is_70 else 15,
+            "max_ai_threads": 5 if is_70 else 15,
             "threads_per_account": 1 if is_70 else 3,
         }
 
     def set_performance_mode(self, mode: str, persist: bool = True) -> Dict[str, Any]:
         """
         Chuyển đổi tức thì giữa 2 chế độ hoạt động (áp dụng ngay cả khi đang chạy):
-        1. `full_100`: Chạy Full 100% công suất (Tối đa 5 video render song song, <90% CPU/GPU, 3 tab AI/Acc = 9 luồng).
-        2. `work_70`: Chạy 70% công suất (Khóa cứng TỐI ĐA 3 LUỒNG trên toàn hệ thống: tối đa 3 luồng viết kịch bản AI / 1 tab mỗi Acc,
+        1. `full_100`: Chạy Full 100% công suất (Tối đa 5 video render song song, <90% CPU/GPU, 3 tab AI/Acc × 5 Acc = 15 luồng).
+        2. `work_70`: Chạy 70% công suất (Tối đa 5 luồng viết kịch bản AI = 1 tab mỗi Acc trong 5 Acc,
            tối đa 3 luồng render video, <70% CPU/GPU, ưu tiên tiến trình BelowNormal) để người dùng vừa chạy vừa làm việc khác mượt mà.
         """
         norm_mode = (
@@ -1066,25 +1067,29 @@ class ProductionPipeline:
         progress_map: Dict[str, float] = {}
 
         try:
-            # Đồng bộ chế độ nguồn Stock nếu người dùng chọn từ giao diện
-            if stock_selection in ("auto_download", "local_available"):
-                self.stock_manager.set_stock_source_mode(stock_selection)
-            # Quét kho Stock có sẵn trên máy
-            st_info = self.stock_manager.scan_and_update_inventory()
-            active_stock_mode = self.stock_manager.get_stock_source_mode()
-            if (
-                active_stock_mode == "auto_download"
-                and auto_ensure_stock_hours
-                and float(st_info.get("available_raw_hours", 0.0)) < 0.5
-            ):
-                log_info(
-                    f"🌐 [Chế độ 1: Stock Tải Về] Kho STOOK hiện có {st_info.get('available_raw_hours', 0.0)}h. Đang tự động tải bù Stock từ Pexels/Pixabay/YouTube...",
-                    category="STOCK",
-                )
-                self.stock_manager.ensure_minimum_stock_hours(
-                    target_hours=min(max(1.5, float(target_stock_hours or 30.0)), 2.0),
-                    slice_minutes=30,
-                )
+            # Đồng bộ chế độ nguồn Stock nếu người dùng chọn từ giao diện (chỉ cần khi có job Render MP4)
+            has_render_job = any(
+                not bool(j.get("voice_only", False)) for j in self.pending_jobs
+            )
+            if has_render_job:
+                if stock_selection in ("auto_download", "local_available"):
+                    self.stock_manager.set_stock_source_mode(stock_selection)
+                # Quét kho Stock có sẵn trên máy
+                st_info = self.stock_manager.scan_and_update_inventory()
+                active_stock_mode = self.stock_manager.get_stock_source_mode()
+                if (
+                    active_stock_mode == "auto_download"
+                    and auto_ensure_stock_hours
+                    and float(st_info.get("available_raw_hours", 0.0)) < 0.5
+                ):
+                    log_info(
+                        f"🌐 [Chế độ 1: Stock Tải Về] Kho STOOK hiện có {st_info.get('available_raw_hours', 0.0)}h. Đang tự động tải bù Stock từ Pexels/Pixabay/YouTube...",
+                        category="STOCK",
+                    )
+                    self.stock_manager.ensure_minimum_stock_hours(
+                        target_hours=min(max(1.5, float(target_stock_hours or 30.0)), 2.0),
+                        slice_minutes=30,
+                    )
 
             def _update_overall_progress(latest_msg: str, stage_name: str):
                 with self.lock:
@@ -1260,7 +1265,7 @@ class ProductionPipeline:
                             raw_job_ck = "padre_mx"
                     job_channel_key = normalize_channel_key(raw_job_ck)
 
-                    # CHỐT CHẶN BẮT BUỘC TRƯỚC VOICE & RENDER: Phải có đủ THUMBNAIL.png (+ THUMBNAIL-NENXANH.png cho padre_mx)!
+                    # CHỐT CHẶN BẮT BUỘC TRƯỚC VOICE & RENDER: Phải có đủ ảnh theo thumb_mode!
                     import backend.renderer as _renderer_preq_mod
 
                     preq_early = _renderer_preq_mod.check_render_thumbnail_prerequisites(
@@ -1268,6 +1273,7 @@ class ProductionPipeline:
                         final_proj_dir=final_proj_dir,
                         proj_name=proj_name,
                         channel_key=job_channel_key,
+                        thumb_mode=job.get("thumb_mode"),
                     )
                     if not preq_early.get("ok"):
                         missing_early = ", ".join(
@@ -1635,6 +1641,65 @@ class ProductionPipeline:
                     if proj_name in getattr(self, "paused_for_perf_downscale", set()):
                         raise InterruptedError("PERF_DOWNSCALE_YIELD")
 
+                    # Nếu job chạy chế độ CHỈ TẠO VOICE (Chưa Render MP4) -> Đánh dấu VOICE_DONE và kết thúc tại đây!
+                    if bool(job.get("voice_only", False)):
+                        voice_dur_sec = float((voice_res or {}).get("total_duration", 0.0) or 0.0)
+                        try:
+                            (assets_dir / "voice_meta.json").write_text(
+                                json.dumps(
+                                    {
+                                        "ma_id": proj_name,
+                                        "preset_id": preset_id,
+                                        "speed": speed_val,
+                                        "duration_sec": round(voice_dur_sec, 2),
+                                        "voice_only": True,
+                                        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    },
+                                    ensure_ascii=False,
+                                    indent=2,
+                                ),
+                                encoding="utf-8",
+                            )
+                        except Exception:
+                            pass
+                        with self.lock:
+                            completed_results.append(
+                                {
+                                    "project": proj_name,
+                                    "voice_only": True,
+                                    "voice_path": str(assets_dir / "master_voice.wav"),
+                                    "srt_path": str(assets_dir / "subtitles.srt"),
+                                    "duration": voice_dur_sec,
+                                }
+                            )
+                            progress_map[proj_name] = 100.0
+                        dur_min = voice_dur_sec / 60.0
+                        self._set_project_live_detail(
+                            proj_name=proj_name,
+                            stage="voice_done",
+                            stage_label="🎙️ Đã xong Voice GPU",
+                            progress=100.0,
+                            detail=f"Hoàn tất Voice GPU (~{dur_min:.1f} phút) — Chưa Render MP4",
+                            job_num=job_num,
+                        )
+                        self._update_job_card_status(
+                            proj_name,
+                            "VOICE_DONE",
+                            f"🎙️ Đã xong KB + Voice GPU [{preset_id} • {speed_val}x] (~{dur_min:.1f}p) — Chưa Render MP4",
+                            extra={
+                                "has_voice": True,
+                                "voice_only": True,
+                                "voice_duration_sec": round(voice_dur_sec, 1),
+                            },
+                        )
+                        _update_overall_progress("", "voice_done")
+                        log_info(
+                            f"🎙️ [{proj_name}] Hoàn tất tạo Voice GPU (~{dur_min:.1f} phút). Chưa Render MP4 (Lần Render sau sẽ tái sử dụng Voice này)!",
+                            category="VOICE",
+                            project_id=proj_name,
+                        )
+                        return
+
                     # ==========================================================
                     # GIAI ĐOẠN 2: CẤP PHÁT VIDEO STOCK (KHÔI PHỤC STOCK CŨ NẾU ĐANG RENDER DỞ & CÒN TỒN TẠI TRÊN Ổ CỨNG)
                     # ==========================================================
@@ -1959,7 +2024,8 @@ class ProductionPipeline:
                                         )
                                         eng_gr = ADASScriptEngine(root_dir=self.root_dir)
                                         eng_gr.ensure_project_thumbnail_with_failover_sync(
-                                            proj_name
+                                            proj_name,
+                                            thumb_mode=job.get("thumb_mode"),
                                         )
                                         for gs_cand2 in (
                                             renders_dir / "THUMBNAIL-NENXANH.png",
@@ -1981,12 +2047,13 @@ class ProductionPipeline:
                                     project_id=proj_name,
                                 )
 
-                            # CHỐT CHẶN CUỐI TRƯỚC KHI GHÉP FFmpeg: Bắt buộc phải có đủ THUMBNAIL.png (+ THUMBNAIL-NENXANH.png nếu padre_mx)
+                            # CHỐT CHẶN CUỐI TRƯỚC KHI GHÉP FFmpeg: Bắt buộc phải có đủ ảnh theo thumb_mode
                             preq_render = _renderer_mod.check_render_thumbnail_prerequisites(
                                 proj_dir=proj_dir,
                                 final_proj_dir=final_proj_dir,
                                 proj_name=proj_name,
                                 channel_key=job_channel_key,
+                                thumb_mode=job.get("thumb_mode"),
                             )
                             if not preq_render.get("ok"):
                                 missing_ren = ", ".join(
@@ -2519,11 +2586,24 @@ class ProductionPipeline:
                     with self.lock:
                         if not self.pending_jobs or self.should_stop:
                             if completed_results and not failed_projects:
+                                voice_only_cnt = sum(
+                                    1 for r in completed_results if isinstance(r, dict) and r.get("voice_only")
+                                )
+                                video_cnt = len(completed_results) - voice_only_cnt
                                 self.state["status"] = "completed"
                                 self.state["progress"] = 100.0
-                                self.state["message"] = (
-                                    f"🎉 Hoàn tất xuất thành công 100% ({len(completed_results)} video MP4)!"
-                                )
+                                if voice_only_cnt > 0 and video_cnt == 0:
+                                    self.state["message"] = (
+                                        f"🎙️ Hoàn tất tạo Voice GPU thành công 100% ({voice_only_cnt} dự án — Sẵn sàng Render MP4)!"
+                                    )
+                                elif voice_only_cnt > 0:
+                                    self.state["message"] = (
+                                        f"🎉 Hoàn tất {video_cnt} video MP4 & {voice_only_cnt} Voice GPU sẵn sàng!"
+                                    )
+                                else:
+                                    self.state["message"] = (
+                                        f"🎉 Hoàn tất xuất thành công 100% ({len(completed_results)} video MP4)!"
+                                    )
                             elif completed_results and failed_projects:
                                 self.state["status"] = "completed"
                                 self.state["progress"] = 100.0
