@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.3",
-  "build_number": 223,
-  "released_at": "2026-11-20 23:22:00",
+  "version": "V2.2.4",
+  "build_number": 224,
+  "released_at": "2026-11-26 17:55:14",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.2.3 (Build #223): Chặn triệt để lỗi thu nhầm ảnh loading placeholder (nền đen + 4 khối xanh dương bo góc) và lỗi thu nhầm chính ảnh tham chiếu khi vẽ THUMBNAIL-NENXANH.png 9:16 từ ChatGPT Web; ưu tiên thu ảnh gốc từ Backend API (asset_pointer / estuary), lọc sạch CSS blur / SVG / oaistatic / spinner DOM, đồng thời loại bỏ & vẽ lại mọi file placeholder cũ trên đĩa."
+  "changelog": "V2.2.4 (Build #224): Tăng tốc tạo voice (ổn định ~2,3-2,4x thời gian thực trên GPU NVIDIA), tăng tốc render ~32% nhờ cache green gộp sẵn ảnh nhân vật, giảm render chậm khi máy bận; kịch bản Mafia 44-48k ký tự với cổng kiểm tra chất lượng; vá bảo mật API và ký số bản cập nhật OTA."
 }
