@@ -2784,7 +2784,15 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   window.__renderSavedIdeasGlobal = renderSavedIdeasList;
 
-  async function triggerRenderOnly(maIds = null, onlyUnrendered = false) {
+  function confirmRenderDespiteQa(blockedList) {
+    const shown = (blockedList || []).slice(0, 8).join("\n- ");
+    return confirm(
+      "⚠️ Các kịch bản sau chưa đạt kiểm định:\n- " + shown +
+      "\n\nBạn vẫn muốn render chúng? Quyết định này sẽ được ghi vào hồ sơ dự án."
+    );
+  }
+
+  async function triggerRenderOnly(maIds = null, onlyUnrendered = false, overrideQa = false) {
     try {
       const res = await fetch("/api/adas/render-only", {
         method: "POST",
@@ -2792,13 +2800,29 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({
           ma_ids: maIds,
           only_unrendered: onlyUnrendered,
-          video_settings: getCurrentVideoSettings()
+          video_settings: getCurrentVideoSettings(),
+          override_qa: overrideQa === true
         })
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && data.detail && data.detail.qa_blocked_ids) {
+        await loadSavedIdeas();
+        if (confirmRenderDespiteQa(data.detail.qa_blocked)) {
+          await triggerRenderOnly(data.detail.qa_blocked_ids, onlyUnrendered, true);
+        }
+        return;
+      }
       if (!res.ok) {
         alert(data.detail || "Không có kịch bản nào sẵn sàng Render MP4!");
         return;
+      }
+      if (
+        !overrideQa &&
+        Array.isArray(data.skipped_qa_blocked_ids) &&
+        data.skipped_qa_blocked_ids.length > 0 &&
+        confirmRenderDespiteQa(data.skipped_qa_blocked)
+      ) {
+        await triggerRenderOnly(data.skipped_qa_blocked_ids, onlyUnrendered, true);
       }
       switchStudioTab("tab-render");
       if (progressSection) {

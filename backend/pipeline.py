@@ -888,12 +888,14 @@ class ProductionPipeline:
             category="VOICE",
             project_id=proj_name,
         )
+        voice_started_at = time.time()
         res = self.voice_service.generate_full_voice_and_subtitles(
             script_text=script_text,
             output_dir=assets_dir,
             ref_voice=ref_wav_name,
             progress_callback=voice_cb,
         )
+        self._note_voice_performance(proj_name, res, time.time() - voice_started_at)
         try:
             (assets_dir / "voice_signature.json").write_text(
                 json.dumps(
@@ -912,6 +914,137 @@ class ProductionPipeline:
         except Exception:
             pass
         return res
+
+    def _note_voice_performance(
+        self, proj_name: str, voice_res: Any, elapsed_sec: float
+    ) -> None:
+        try:
+            audio_sec = float((voice_res or {}).get("total_duration") or 0.0)
+            device = str(getattr(self.voice_service, "device", "") or "unknown")
+            self.__dict__.setdefault("_voice_perf_by_project", {})[proj_name] = {
+                "sec": round(elapsed_sec, 1),
+                "audio_sec": round(audio_sec, 1),
+                "speed_x": round(audio_sec / max(0.001, elapsed_sec), 2),
+                "device": device,
+            }
+        except Exception:
+            pass
+
+    def _sample_agent_cpu_seconds(self) -> Optional[float]:
+        """Đo tổng CPU đã dùng của Antigravity để biết nó có tranh tải với render không."""
+        if os.name != "nt":
+            return None
+        try:
+            res = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-Process -Name Antigravity,language_server -ErrorAction SilentlyContinue | Measure-Object CPU -Sum).Sum",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=6,
+                creationflags=0x08000000,
+            )
+            text = (res.stdout or "").strip().replace(",", ".")
+            return float(text) if text else 0.0
+        except Exception:
+            return None
+
+    def _begin_render_perf_sample(self) -> Dict[str, Any]:
+        sample: Dict[str, Any] = {"started_at": time.time()}
+        try:
+            sample["cpu_times"] = self.resource_balancer._read_win_cpu_times()
+            sample["agent_cpu_sec"] = self._sample_agent_cpu_seconds()
+            sample["concurrent"] = int(getattr(self, "active_ffmpeg_jobs", 1) or 1)
+        except Exception:
+            pass
+        return sample
+
+    def _record_render_performance(
+        self,
+        proj_name: str,
+        channel_key: str,
+        render_res: Any,
+        sample: Dict[str, Any],
+    ) -> None:
+        """Ghi tốc độ, bộ mã hóa và mức tranh tải; không bao giờ làm hỏng video đã render xong."""
+        try:
+            from backend.logger_service import (
+                build_render_slowdown_hints,
+                record_render_performance,
+            )
+
+            result = render_res if isinstance(render_res, dict) else {}
+            wall_sec = max(0.001, time.time() - float(sample.get("started_at", time.time())))
+            cores = os.cpu_count() or 1
+            system_cpu = None
+            cpu_start = sample.get("cpu_times")
+            cpu_end = self.resource_balancer._read_win_cpu_times()
+            if cpu_start and cpu_end:
+                idle_delta = cpu_end[0] - cpu_start[0]
+                total_delta = (cpu_end[1] - cpu_start[1]) + (cpu_end[2] - cpu_start[2])
+                if total_delta > 0:
+                    system_cpu = round((1.0 - idle_delta / float(total_delta)) * 100.0, 1)
+            agent_cpu = None
+            agent_start = sample.get("agent_cpu_sec")
+            agent_end = self._sample_agent_cpu_seconds()
+            if agent_start is not None and agent_end is not None:
+                agent_cpu = round(
+                    max(0.0, agent_end - agent_start) / (wall_sec * cores) * 100.0, 1
+                )
+            concurrent = max(
+                int(sample.get("concurrent") or 1),
+                int(getattr(self, "active_ffmpeg_jobs", 1) or 1),
+            )
+            voice = self.__dict__.get("_voice_perf_by_project", {}).pop(proj_name, None)
+            entry = {
+                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "project": proj_name,
+                "channel_key": channel_key,
+                "video_sec": round(float(result.get("duration") or 0.0), 1),
+                "render_total_sec": round(float(result.get("render_time") or wall_sec), 1),
+                "encoder": result.get("encoder"),
+                "encode_speed_x": result.get("encode_speed_x"),
+                "encoded_sec": result.get("encoded_sec"),
+                "nvenc_retries": result.get("nvenc_retries", 0),
+                "cpu_fallback": bool(result.get("cpu_fallback")),
+                "encoder_events": result.get("encoder_events") or [],
+                "green_cache": result.get("green_cache_mode"),
+                "voice": voice,
+                "python": Path(sys.executable).parent.name,
+                "performance_mode": getattr(self, "performance_mode", "full_100"),
+                "system_cpu_pct": system_cpu,
+                "agent_cpu_pct": agent_cpu,
+                "concurrent_renders": concurrent,
+            }
+            hints = build_render_slowdown_hints(entry)
+            entry["slowdown_hints"] = hints
+            record_render_performance(entry)
+            voice_text = (
+                f" | Voice {voice['speed_x']}x trên {voice['device']}" if voice else ""
+            )
+            cpu_text = f" | CPU {system_cpu:.0f}%" if system_cpu is not None else ""
+            agent_text = f", Antigravity {agent_cpu:.0f}%" if agent_cpu is not None else ""
+            message = (
+                f"📊 Hiệu năng '{proj_name}': Render {entry['encode_speed_x']}x bằng "
+                f"{str(entry['encoder']).upper()}{voice_text}{cpu_text}{agent_text}"
+            )
+            if hints:
+                log_warn(
+                    f"{message} | Có thể chậm do: {'; '.join(hints)}",
+                    category="RENDER",
+                    project_id=proj_name,
+                )
+            else:
+                log_info(message, category="RENDER", project_id=proj_name)
+        except Exception as e_perf:
+            log_warn(
+                f"Không ghi được log hiệu năng: {e_perf}",
+                category="RENDER",
+                project_id=proj_name,
+            )
 
     def _run_batch(
         self,
@@ -1926,7 +2059,8 @@ class ProductionPipeline:
                                 category="RENDER",
                                 project_id=proj_name,
                             )
-                            _renderer_mod.render_drama_nhat_video(
+                            render_perf_sample = self._begin_render_perf_sample()
+                            render_perf_res = _renderer_mod.render_drama_nhat_video(
                                 audio_path=voice_res["master_voice"],
                                 subtitle_path=voice_res["subtitles_srt"],
                                 stock_video_path=stock_file,
@@ -1997,6 +2131,12 @@ class ProductionPipeline:
                                 f"✅ Kiểm định Video MP4 ĐẠT 100% cho '{proj_name}' (Thời lượng: {mp4_integrity.get('duration', 0.0) / 60:.2f} phút).",
                                 category="RENDER",
                                 project_id=proj_name,
+                            )
+                            self._record_render_performance(
+                                proj_name,
+                                job_channel_key,
+                                render_perf_res,
+                                render_perf_sample,
                             )
                             break
                     finally:

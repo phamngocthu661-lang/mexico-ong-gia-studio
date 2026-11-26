@@ -1,5 +1,9 @@
 import asyncio
+import hmac
+import json
 import os
+import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -9,7 +13,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -55,6 +58,156 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 
+_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
+_OPENABLE_MEDIA_EXTS = _VIDEO_EXTS | _IMAGE_EXTS | _AUDIO_EXTS
+_GREEN_MEDIA_EXTS = _VIDEO_EXTS | _IMAGE_EXTS
+_MAX_VOICE_UPLOAD_BYTES = 200 * 1024 * 1024
+_LOOPBACK_HOSTNAMES = {"127.0.0.1", "localhost", "[::1]"}
+_UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_UI_DOCUMENT_PATHS = {"/", "/index.html", "/static/", "/static/index.html"}
+
+
+def _is_openable_media_path(path_value: str) -> bool:
+    """Chỉ cho hệ điều hành mở file media, không bao giờ mở file có thể thực thi."""
+    tail = os.path.splitdrive(path_value)[1]
+    if ":" in tail:  # Chặn NTFS Alternate Data Stream.
+        return False
+    return os.path.splitext(path_value)[1].lower() in _OPENABLE_MEDIA_EXTS
+
+
+def _is_path_within(target: str, root: str) -> bool:
+    try:
+        norm_target = os.path.normcase(os.path.abspath(target))
+        norm_root = os.path.normcase(os.path.abspath(root))
+        return os.path.commonpath([norm_target, norm_root]) == norm_root
+    except ValueError:
+        return False
+
+
+def _load_or_create_local_api_token(base_dir: Path) -> str:
+    """Giữ token ổn định qua các lần khởi động để cửa sổ đang mở không bị mất phiên."""
+    token_path = base_dir / "config" / ".local_api_token"
+    try:
+        saved = token_path.read_text(encoding="ascii").strip()
+        if re.fullmatch(r"[0-9a-f]{64}", saved):
+            return saved
+    except (OSError, UnicodeDecodeError):
+        pass
+    token = secrets.token_hex(32)
+    try:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(token, encoding="ascii")
+    except OSError as e:
+        log_warn("SERVER", f"Không lưu được token phiên nội bộ: {e}")
+    return token
+
+
+class LocalRequestGuard:
+    """Chỉ nhận yêu cầu từ chính giao diện app; chặn website lạ và DNS rebinding."""
+
+    def __init__(self, app: Any, token: str):
+        self.app = app
+        self.token = token
+
+    @staticmethod
+    def _hostname_and_port(host: str) -> tuple[str, str]:
+        match = re.fullmatch(r"(\[[^\]]+\]|[^:]+)(?::(\d+))?", host.strip().lower())
+        return (match.group(1), match.group(2) or "80") if match else ("", "")
+
+    def _has_valid_session(self, headers: Dict[str, str], cookie_name: str) -> bool:
+        for part in headers.get("cookie", "").split(";"):
+            name, sep, value = part.strip().partition("=")
+            if sep and name == cookie_name:
+                return hmac.compare_digest(value.encode(), self.token.encode())
+        return False
+
+    def _deny_reason(self, scope: Dict[str, Any], headers: Dict[str, str]) -> str:
+        host = headers.get("host", "")
+        hostname, port = self._hostname_and_port(host)
+        if hostname not in _LOOPBACK_HOSTNAMES:
+            return "host"
+        origin = headers.get("origin")
+        if origin is not None and origin.lower() != f"http://{host.lower()}":
+            return "origin"
+
+        path = scope.get("path", "")
+        is_api = path == "/api" or path.startswith("/api/")
+        fetch_site = headers.get("sec-fetch-site", "").lower()
+        fetch_mode = headers.get("sec-fetch-mode", "").lower()
+        if fetch_site in ("cross-site", "same-site") and (
+            scope["type"] == "websocket" or is_api or fetch_mode != "navigate"
+        ):
+            return "fetch-site"
+
+        if (
+            scope["type"] == "http"
+            and is_api
+            and scope.get("method", "").upper() in _UNSAFE_HTTP_METHODS
+            and not self._has_valid_session(headers, f"studio_session_{port}")
+        ):
+            return "session"
+        return ""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        reason = self._deny_reason(scope, headers)
+        if reason:
+            log_warn("SERVER", f"Đã chặn yêu cầu không hợp lệ ({reason}): {scope.get('path', '')}")
+            if scope["type"] == "websocket":
+                await receive()
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            body = json.dumps(
+                {"detail": "Yêu cầu bị chặn. Vui lòng mở lại ứng dụng.", "code": f"LOCAL_GUARD_{reason.upper()}"},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [
+                        (b"content-type", b"application/json; charset=utf-8"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                        (b"cache-control", b"no-store"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+
+        should_set_cookie = (
+            scope["type"] == "http"
+            and scope.get("method") in ("GET", "HEAD")
+            and scope.get("path") in _UI_DOCUMENT_PATHS
+        )
+        if not should_set_cookie:
+            await self.app(scope, receive, send)
+            return
+
+        _, port = self._hostname_and_port(headers.get("host", ""))
+        cookie = f"studio_session_{port}={self.token}; Path=/; HttpOnly; SameSite=Strict"
+
+        async def send_with_cookie(message):
+            if message["type"] == "http.response.start":
+                message = dict(message)
+                message["headers"] = [
+                    *message.get("headers", []),
+                    (b"set-cookie", cookie.encode("ascii")),
+                ]
+            await send(message)
+
+        await self.app(scope, receive, send_with_cookie)
+
+
 def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     base_dir = (
         Path(os.path.abspath(str(root_dir)))
@@ -81,14 +234,6 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     app = FastAPI(title="Drama Nhật Studio", version="1.0.0")
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     @app.middleware("http")
     async def disable_static_cache(request, call_next):
         response = await call_next(request)
@@ -96,6 +241,11 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             "no-store, no-cache, must-revalidate, max-age=0"
         )
         return response
+
+    # Thêm sau cùng để lớp bảo vệ nằm ngoài mọi middleware khác và bao cả WebSocket.
+    app.add_middleware(
+        LocalRequestGuard, token=_load_or_create_local_api_token(base_dir)
+    )
 
     sys_logger = get_logger(base_dir)
     pipeline = ProductionPipeline(base_dir)
@@ -229,6 +379,7 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
         ma_ids: Optional[list[str]] = None
         only_unrendered: bool = False
         video_settings: Optional[Dict[str, Any]] = None
+        override_qa: bool = False
 
     # ==========================================================================
     # API HỆ THỐNG LOG & CHẨN ĐOÁN LỖI (SYSTEM LOGS & DIAGNOSTICS)
@@ -807,7 +958,17 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             ma_ids=req.ma_ids,
             video_settings=req.video_settings,
             only_unrendered=req.only_unrendered,
+            override_qa=req.override_qa,
         )
+        if res.get("queued_count", 0) == 0 and res.get("skipped_qa_blocked_ids"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": res.get("message", "Kịch bản chưa đạt kiểm định."),
+                    "qa_blocked": res.get("skipped_qa_blocked", []),
+                    "qa_blocked_ids": res.get("skipped_qa_blocked_ids", []),
+                },
+            )
         if not res.get("started") and res.get("queued_count", 0) == 0:
             raise HTTPException(
                 status_code=400,
@@ -1485,6 +1646,11 @@ except Exception:
 
         if not src_path or not os.path.isfile(src_path):
             return {"success": False, "message": "Chưa chọn file hợp lệ."}
+        if os.path.splitext(src_path)[1].lower() not in _GREEN_MEDIA_EXTS:
+            return {
+                "success": False,
+                "message": "Chỉ nhận file video hoặc ảnh cho Kho Green.",
+            }
 
         kho_green_dir = base_dir / "Kho_Green"
         kho_green_dir.mkdir(parents=True, exist_ok=True)
@@ -1699,9 +1865,19 @@ except Exception:
         safe_name = (
             os.path.basename(raw_name.strip()) or f"voice_{int(time.time())}.wav"
         )
+        if os.path.splitext(safe_name)[1].lower() not in _AUDIO_EXTS:
+            return {
+                "success": False,
+                "message": "Chỉ nhận file âm thanh .wav, .mp3, .flac, .m4a hoặc .ogg.",
+            }
+        declared_size = request.headers.get("content-length", "")
+        if declared_size.isdigit() and int(declared_size) > _MAX_VOICE_UPLOAD_BYTES:
+            return {"success": False, "message": "File âm thanh vượt quá 200 MB."}
         body = await request.body()
         if not body:
             return {"success": False, "message": "File âm thanh rỗng."}
+        if len(body) > _MAX_VOICE_UPLOAD_BYTES:
+            return {"success": False, "message": "File âm thanh vượt quá 200 MB."}
         kho_voice_dir = base_dir / "Kho_Voice"
         kho_voice_dir.mkdir(parents=True, exist_ok=True)
         stem = Path(safe_name).stem
@@ -1918,7 +2094,18 @@ except Exception:
         else:
             p = os.path.abspath(raw_p)
         if not os.path.exists(p) and not os.path.splitext(p)[1]:
-            os.makedirs(p, exist_ok=True)
+            managed_roots = [str(base_dir)]
+            try:
+                storage = adas_engine.get_storage_paths()
+                managed_roots.extend(
+                    str(storage[key])
+                    for key in ("projects_dir", "final_video_dir", "ssd_staging_dir")
+                    if storage.get(key)
+                )
+            except Exception as e:
+                log_warn("SERVER", f"Không đọc được thư mục lưu trữ: {e}")
+            if any(_is_path_within(p, root) for root in managed_roots):
+                os.makedirs(p, exist_ok=True)
         if os.path.exists(p):
             target_cmd = f'explorer.exe "{p}"'
             if os.path.isfile(p):
@@ -1953,6 +2140,9 @@ except Exception:
         if not req.path:
             return {"success": False, "error": "Chưa có đường dẫn video"}
         p = os.path.abspath(req.path.strip())
+        if not _is_openable_media_path(p):
+            log_warn("SERVER", f"Đã chặn mở file không phải media: {p}")
+            return {"success": False, "error": "Chỉ được mở file video, ảnh hoặc âm thanh."}
         if os.path.exists(p) and os.path.isfile(p):
             try:
                 os.startfile(p)

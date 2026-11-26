@@ -1638,6 +1638,52 @@ def generate_license_key(
     }
 
 
+RENDER_PERF_LOG_FILE = LOGS_DIR / "render_performance.jsonl"
+_RENDER_PERF_LOCK = threading.Lock()
+_RENDER_PERF_MAX_BYTES = 5 * 1024 * 1024
+
+
+def build_render_slowdown_hints(entry: Dict[str, Any]) -> List[str]:
+    """Rút ra lý do có thể làm video chậm từ số đo thật của lần render."""
+    hints: List[str] = []
+    if entry.get("encoder") != "nvenc":
+        hints.append("Video được encode bằng CPU thay vì NVENC")
+    if int(entry.get("nvenc_retries") or 0) > 0:
+        hints.append(f"NVENC gián đoạn {entry['nvenc_retries']} lần")
+    voice = entry.get("voice") or {}
+    if voice.get("device") and voice.get("device") != "cuda":
+        hints.append(f"Voice chạy trên {voice.get('device')} thay vì GPU")
+    cpu_pct = entry.get("system_cpu_pct")
+    agent_pct = entry.get("agent_cpu_pct")
+    if cpu_pct is not None and float(cpu_pct) >= 85.0:
+        detail = f"CPU hệ thống bận {float(cpu_pct):.0f}%"
+        if agent_pct is not None:
+            detail += f", Antigravity dùng {float(agent_pct):.0f}%"
+        hints.append(detail)
+    if int(entry.get("concurrent_renders") or 1) > 1:
+        hints.append(f"Đang render song song {entry['concurrent_renders']} video")
+    return hints
+
+
+def record_render_performance(entry: Dict[str, Any]) -> None:
+    """Ghi một dòng JSON cho mỗi video; lỗi ghi log không được làm hỏng lần render."""
+    try:
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        with _RENDER_PERF_LOCK:
+            if (
+                RENDER_PERF_LOG_FILE.exists()
+                and RENDER_PERF_LOG_FILE.stat().st_size > _RENDER_PERF_MAX_BYTES
+            ):
+                os.replace(
+                    RENDER_PERF_LOG_FILE,
+                    RENDER_PERF_LOG_FILE.with_suffix(".old.jsonl"),
+                )
+            with open(RENDER_PERF_LOG_FILE, "a", encoding="utf-8") as handle:
+                handle.write(line)
+    except OSError:
+        pass
+
+
 def get_network_timestamp(timeout: float = 2.5) -> Optional[int]:
     """
     Lấy thời gian thực từ Header Date của Google / Cloudflare để chống gian lận chỉnh lùi ngày giờ Windows.
@@ -1670,7 +1716,6 @@ import importlib
 import shutil
 import sys
 import threading
-import zipfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -1785,15 +1830,9 @@ def _fetch_remote_version_json(
 ) -> Optional[Dict[str, Any]]:
     """
     Lấy file version.json mới nhất trực tiếp từ GitHub.
-    Ưu tiên GitHub REST API (không bị trễ cache CDN) và dự phòng sang raw.githubusercontent.com + bỏ qua lỗi SSL nếu máy khách thiếu chứng chỉ.
+    Ưu tiên GitHub REST API (không bị trễ cache CDN), dự phòng sang raw.githubusercontent.com
+    và curl.exe (dùng kho chứng chỉ Windows). Luôn kiểm tra chứng chỉ SSL.
     """
-    try:
-        import urllib3
-
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    except Exception:
-        pass
-
     headers_api = {
         "Accept": "application/vnd.github.v3.raw",
         "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -1810,17 +1849,39 @@ def _fetch_remote_version_json(
             {"Cache-Control": "no-cache", "User-Agent": "DramaNhatStudio-Updater/1.0"},
         ),
     ]:
-        for verify_ssl in (True, False):
-            try:
-                resp = requests.get(
-                    url, headers=hdrs, timeout=timeout, verify=verify_ssl
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, dict) and data.get("version"):
-                        return data
-            except Exception:
-                continue
+        try:
+            resp = requests.get(url, headers=hdrs, timeout=timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict) and data.get("version"):
+                    return data
+        except Exception:
+            continue
+
+    if os.name == "nt":
+        try:
+            curl_res = subprocess.run(
+                [
+                    "curl.exe",
+                    "-L",
+                    "--fail",
+                    "-s",
+                    "--connect-timeout",
+                    "6",
+                    "--max-time",
+                    str(int(max(timeout, 8.0)) + 4),
+                    raw_url,
+                ],
+                capture_output=True,
+                timeout=max(timeout, 8.0) + 6,
+                creationflags=0x08000000,
+            )
+            if curl_res.returncode == 0:
+                data = json.loads(curl_res.stdout.decode("utf-8"))
+                if isinstance(data, dict) and data.get("version"):
+                    return data
+        except Exception:
+            pass
 
     return None
 
@@ -1993,6 +2054,30 @@ def _hot_reload_backend_modules(adas_engine: Any = None, pipeline: Any = None):
         log_warn("UPDATER", f"Lưu ý khi cập nhật nóng StockManager: {e}")
 
 
+def _ensure_ota_crypto_available() -> bool:
+    """Đảm bảo có thư viện xác minh chữ ký; thiếu thì cài một lần từ PyPI."""
+    try:
+        import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
+
+        return True
+    except ImportError:
+        pass
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "cryptography>=42.0.0"],
+            capture_output=True,
+            timeout=300,
+            creationflags=0x08000000 if os.name == "nt" else 0,
+        )
+        importlib.invalidate_caches()
+        import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
+
+        return True
+    except Exception as e:
+        log_warn("UPDATER", f"Không cài được thư viện xác minh chữ ký: {e}")
+        return False
+
+
 def _safe_copy_file(src_file: Path, dst_file: Path) -> bool:
     """
     Sao chép file an toàn trên Windows:
@@ -2100,6 +2185,8 @@ import sys
 import time
 import socket
 import subprocess
+import json
+import shutil
 import urllib.request
 
 old_pid = int(sys.argv[1]) if len(sys.argv) > 1 else 0
@@ -2189,14 +2276,57 @@ env["DRAMA_PYTHON_SWITCHED"] = "1"
 main_py = os.path.join(root_dir, "main.py")
 wlog(f"Đang khởi chạy lại main.py bằng {sys.executable}...")
 
+spawned_procs = []
+marker_file = os.path.join(logs_dir, "_ota_pending_rollback.json")
+
+def is_server_up():
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open("http://127.0.0.1:8900/api/status", timeout=1.2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+def is_pip_installing():
+    try:
+        ps_pip = '(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*-m pip*install*" } | Measure-Object).Count'
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_pip], capture_output=True, text=True, timeout=8, creationflags=0x08000000)
+        return int((res.stdout or "0").strip() or 0) > 0
+    except Exception:
+        return False
+
+def restore_from_backup():
+    try:
+        with open(marker_file, "r", encoding="utf-8") as f:
+            marker = json.load(f)
+        backup_dir = marker["backup_dir"]
+        with open(os.path.join(backup_dir, "backup_manifest.json"), "r", encoding="utf-8") as f:
+            info = json.load(f)
+        for rel in info.get("created", []):
+            target = os.path.join(root_dir, rel)
+            if os.path.isfile(target):
+                os.remove(target)
+        for rel in info.get("saved", []):
+            target = os.path.join(root_dir, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(os.path.join(backup_dir, "files", rel), target)
+        os.remove(marker_file)
+        wlog(f"Đã khôi phục bản {marker.get('from_version', '')} từ {backup_dir}")
+        return True
+    except Exception as e:
+        wlog(f"Không khôi phục được bản cũ: {e}")
+        return False
+
 def spawn_main():
     try:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, main_py],
             cwd=root_dir,
             env=env,
             creationflags=0x08000000 | 0x00000200,
         )
+        spawned_procs.append(proc)
+        return proc
     except Exception as e:
         wlog(f"Lỗi khi gọi Popen main.py: {e}")
         return None
@@ -2221,6 +2351,49 @@ for i in range(50):
         pass
 
 wlog(f"Trạng thái Server 8900 sau khi khởi động lại: server_up={server_up}")
+
+if os.path.exists(marker_file):
+    if not server_up:
+        # Máy chậm hoặc main.py đang cài thư viện: chờ thêm trước khi kết luận bản mới lỗi.
+        soft_deadline = time.time() + 180
+        hard_deadline = time.time() + 1200
+        exited_since = 0.0
+        while time.time() < soft_deadline:
+            if is_server_up():
+                server_up = True
+                break
+            if spawned_procs and all(p.poll() is not None for p in spawned_procs):
+                exited_since = exited_since or time.time()
+                if time.time() - exited_since > 6:
+                    break
+            else:
+                exited_since = 0.0
+            if time.time() > soft_deadline - 20 and time.time() < hard_deadline and is_pip_installing():
+                soft_deadline = min(hard_deadline, time.time() + 60)
+            time.sleep(2.0)
+
+    if server_up:
+        try:
+            os.remove(marker_file)
+        except Exception:
+            pass
+    else:
+        wlog("Bản mới không khởi động được -> Đang tự động khôi phục bản cũ...")
+        for proc in spawned_procs:
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=4, creationflags=0x08000000)
+            except Exception:
+                pass
+        time.sleep(1.0)
+        if restore_from_backup():
+            spawned_procs.clear()
+            spawn_main()
+            for _ in range(80):
+                time.sleep(0.5)
+                if is_server_up():
+                    server_up = True
+                    break
+            wlog(f"Sau khi khôi phục bản cũ: server_up={server_up}")
 
 if server_up:
     time.sleep(2.5)
@@ -2341,12 +2514,7 @@ def apply_github_update(
         try:
             import subprocess
 
-            try:
-                import urllib3
-
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            except Exception:
-                pass
+            from . import ota_security
 
             root_dir = _resolve_root_dir(root_dir)
 
@@ -2359,11 +2527,6 @@ def apply_github_update(
                 "UPDATER",
                 f"🚀 Bắt đầu tải bản cập nhật mới nhất từ GitHub ({repo}@{branch})...",
             )
-
-            if restart_app:
-                _stop_all_tasks_and_subprocesses(
-                    adas_engine=adas_engine, pipeline=pipeline
-                )
 
             tmp_dir = root_dir / "_ota_update_tmp"
             if tmp_dir.exists():
@@ -2382,85 +2545,88 @@ def apply_github_update(
                 f"https://api.github.com/repos/{repo}/zipball/{branch}",
             ]
 
+            def _abort_update(message: str) -> Dict[str, Any]:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                try:
+                    from backend import migrate_customer_workspace_layout
+
+                    migrate_customer_workspace_layout(root_dir)
+                except Exception:
+                    pass
+                log_error("UPDATER", message)
+                return {"success": False, "error": message}
+
             downloaded = False
             last_err = ""
             for d_url in download_urls:
-                for verify_ssl in (True, False):
-                    try:
-                        resp = requests.get(
-                            d_url,
-                            headers={
-                                "User-Agent": "DramaNhatStudio-Updater/1.0",
-                                "Cache-Control": "no-cache",
-                            },
-                            stream=True,
-                            timeout=60,
-                            verify=verify_ssl,
-                        )
-                        if resp.status_code == 200:
-                            with open(zip_path, "wb") as f:
-                                for chunk in resp.iter_content(chunk_size=256 * 1024):
-                                    if chunk:
-                                        f.write(chunk)
-                            if zip_path.exists() and zip_path.stat().st_size > 10_000:
-                                downloaded = True
-                                break
-                        else:
-                            last_err = f"HTTP {resp.status_code}"
-                    except Exception as e:
-                        last_err = str(e)
-                if downloaded:
-                    break
+                try:
+                    resp = requests.get(
+                        d_url,
+                        headers={
+                            "User-Agent": "DramaNhatStudio-Updater/1.0",
+                            "Cache-Control": "no-cache",
+                        },
+                        stream=True,
+                        timeout=60,
+                    )
+                    if resp.status_code == 200:
+                        with open(zip_path, "wb") as f:
+                            for chunk in resp.iter_content(chunk_size=256 * 1024):
+                                if chunk:
+                                    f.write(chunk)
+                        if zip_path.exists() and zip_path.stat().st_size > 10_000:
+                            downloaded = True
+                            break
+                    else:
+                        last_err = f"HTTP {resp.status_code}"
+                except Exception as e:
+                    last_err = str(e)
 
-            # Dự phòng tải bằng curl.exe có sẵn trên Windows nếu Python requests bị chặn bởi Firewall/SSL máy khách
+            # curl.exe dùng kho chứng chỉ Windows nên vẫn tải được trên máy có antivirus quét SSL.
             if not downloaded:
                 try:
-                    subprocess.run(
+                    curl_res = subprocess.run(
                         [
                             "curl.exe",
                             "-L",
-                            "-k",
+                            "--fail",
                             "-s",
+                            "--show-error",
+                            "--connect-timeout",
+                            "20",
+                            "--max-time",
+                            "3600",
                             "-o",
                             str(zip_path),
                             download_urls[0],
                         ],
-                        timeout=60,
+                        capture_output=True,
+                        timeout=3660,
                         check=False,
+                        creationflags=0x08000000 if os.name == "nt" else 0,
                     )
-                    if zip_path.exists() and zip_path.stat().st_size > 10_000:
+                    if (
+                        curl_res.returncode == 0
+                        and zip_path.exists()
+                        and zip_path.stat().st_size > 10_000
+                    ):
                         downloaded = True
+                    else:
+                        last_err = f"{last_err} | curl rc={curl_res.returncode}"
                 except Exception as e_curl:
                     last_err = f"{last_err} | curl: {e_curl}"
 
             if not downloaded:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                try:
-                    from backend import migrate_customer_workspace_layout
-
-                    migrate_customer_workspace_layout(root_dir)
-                except Exception:
-                    pass
-                msg = f"Không thể tải gói cập nhật từ GitHub ({last_err}). Vui lòng kiểm tra kết nối mạng!"
-                log_error("UPDATER", msg)
-                return {"success": False, "error": msg}
+                return _abort_update(
+                    f"Không thể tải gói cập nhật từ GitHub ({last_err}). Vui lòng kiểm tra kết nối mạng!"
+                )
 
             extract_dir = tmp_dir / "extracted"
             extract_dir.mkdir(parents=True, exist_ok=True)
             try:
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    zf.extractall(extract_dir)
+                ota_security.safe_extract_zip(zip_path, extract_dir)
             except Exception as e:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                try:
-                    from backend import migrate_customer_workspace_layout
-
-                    migrate_customer_workspace_layout(root_dir)
-                except Exception:
-                    pass
-                msg = f"Gói cập nhật tải về bị lỗi giải nén: {e}"
-                log_error("UPDATER", msg)
-                return {"success": False, "error": msg}
+                return _abort_update(f"Gói cập nhật tải về bị lỗi giải nén: {e}")
 
             # Tìm thư mục gốc bên trong file zip của GitHub (thường là <repo>-<branch>/)
             sub_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
@@ -2470,84 +2636,40 @@ def apply_github_update(
                 not (src_root / "backend").exists()
                 or not (src_root / "frontend").exists()
             ):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                try:
-                    from backend import migrate_customer_workspace_layout
+                return _abort_update(
+                    "Gói cập nhật không hợp lệ (Thiếu thư mục backend/frontend)."
+                )
 
-                    migrate_customer_workspace_layout(root_dir)
-                except Exception:
-                    pass
-                msg = "Gói cập nhật không hợp lệ (Thiếu thư mục backend/frontend)."
-                log_error("UPDATER", msg)
-                return {"success": False, "error": msg}
+            # Xác minh xong mới dừng tác vụ, để gói lỗi không làm gián đoạn công việc của khách.
+            _ensure_ota_crypto_available()
+            try:
+                manifest = ota_security.verify_update_package(
+                    src_root, local_build=int(local_info.get("build_number", 0))
+                )
+            except ota_security.UpdateVerificationError as e:
+                return _abort_update(f"Đã từ chối bản cập nhật: {e}")
 
-            updated_files_count = 0
-            app_subdir = root_dir / "app"
+            if restart_app:
+                _stop_all_tasks_and_subprocesses(
+                    adas_engine=adas_engine, pipeline=pipeline
+                )
 
-            # 1. Cập nhật các thư mục code & tài nguyên: backend, frontend, adas_skills, Kho_Voice, Kho_Green, assets, VoiceStudio, bin
-            for folder_name in (
-                "backend",
-                "frontend",
-                "adas_skills",
-                "Kho_Voice",
-                "Kho_Green",
-                "assets",
-                "VoiceStudio",
-                "bin",
-            ):
-                s_folder = src_root / folder_name
-                if not s_folder.exists():
-                    continue
-                for src_file in s_folder.rglob("*"):
-                    if (
-                        src_file.is_file()
-                        and "__pycache__" not in src_file.parts
-                        and not src_file.name.endswith(".pyc")
-                    ):
-                        rel_path = src_file.relative_to(s_folder)
-                        dst_main = root_dir / folder_name / rel_path
-                        if _safe_copy_file(src_file, dst_main):
-                            updated_files_count += 1
-                        if app_subdir.exists():
-                            dst_app = app_subdir / folder_name / rel_path
-                            _safe_copy_file(src_file, dst_app)
-
-            # 2. Cập nhật các file lẻ ở thư mục gốc (trừ các file cấu hình/dữ liệu khách hàng trong PROTECTED_CUSTOMER_PATHS,
-            #    và bỏ qua Mexico_Ong_Gia.exe đang chạy để không chạm vào file thực thi đang mở)
-            for item in src_root.iterdir():
-                if (
-                    item.is_file()
-                    and item.name not in PROTECTED_CUSTOMER_PATHS
-                    and not item.name.startswith(".git")
-                    and item.name.lower()
-                    not in ("mexico_ong_gia.exe", "drama_nhat_studio.exe")
-                ):
-                    if _safe_copy_file(item, root_dir / item.name):
-                        updated_files_count += 1
-                    if app_subdir.exists() and item.name in (
-                        "main.py",
-                        "install_setup.py",
-                        "requirements.txt",
-                        "version.json",
-                        "QUY_TRINH_HOAT_DONG.md",
-                        "TIEN_DO_CODE.md",
-                        "HUONG_DAN_CAI_DAT_KHACH_HANG.txt",
-                    ):
-                        _safe_copy_file(item, app_subdir / item.name)
-
-            # 3. Đồng bộ các file cấu hình bố cục Preview theo từng Key (padre_mx, homeless, mafia) cho máy khách
-            for layout_fn in (
-                "video_layout_config.json",
-                "video_layout_padre_mx.json",
-                "video_layout_homeless.json",
-                "video_layout_mafia.json",
-            ):
-                s_cfg = src_root / "config" / layout_fn
-                if not s_cfg.exists():
-                    s_cfg = src_root / "assets" / "default_layouts" / layout_fn
-                d_cfg = root_dir / "config" / layout_fn
-                if s_cfg.exists():
-                    _safe_copy_file(s_cfg, d_cfg)
+            try:
+                plan = ota_security.build_install_plan(
+                    src_root,
+                    root_dir,
+                    manifest,
+                    protected_names=PROTECTED_CUSTOMER_PATHS,
+                )
+                install_result = ota_security.apply_install_plan(
+                    plan,
+                    root_dir,
+                    from_version=old_version,
+                    copy_func=_safe_copy_file,
+                )
+            except ota_security.UpdateInstallError as e:
+                return _abort_update(f"Cập nhật thất bại: {e}")
+            updated_files_count = int(install_result["changed_count"])
 
             shutil.rmtree(tmp_dir, ignore_errors=True)
             try:
@@ -2575,6 +2697,13 @@ def apply_github_update(
             _hot_reload_backend_modules(adas_engine=adas_engine, pipeline=pipeline)
 
             if restart_app:
+                if install_result.get("backup_dir"):
+                    ota_security.write_rollback_marker(
+                        root_dir,
+                        install_result["backup_dir"],
+                        old_version,
+                        new_version,
+                    )
                 log_info(
                     "UPDATER",
                     f"🎉 Đã cập nhật [{old_version}] -> [{new_version}] ({updated_files_count} file). Đang đóng toàn bộ tác vụ và RESET khởi động lại ứng dụng hoàn toàn...",

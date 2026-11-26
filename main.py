@@ -392,16 +392,21 @@ def _ensure_preferred_python_runtime():
         "sys.exit(0 if torch.cuda.is_available() else 2)"
     )
 
+    # `import torch` có thể mất 15–20 giây khi CPU bận, nên quá hạn không có nghĩa là Python đó hỏng.
+    probe_timed_out = -2
+
     def _probe_python(py_exe: str) -> int:
         try:
             chk = subprocess.run(
                 [py_exe, "-c", probe_code],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=10,
+                timeout=60,
                 creationflags=0x08000000 if os.name == "nt" else 0,
             )
             return int(chk.returncode)
+        except subprocess.TimeoutExpired:
+            return probe_timed_out
         except Exception:
             return 1
 
@@ -419,8 +424,12 @@ def _ensure_preferred_python_runtime():
     # Nếu Python hiện tại đã nằm đầu và không có bản nào khác trên máy -> giữ nguyên tức thì
     best_cand = None
     best_score = -1  # 2 = deps + CUDA, 1 = deps only (CPU)
+    timed_out_cands = []
     for c_path, c_norm in all_eval_cands:
         rc = _probe_python(c_path)
+        if rc == probe_timed_out:
+            timed_out_cands.append((c_path, c_norm))
+            continue
         sc = 2 if rc == 0 else (1 if rc == 2 else -1)
         if sc > best_score:
             best_score = sc
@@ -428,14 +437,28 @@ def _ensure_preferred_python_runtime():
         if sc == 2:
             break
 
+    # Máy quá bận: tin bản Python đã lưu thay vì tụt xuống bản chỉ có CPU, và không ghi đè cấu hình.
+    persist_choice = True
+    if best_score < 2 and timed_out_cands:
+        persist_choice = False
+        timed_out_by_norm = {norm: (path, norm) for path, norm in timed_out_cands}
+        for saved_path in candidates:
+            trusted = timed_out_by_norm.get(
+                os.path.normcase(os.path.abspath(saved_path))
+            )
+            if trusted:
+                best_cand = trusted
+                break
+
     if best_cand is not None:
         chosen_path, chosen_norm = best_cand
-        try:
-            (ROOT_DIR / "config" / "python_path.txt").write_text(
-                chosen_path, encoding="utf-8"
-            )
-        except Exception:
-            pass
+        if persist_choice:
+            try:
+                (ROOT_DIR / "config" / "python_path.txt").write_text(
+                    chosen_path, encoding="utf-8"
+                )
+            except Exception:
+                pass
         if chosen_norm == cur_exe:
             return
         try:

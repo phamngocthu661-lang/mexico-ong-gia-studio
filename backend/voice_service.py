@@ -2700,7 +2700,9 @@ class VoiceStudioService:
                 from omnivoice.models.omnivoice import OmniVoice
 
             if torch.cuda.is_available():
-                torch.backends.cudnn.benchmark = True
+                # Tắt dò thuật toán cuDNN: câu voice nào cũng dài khác nhau nên chế độ dò
+                # chạy lại liên tục, đo trên GTX 1060 làm chậm 1,3-2,5 lần (2,42x -> 0,94-1,89x).
+                torch.backends.cudnn.benchmark = False
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
 
@@ -4399,21 +4401,7 @@ def _ensure_default_padre_voice_profile(root_dir: Optional[Path] = None) -> Path
                     )
                     break
             except Exception:
-                try:
-                    import urllib3
-
-                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    resp = requests.get(
-                        url,
-                        timeout=20,
-                        verify=False,
-                        headers={"User-Agent": "MexicoOngGiaStudio-VoiceSync/1.0"},
-                    )
-                    if resp.status_code == 200 and len(resp.content) > 10_000:
-                        sample_wav.write_bytes(resp.content)
-                        break
-                except Exception:
-                    pass
+                pass
         if (
             not sample_wav.exists() or sample_wav.stat().st_size < 10_000
         ) and os.name == "nt":
@@ -4423,7 +4411,7 @@ def _ensure_default_padre_voice_profile(root_dir: Optional[Path] = None) -> Path
                         [
                             "curl.exe",
                             "-L",
-                            "-k",
+                            "--fail",
                             "-s",
                             "--connect-timeout",
                             "15",

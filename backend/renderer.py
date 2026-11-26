@@ -2091,47 +2091,77 @@ def get_root_dir() -> Path:
     return p
 
 
-def check_nvenc_available() -> bool:
+_NVENC_MAX_RENDER_RETRIES = 2
+_NVENC_PERMANENT_ERRORS = (
+    "unknown encoder",
+    "no nvenc capable",
+    "cannot load nvencodeapi",
+    "minimum required nvidia driver",
+    "driver does not support",
+)
+
+
+def _probe_nvenc_once(timeout_sec: float) -> Tuple[bool, bool]:
+    """Trả về (chạy được, lỗi có thể chỉ là tạm thời)."""
+    try:
+        res = subprocess.run(
+            [
+                _FFMPEG_BIN,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=256x256:d=0.2:r=30",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "h264_nvenc",
+                "-f",
+                "null",
+                "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_sec,
+            creationflags=0x08000000 if os.name == "nt" else 0,
+        )
+    except subprocess.TimeoutExpired:
+        return False, True
+    except Exception:
+        return False, False
+    if res.returncode == 0:
+        return True, False
+    err_text = (res.stderr or b"").decode("utf-8", errors="replace").lower()
+    return False, not any(k in err_text for k in _NVENC_PERMANENT_ERRORS)
+
+
+def check_nvenc_available(force_refresh: bool = False) -> bool:
     global _NVENC_AVAILABLE, _NVENC_LAST_CHECK_TS
-    if _NVENC_AVAILABLE is True:
-        return True
-    now = time.time()
-    if _NVENC_AVAILABLE is False and (now - _NVENC_LAST_CHECK_TS) < 15.0:
-        return False
-    with _NVENC_LOCK:
+    if not force_refresh:
         if _NVENC_AVAILABLE is True:
             return True
-        if _NVENC_AVAILABLE is False and (time.time() - _NVENC_LAST_CHECK_TS) < 15.0:
+        now = time.time()
+        if _NVENC_AVAILABLE is False and (now - _NVENC_LAST_CHECK_TS) < 15.0:
             return False
+    with _NVENC_LOCK:
+        if not force_refresh:
+            if _NVENC_AVAILABLE is True:
+                return True
+            if _NVENC_AVAILABLE is False and (time.time() - _NVENC_LAST_CHECK_TS) < 15.0:
+                return False
+        # GPU đang bận hoặc hết phiên encode chỉ là lỗi tạm thời, không nên kết luận máy không có NVENC.
+        available = False
+        for attempt, timeout_sec in enumerate((12.0, 25.0, 40.0)):
+            available, retryable = _probe_nvenc_once(timeout_sec)
+            if available or not retryable:
+                break
+            if attempt < 2:
+                time.sleep(2.0)
+        _NVENC_AVAILABLE = available
         _NVENC_LAST_CHECK_TS = time.time()
-        try:
-            res = subprocess.run(
-                [
-                    _FFMPEG_BIN,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "color=c=black:s=256x256:d=0.2:r=30",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:v",
-                    "h264_nvenc",
-                    "-f",
-                    "null",
-                    "-",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=10,
-                creationflags=0x08000000 if os.name == "nt" else 0,
-            )
-            _NVENC_AVAILABLE = res.returncode == 0
-        except Exception:
-            _NVENC_AVAILABLE = False
-        return bool(_NVENC_AVAILABLE)
+        return available
 
 
 def get_audio_duration(file_path: str) -> float:
@@ -2994,6 +3024,139 @@ def build_or_get_fixed_green_layers_cache(
     return None
 
 
+_GREEN_RAW_CACHE_LOCK = threading.Lock()
+_GREEN_RAW_CACHE_PREFIX = "green_composite_raw_"
+_GREEN_RAW_STALE_SEC = 6 * 3600
+_GREEN_RAW_MIN_FREE_BYTES = 5 * 1024 ** 3
+
+
+def _cleanup_stale_green_raw_caches(cache_dir: Path, keep: Optional[Path] = None) -> None:
+    """Xóa cache raw không dùng quá 6 giờ. File đang được FFmpeg mở sẽ không xóa được và được bỏ qua."""
+    now = time.time()
+    for old in cache_dir.glob(f"{_GREEN_RAW_CACHE_PREFIX}*.nut"):
+        if keep is not None and old == keep:
+            continue
+        try:
+            stale_after = 3600 if old.name.endswith(".tmp.nut") else _GREEN_RAW_STALE_SEC
+            if now - old.stat().st_mtime > stale_after:
+                old.unlink()
+        except OSError:
+            pass
+
+
+def build_green_composite_raw_cache(
+    green_cache_nut: Optional[str],
+    char_png: Optional[str] = None,
+    target_w: int = 1920,
+    target_h: int = 1080,
+    work_fps: int = 12,
+    root_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """
+    Tạo bản KHÔNG NÉN (rawvideo yuva420p) của cache green cố định, gộp sẵn ảnh nhân vật nếu có.
+    Lúc render, FFmpeg không phải giải nén FFV1 và chỉ cần một lần overlay thay vì hai,
+    nhanh hơn khoảng 20-35%. Trả về None nếu không có cache green, thiếu ổ trống hoặc tạo lỗi,
+    khi đó renderer dùng lại cách dựng cũ.
+    """
+    if not green_cache_nut or not os.path.exists(green_cache_nut):
+        return None
+    root = Path(root_dir) if root_dir else get_root_dir()
+    cache_dir = root / "cache" / "green_raw_cache"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        green_p = Path(green_cache_nut)
+        sig_parts = [green_p.name, green_p.stat().st_size, green_p.stat().st_mtime_ns]
+        use_char = bool(char_png and os.path.exists(char_png))
+        if use_char:
+            char_p = Path(char_png)
+            sig_parts += [str(char_p.resolve()), char_p.stat().st_size, char_p.stat().st_mtime_ns]
+        sig_parts += [target_w, target_h, int(work_fps), "yuv420_over_v1"]
+        sig_hash = hashlib.sha256(
+            json.dumps(sig_parts, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:14]
+        kind = "char" if use_char else "green"
+        raw_path = cache_dir / (
+            f"{_GREEN_RAW_CACHE_PREFIX}{kind}_{target_w}x{target_h}_{int(work_fps)}fps_{sig_hash}.nut"
+        )
+
+        green_dur = get_audio_duration(str(green_p))
+        if green_dur <= 0.5:
+            return None
+        frame_bytes = int(target_w * target_h * 2.5)
+        expected_bytes = int((green_dur * max(1, int(work_fps)) + 1) * frame_bytes)
+        min_valid_bytes = int(expected_bytes * 0.9)
+
+        with _GREEN_RAW_CACHE_LOCK:
+            if raw_path.exists() and raw_path.stat().st_size >= min_valid_bytes:
+                os.utime(raw_path, None)
+                return str(raw_path)
+
+            _cleanup_stale_green_raw_caches(cache_dir, keep=raw_path)
+            if shutil.disk_usage(str(cache_dir)).free < expected_bytes + _GREEN_RAW_MIN_FREE_BYTES:
+                print("[Renderer] ⚠️ Ổ cứng không đủ chỗ cho cache green không nén -> dùng cách dựng cũ.")
+                return None
+
+            tmp_raw = raw_path.with_suffix(".tmp.nut")
+            cmd: List[str] = [_FFMPEG_BIN, "-y", "-hide_banner", "-loglevel", "error", "-i", str(green_p)]
+            if use_char:
+                cmd += ["-loop", "1", "-framerate", str(int(work_fps)), "-i", str(char_png)]
+                fc = (
+                    "[0:v]format=yuva420p[g];[1:v]format=yuva420p[c];"
+                    "[g][c]overlay=x=0:y=0:shortest=1:repeatlast=1:format=yuv420,format=yuva420p[out]"
+                )
+            else:
+                fc = "[0:v]format=yuva420p[out]"
+            cmd += [
+                "-filter_complex", fc, "-map", "[out]",
+                "-c:v", "rawvideo", "-pix_fmt", "yuva420p", "-f", "nut", str(tmp_raw),
+            ]
+            try:
+                res = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=180,
+                    creationflags=0x08000000 if os.name == "nt" else 0,
+                )
+                raw_dur = get_audio_duration(str(tmp_raw)) if tmp_raw.exists() else 0.0
+                if (
+                    res.returncode == 0
+                    and tmp_raw.stat().st_size >= min_valid_bytes
+                    and abs(raw_dur - green_dur) <= 0.5
+                ):
+                    os.replace(str(tmp_raw), str(raw_path))
+                    print(
+                        f"[Renderer] ⚡ Cache green không nén{' + ảnh nhân vật' if use_char else ''}: "
+                        f"{raw_path.name} ({raw_path.stat().st_size / (1024 * 1024):.0f} MB)"
+                    )
+                    return str(raw_path)
+                print(
+                    f"[Renderer] ⚠️ Không tạo được cache green không nén -> dùng cách dựng cũ: {(res.stderr or '')[-300:]}"
+                )
+            finally:
+                if tmp_raw.exists():
+                    try:
+                        tmp_raw.unlink()
+                    except OSError:
+                        pass
+    except Exception as e:
+        print(f"[Renderer] ⚠️ Lỗi cache green không nén -> dùng cách dựng cũ: {e}")
+    return None
+
+
+def discard_green_composite_raw_cache(raw_path: Optional[str]) -> None:
+    """Xóa cache raw riêng của một video (có ảnh nhân vật) sau khi render xong để không tốn ổ cứng."""
+    if not raw_path or f"{_GREEN_RAW_CACHE_PREFIX}char_" not in os.path.basename(raw_path):
+        return
+    try:
+        os.remove(raw_path)
+    except OSError:
+        pass
+
+
 # ==============================================================================
 # CƠ CHẾ SSD STAGING & CHECKPOINT RESUME
 # ==============================================================================
@@ -3126,8 +3289,18 @@ def render_drama_nhat_video(
     green_screen_image_path: Optional[str] = None,
     visual_cues_path: Optional[str] = None,
     channel_key: Optional[str] = None,
+    _encode_attempt_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    start_time = time.time()
+    render_call_args = dict(locals())
+    perf_state: Dict[str, Any] = _encode_attempt_state or {
+        "started_at": time.time(),
+        "nvenc_retries": 0,
+        "force_cpu": False,
+        "encode_wall_sec": 0.0,
+        "encoded_sec": 0.0,
+        "events": [],
+    }
+    start_time = perf_state["started_at"]
     root_dir = get_root_dir()
     out_dir = os.path.dirname(os.path.abspath(output_path))
 
@@ -3241,6 +3414,9 @@ def render_drama_nhat_video(
         if best and best.get("abs_path") and os.path.exists(best["abs_path"]):
             stock_video_path = str(best["abs_path"])
 
+    use_nvenc = not perf_state["force_cpu"] and check_nvenc_available()
+    active_encoder = "nvenc" if use_nvenc else "x264"
+
     audio_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
     current_meta = {
         "audio_size": audio_size,
@@ -3248,6 +3424,7 @@ def render_drama_nhat_video(
         "resolution": f"{target_w}x{target_h}",
         "fps": int(fps),
         "stock_video_path": stock_video_path,
+        "encoder": active_encoder,
     }
     if meta_file.exists():
         try:
@@ -3256,6 +3433,8 @@ def render_drama_nhat_video(
                 old_meta.get("audio_size") == audio_size
                 and abs(float(old_meta.get("total_dur", 0.0)) - dur) < 2.0
                 and old_meta.get("resolution") == current_meta["resolution"]
+                # Không ghép đoạn NVENC với đoạn x264 trong cùng một file MP4.
+                and old_meta.get("encoder", active_encoder) == active_encoder
             )
             if not same_job:
                 for f_old in resume_dir.glob("*.ts"):
@@ -3401,7 +3580,6 @@ def render_drama_nhat_video(
         "================================================================================"
     )
 
-    use_nvenc = check_nvenc_available()
     gop_size = str(max(24, int(fps) * 2))
     nvenc_codec_args = [
         "-c:v",
@@ -3440,6 +3618,8 @@ def render_drama_nhat_video(
         "NVIDIA GPU NVENC" if use_nvenc else f"CPU Multi-Thread ({cpu_threads} threads)"
     )
 
+    green_raw_cache: Optional[str] = None
+    green_cache_mode = "ffv1" if fixed_green_cache_nut else "none"
     if remaining_dur > 1.5:
         filters: List[str] = []
         base_inputs_cmd: List[str] = [_FFMPEG_BIN, "-y"]
@@ -3470,8 +3650,27 @@ def render_drama_nhat_video(
         )
         current_v = "[v_bg]"
 
+        # LỚP #3 + #2 GỘP SẴN: cache green KHÔNG NÉN đã chứa ảnh nhân vật -> 1 lần overlay, không giải nén FFV1.
+        green_raw_cache = build_green_composite_raw_cache(
+            fixed_green_cache_nut,
+            char_cutout_png,
+            target_w=target_w,
+            target_h=target_h,
+            work_fps=green_cache_fps,
+            root_dir=root_dir,
+        )
+        if green_raw_cache:
+            green_cache_mode = "raw_char" if char_cutout_png else "raw"
+            base_inputs_cmd.extend(["-stream_loop", "-1", "-i", green_raw_cache])
+            green_raw_idx = input_idx
+            input_idx += 1
+            filters.append(
+                f"{current_v}[{green_raw_idx}:v]overlay=x=0:y=0:shortest=1:format=yuv420[v_with_char]"
+            )
+            current_v = "[v_with_char]"
+
         # LỚP #3 (GIỮA): Cache các Video Green cố định từ Kho_Green (Loop -stream_loop -1)
-        if fixed_green_cache_nut and os.path.exists(fixed_green_cache_nut):
+        if not green_raw_cache and fixed_green_cache_nut and os.path.exists(fixed_green_cache_nut):
             base_inputs_cmd.extend(["-stream_loop", "-1", "-i", fixed_green_cache_nut])
             green_cache_idx = input_idx
             input_idx += 1
@@ -3481,7 +3680,7 @@ def render_drama_nhat_video(
             current_v = "[v_with_green]"
 
         # LỚP #2 (TRÊN VIDEO GREEN, DƯỚI SUB): Ảnh Green Theo Kịch Bản tĩnh -> đọc 1fps + repeatlast giảm >90% CPU giải mã PNG
-        if char_cutout_png and os.path.exists(char_cutout_png):
+        if not green_raw_cache and char_cutout_png and os.path.exists(char_cutout_png):
             base_inputs_cmd.extend(
                 [
                     "-loop",
@@ -3599,14 +3798,15 @@ def render_drama_nhat_video(
         stall_timeout_sec = 120.0
         init_stall_timeout_sec = 150.0
 
-        for enc_try in range(2):
-            active_codec_args = v_codec_args if enc_try == 0 else cpu_codec_args
+        while True:
+            active_codec_args = v_codec_args
             active_enc_label = (
-                encoder_label
-                if enc_try == 0
-                else f"CPU Fallback ({cpu_threads} threads)"
+                f"CPU Fallback ({cpu_threads} threads)"
+                if perf_state["force_cpu"]
+                else encoder_label
             )
             cmd = _build_encode_cmd(active_codec_args)
+            encode_started_at = time.time()
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -3749,6 +3949,8 @@ def render_drama_nhat_video(
                     pass
 
             rc = process.poll()
+            perf_state["encode_wall_sec"] += time.time() - encode_started_at
+            perf_state["encoded_sec"] += max_seg_sec_reached
             if rc == 0 and not stalled_reason:
                 break
             # Nếu FFmpeg bị ngắt do người dùng bấm DỪNG / Yield -> progress_callback sẽ raise InterruptedError ngay lập tức, không chạy Fallback CPU
@@ -3761,19 +3963,41 @@ def render_drama_nhat_video(
                 k in "\n".join(log_tail).lower()
                 for k in ("nvenc", "cuda", "out of memory", "capable devices", "openencodesessionex")
             )
-            if enc_try == 0 and use_nvenc and (
+            if use_nvenc and (
                 max_seg_sec_reached < 10.0 or stalled_reason or nvenc_err_hint
             ):
-                # Xóa raw segment dở dang trước khi chuyển sang CPU fallback
-                try:
-                    if os.path.exists(current_raw_seg):
-                        os.remove(current_raw_seg)
-                except Exception:
-                    pass
-                print(
-                    f"⚠️ [NVENC FALLBACK] Lý do: {stalled_reason or f'mã {rc}'}. Chuyển sang CPU Multi-Thread ({cpu_threads} threads)..."
+                from backend.logger_service import log_warn
+
+                fail_reason = stalled_reason or f"mã {rc}"
+                perf_state["events"].append(fail_reason[:160])
+                retry_args = dict(render_call_args)
+                retry_args["_encode_attempt_state"] = perf_state
+                if perf_state["nvenc_retries"] < _NVENC_MAX_RENDER_RETRIES:
+                    perf_state["nvenc_retries"] += 1
+                    retry_no = perf_state["nvenc_retries"]
+                    wait_until = time.time() + 5.0 * retry_no
+                    log_warn(
+                        f"NVENC gián đoạn ({fail_reason}) -> Thử lại NVENC lần {retry_no}/{_NVENC_MAX_RENDER_RETRIES} từ checkpoint.",
+                        category="RENDER",
+                        project_id=proj_prefix,
+                    )
+                    while time.time() < wait_until:
+                        # progress_callback sẽ ném InterruptedError nếu người dùng bấm Dừng.
+                        if progress_callback:
+                            progress_callback(
+                                last_percent,
+                                f"NVENC gián đoạn, đang thử lại ({retry_no}/{_NVENC_MAX_RENDER_RETRIES})...",
+                            )
+                        time.sleep(0.5)
+                    if check_nvenc_available(force_refresh=True):
+                        return render_drama_nhat_video(**retry_args)
+                perf_state["force_cpu"] = True
+                log_warn(
+                    f"NVENC vẫn lỗi ({fail_reason}) -> Render lại video bằng CPU để không trộn hai bộ mã hóa.",
+                    category="RENDER",
+                    project_id=proj_prefix,
                 )
-                continue
+                return render_drama_nhat_video(**retry_args)
             err_detail = "\n".join(log_tail[-8:])
             if stalled_reason:
                 raise RuntimeError(f"FFmpeg bị treo và đã tự ngắt ({stalled_reason}): {err_detail}")
@@ -3847,6 +4071,7 @@ def render_drama_nhat_video(
     os.makedirs(out_dir, exist_ok=True)
     shutil.move(temp_output_path, output_path)
     shutil.rmtree(resume_dir, ignore_errors=True)
+    discard_green_composite_raw_cache(green_raw_cache)
 
     cost = time.time() - start_time
     if progress_callback:
@@ -3860,6 +4085,16 @@ def render_drama_nhat_video(
         "fps": fps,
         "channel_key": eff_channel_key,
         "used_script_green_char": bool(char_cutout_png),
+        "encoder": active_encoder,
+        "encode_speed_x": round(
+            perf_state["encoded_sec"] / max(0.001, perf_state["encode_wall_sec"]), 2
+        ),
+        "encode_wall_sec": round(perf_state["encode_wall_sec"], 1),
+        "encoded_sec": round(perf_state["encoded_sec"], 1),
+        "nvenc_retries": int(perf_state["nvenc_retries"]),
+        "cpu_fallback": bool(perf_state["force_cpu"]),
+        "encoder_events": list(perf_state["events"]),
+        "green_cache_mode": green_cache_mode,
     }
 
 

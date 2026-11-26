@@ -16,6 +16,10 @@ BROWSER_PROFILE_5/
 GEMINI_PROFILE_1/
 config/*
 _ota_update_tmp/
+_ota_backup/
+_gh_ota_tmp/
+*.old_locked
+ota_signing_private.pem
 app/
 agent_reach/
 yt_dlp_ejs/
