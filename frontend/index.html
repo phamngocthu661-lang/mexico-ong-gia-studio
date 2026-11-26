@@ -111,7 +111,7 @@
         <div class="flex flex-col">
           <div class="flex items-center gap-2">
             <span class="font-label-lg text-sm tracking-wider font-bold text-primary">ZC TEAM - MEXICO ÔNG GIÀ</span>
-            <span class="px-1.5 py-0.2 rounded bg-primary-container/15 text-primary-container text-[10px] font-mono font-bold tracking-widest border border-primary-container/30" id="app-version-badge">V2.2.5</span>
+            <span class="px-1.5 py-0.2 rounded bg-primary-container/15 text-primary-container text-[10px] font-mono font-bold tracking-widest border border-primary-container/30" id="app-version-badge">V2.2.6</span>
           </div>
           <span class="font-label-sm text-[10px] tracking-widest text-secondary font-medium">PADRE MX V3.0 • SKILL 04 BỐ CỤC 80/20 (7 PARTS GREEN SCREEN + ICON GREEN)</span>
         </div>
@@ -125,7 +125,7 @@
         <!-- Nút kiểm tra cập nhật thủ công -->
         <button class="flex items-center gap-1 px-2 py-1 rounded bg-surface-container border border-surface-container-high hover:border-primary-container/50 text-on-surface-variant hover:text-primary transition-all" id="btn-check-update-header" title="Kiểm tra bản cập nhật mới trên GitHub" type="button">
           <span class="material-symbols-outlined text-[14px] text-secondary" id="icon-check-update-header">sync</span>
-          <span class="font-label-sm text-[10.5px] font-mono" id="text-check-update-header">Cập nhật: V2.2.5</span>
+          <span class="font-label-sm text-[10.5px] font-mono" id="text-check-update-header">Cập nhật: V2.2.6</span>
         </button>
         <div class="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-container-low border border-surface-container-high" id="gpu-badge">
           <span class="inline-block w-2 h-2 rounded-full bg-primary-container shadow-[0_0_8px_rgba(0,255,135,0.7)] animate-pulse"></span>
@@ -259,7 +259,7 @@
         </button>
         <button class="whitespace-nowrap flex items-center gap-1 px-2.5 py-1 rounded bg-primary-container/15 hover:bg-primary-container/25 border border-primary-container/50 text-primary-container font-label-md text-xs font-bold transition-all shadow-sm active:scale-95" id="btn-check-update-nav" title="Bấm để kiểm tra và cập nhật phiên bản mới nhất từ GitHub" type="button">
           <span class="material-symbols-outlined text-[15px]" id="icon-check-update-nav">sync</span>
-          <span class="font-mono" id="text-check-update-nav">🔄 CẬP NHẬT (V2.2.5)</span>
+          <span class="font-mono" id="text-check-update-nav">🔄 CẬP NHẬT (V2.2.6)</span>
         </button>
       </div>
     </nav>
@@ -551,9 +551,13 @@
                 <span class="material-symbols-outlined text-[15px] text-tertiary-fixed">draw</span>
                 Chỉ Viết KB + SEO + Thumb
               </button>
-              <button class="flex items-center justify-center gap-1.5 h-9 px-2 rounded bg-primary-container text-on-primary-container font-label-md text-xs font-bold transition-all shadow-[0_0_12px_rgba(0,255,135,0.4)] hover:brightness-105 active:scale-98" id="btn-adas-save-and-run" type="button">
-                <span class="material-symbols-outlined text-[16px]">play_circle</span>
-                Chạy Tự Động A ➔ Z
+              <button class="flex items-center justify-center gap-1.5 h-9 px-2 rounded bg-secondary-container/20 hover:bg-secondary-container/35 text-secondary font-label-md text-xs font-bold border border-secondary/45 transition-all" id="btn-adas-save-and-voice-only" title="Lưu (nếu có tiêu đề mới) hoặc chạy các mã đang chờ: Viết Kịch Bản + Thumbnail + SEO -&gt; Tạo Voice GPU Luôn (Chưa Render MP4)" type="button">
+                <span class="material-symbols-outlined text-[15px]">record_voice_over</span>
+                <span class="truncate">🎙️ Viết KB + Thumb + Voice</span>
+              </button>
+              <button class="col-span-2 flex items-center justify-center gap-1.5 h-10 px-3 rounded bg-primary-container text-on-primary-container font-label-md text-xs font-bold transition-all shadow-[0_0_12px_rgba(0,255,135,0.4)] hover:brightness-105 active:scale-98" id="btn-adas-save-and-run" type="button">
+                <span class="material-symbols-outlined text-[17px]" id="icon-adas-save-and-run">play_circle</span>
+                <span id="text-adas-save-and-run">Chạy Tự Động A ➔ Z</span>
               </button>
             </div>
           </div>
@@ -655,8 +659,8 @@
                   <span class="font-mono text-[10px] text-on-surface-variant" id="adas-ssd-staging-badge">SSD Cache: %LOCALAPPDATA%\Drama_Nhat_Studio\SSD_Render_Staging</span>
                 </div>
               </div>
-              <!-- 8 Quick Action Buttons -->
-              <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+              <!-- 9 Quick Action Buttons -->
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                 <button class="flex items-center justify-center gap-1 h-7 rounded bg-surface-container hover:bg-surface-container-high text-on-surface font-label-sm text-[11px] border border-surface-container-high transition-colors" id="btn-adas-open-projects-dir" type="button">
                   <span class="material-symbols-outlined text-[13px] text-secondary">folder_open</span> Mở Folder
                 </button>
@@ -675,11 +679,15 @@
                 <button class="flex items-center justify-center gap-1 h-7 rounded bg-surface-container hover:bg-surface-container-high text-primary font-label-sm text-[11px] border border-surface-container-high transition-colors" id="btn-adas-script-only-all" type="button">
                   <span class="material-symbols-outlined text-[13px] text-tertiary-fixed">description</span> Viết KB Loạt
                 </button>
+                <button class="flex items-center justify-center gap-1 h-7 rounded bg-secondary-container/20 hover:bg-secondary-container/35 text-secondary font-label-sm text-[11px] font-bold border border-secondary/45 transition-colors" id="btn-adas-voice-only-all" title="Chỉ Tạo Voice GPU cho các kịch bản đã xong &amp; đủ Thumbnail nhưng chưa có Voice (Chưa Render MP4)" type="button">
+                  <span class="material-symbols-outlined text-[13px] text-secondary">record_voice_over</span> 🎙️ Tạo Voice Đã Xong
+                </button>
                 <button class="flex items-center justify-center gap-1 h-7 rounded bg-surface-container hover:bg-surface-container-high text-primary-container font-label-sm text-[11px] border border-primary-container/20 transition-colors" id="btn-adas-render-ready" type="button">
                   <span class="material-symbols-outlined text-[13px] text-primary-container">movie_edit</span> Render Sẵn Sàng
                 </button>
                 <button class="flex items-center justify-center gap-1 h-7 rounded bg-primary-container text-on-primary-container font-label-sm text-[11px] font-bold shadow-[0_0_8px_rgba(0,255,135,0.3)] hover:brightness-105 transition-all" id="btn-adas-run-all" type="button">
-                  <span class="material-symbols-outlined text-[13px]">rocket_launch</span> Đa Luồng 5 Nick
+                  <span class="material-symbols-outlined text-[13px]">rocket_launch</span>
+                  <span id="text-adas-run-all">Đa Luồng 5 Nick</span>
                 </button>
               </div>
             </div>

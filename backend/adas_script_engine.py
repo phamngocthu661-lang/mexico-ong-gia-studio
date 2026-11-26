@@ -290,6 +290,14 @@ class AccountRateLimitError(RuntimeError):
         self.acc_id = acc_id
 
 
+class AccountNotLoggedInError(RuntimeError):
+    """Ngoại lệ chuyên biệt khi tài khoản ChatGPT chưa đăng nhập hoặc đã bị đăng xuất."""
+
+    def __init__(self, acc_id: str, message: str):
+        super().__init__(message)
+        self.acc_id = acc_id
+
+
 def mark_account_rate_limited(
     acc_id: str,
     reason: str = "",
@@ -1064,6 +1072,108 @@ def ensure_chrome_debug_browser_open(
     }
 
 
+_CHATGPT_LOGIN_PROBE_JS = r"""
+(async () => {
+    try {
+        const url = location.href || "";
+        if (url.includes("/auth/login") || url.includes("auth0.openai.com")) {
+            return { logged_in: false, explicit_logged_out: true, user: "Đang ở trang Login" };
+        }
+        const loginBtn = document.querySelector('[data-testid="login-button"], [data-testid="mobile-login-button"], [data-testid="signup-button"]')
+            || Array.from(document.querySelectorAll('button, a')).find(el => /^(log in|sign up|sign up for free|đăng nhập)$/i.test((el.innerText || '').trim()));
+        const profileBtn = document.querySelector(
+            '[data-testid="profile-button"], button[aria-label*="profile" i], button[aria-label*="Open profile" i], img[alt*="User" i]'
+        );
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'))
+            .map(d => (d.innerText || '').toLowerCase())
+            .join(' ');
+        const hasAuthModal = /log in or sign up|create an account|try it first|stay logged out/.test(dialogs);
+        if ((loginBtn || hasAuthModal) && !profileBtn) {
+            return { logged_in: false, explicit_logged_out: true, user: "Chưa đăng nhập ChatGPT" };
+        }
+        const r = await fetch('/api/auth/session', { credentials: 'include' });
+        if (r.status === 401 || r.status === 403) {
+            return { logged_in: false, explicit_logged_out: true, user: "Chưa đăng nhập ChatGPT" };
+        }
+        if (r.ok) {
+            const d = await r.json();
+            const tok = (d && d.accessToken) ? d.accessToken : '';
+            if (tok) window.__studioAccessToken = tok;
+            const u = (d && d.user) ? d.user : {};
+            if (tok || u.email || u.id) {
+                return {
+                    logged_in: true,
+                    explicit_logged_out: false,
+                    user: u.email || u.name || 'Đã đăng nhập ChatGPT',
+                    plan: (d.account && d.account.planType) || ''
+                };
+            }
+            return { logged_in: false, explicit_logged_out: true, user: 'Chưa đăng nhập ChatGPT' };
+        }
+        let email = "";
+        try {
+            const scripts = Array.from(document.querySelectorAll('script'));
+            for (const s of scripts) {
+                const txt = s.textContent || "";
+                const m = txt.match(/"email"\s*:\s*"([^"@]+@[^"]+)"/);
+                if (m && m[1]) { email = m[1]; break; }
+            }
+        } catch (e) {}
+        if (profileBtn || email) {
+            return { logged_in: true, explicit_logged_out: false, user: email || "Đã đăng nhập ChatGPT" };
+        }
+        return { logged_in: false, explicit_logged_out: false, user: "Đang tải trang..." };
+    } catch (err) {
+        return { logged_in: false, explicit_logged_out: false, user: "Không rõ" };
+    }
+})()
+"""
+
+
+def _invalidate_account_login_state(acc_id: Optional[str], port: Optional[int] = None) -> None:
+    """Xóa ngay cache & file trạng thái đăng nhập khi phát hiện tài khoản thực tế chưa đăng nhập."""
+    eff_port = port
+    if acc_id and acc_id in ACCOUNTS_CONFIG:
+        eff_port = eff_port or ACCOUNTS_CONFIG[acc_id]["port"]
+        _save_account_login_info(acc_id, False, "", "")
+    if eff_port is not None:
+        _LAST_VERIFIED_LOGIN_BY_PORT.pop(eff_port, None)
+    _STATUS_CACHE["ts"] = 0.0
+
+
+def verify_ws_chatgpt_logged_in(
+    ws_url: str,
+    acc_id: Optional[str] = None,
+    port: Optional[int] = None,
+    timeout: float = 3.5,
+) -> tuple[bool, str]:
+    """Xác minh trực tiếp qua CDP tab Chrome xem tài khoản đã đăng nhập ChatGPT hay chưa."""
+    if not ws_url:
+        return False, "Mất kết nối CDP tới tab Chrome"
+    info = _cdp_eval_js(
+        ws_url, _CHATGPT_LOGIN_PROBE_JS, await_promise=True, timeout=timeout
+    )
+    if not isinstance(info, dict):
+        return False, "Không đọc được trạng thái đăng nhập ChatGPT"
+    if info.get("logged_in"):
+        email_val = str(info.get("user") or "Đã đăng nhập ChatGPT").strip()
+        plan_val = str(info.get("plan") or "")
+        if acc_id and acc_id in ACCOUNTS_CONFIG:
+            eff_p = port or ACCOUNTS_CONFIG[acc_id]["port"]
+            _LAST_VERIFIED_LOGIN_BY_PORT[eff_p] = {
+                "logged_in": True,
+                "user_email": email_val,
+                "plan_type": plan_val,
+                "ts": time.time(),
+            }
+            _save_account_login_info(acc_id, True, email_val, plan_val)
+        return True, email_val
+    reason = str(info.get("user") or "Chưa đăng nhập ChatGPT").strip()
+    if info.get("explicit_logged_out"):
+        _invalidate_account_login_state(acc_id, port=port)
+    return False, reason
+
+
 def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
     """
     Kiểm tra trạng thái đăng nhập, email và danh sách tab của 1 tài khoản ChatGPT Web.
@@ -1192,59 +1302,12 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
         target_tab = chatgpt_tabs[0]
         ws_url = target_tab.get("webSocketDebuggerUrl")
         _install_chatgpt_tab_protection_js(ws_url)
-        js_check = r"""
-        (async () => {
-            try {
-                const r = await fetch('/api/auth/session', { credentials: 'include' });
-                if (r.ok) {
-                    const d = await r.json();
-                    const tok = (d && d.accessToken) ? d.accessToken : '';
-                    if (tok) window.__studioAccessToken = tok;
-                    const u = (d && d.user) ? d.user : {};
-                    if (tok || u.email) {
-                        return {
-                            logged_in: true,
-                            user: u.email || u.name || 'Đã đăng nhập ChatGPT',
-                            plan: (d.account && d.account.planType) || ''
-                        };
-                    }
-                    return { logged_in: false, user: 'Chưa đăng nhập ChatGPT' };
-                }
-            } catch (e) {}
-            try {
-                const url = location.href || "";
-                if (url.includes("/auth/login") || url.includes("auth0.openai.com")) {
-                    return { logged_in: false, user: "Đang ở trang Login" };
-                }
-                const loginBtn = document.querySelector('[data-testid="login-button"], [data-testid="mobile-login-button"]')
-                    || Array.from(document.querySelectorAll('button, a')).find(el => /^(log in|sign up|sign up for free|đăng nhập)$/i.test((el.innerText || '').trim()));
-                if (loginBtn) {
-                    return { logged_in: false, user: "Chưa đăng nhập" };
-                }
-                const profileBtn = document.querySelector(
-                    '[data-testid="profile-button"], button[aria-label*="profile" i], button[aria-label*="Open profile" i], img[alt*="User" i]'
-                );
-                let email = "";
-                try {
-                    const scripts = Array.from(document.querySelectorAll('script'));
-                    for (const s of scripts) {
-                        const txt = s.textContent || "";
-                        const m = txt.match(/"email"\s*:\s*"([^"@]+@[^"]+)"/);
-                        if (m && m[1]) { email = m[1]; break; }
-                    }
-                } catch (e) {}
-                if (profileBtn || email) {
-                    return { logged_in: true, user: email || "Đã đăng nhập ChatGPT" };
-                }
-                return { logged_in: false, user: "Đang tải trang..." };
-            } catch (err) {
-                return { logged_in: false, user: "Không rõ" };
-            }
-        })()
-        """
-        info = _cdp_eval_js(ws_url, js_check, await_promise=True, timeout=3.5)
+        info = _cdp_eval_js(
+            ws_url, _CHATGPT_LOGIN_PROBE_JS, await_promise=True, timeout=3.5
+        )
         if isinstance(info, dict):
-            logged_in = bool(info.get("logged_in") or has_active_conv_url)
+            explicit_out = bool(info.get("explicit_logged_out"))
+            logged_in = False if explicit_out else bool(info.get("logged_in") or has_active_conv_url)
             raw_user = str(info.get("user") or "").strip()
             email_or_user = str(
                 raw_user
@@ -1265,7 +1328,7 @@ def _inspect_account_login_state(acc_id: str) -> Dict[str, Any]:
                 saved_email = email_or_user
             else:
                 _LAST_VERIFIED_LOGIN_BY_PORT.pop(port, None)
-                if raw_user in (
+                if explicit_out or raw_user in (
                     "Chưa đăng nhập",
                     "Chưa đăng nhập ChatGPT",
                     "Đang ở trang Login",
@@ -1756,6 +1819,7 @@ def select_best_available_account(
     preferred_acc_id: Optional[str] = None,
     project_id: Optional[str] = None,
     exclude_accs: Optional[set] = None,
+    require_logged_in: bool = True,
 ) -> str:
     """
     Chọn tài khoản ChatGPT ĐÃ ĐĂNG NHẬP (lưu trên ổ cứng), KHÔNG bị tạm dừng Limit 30 phút và đang rảnh nhất
@@ -1777,14 +1841,14 @@ def select_best_available_account(
             run_hidden=False, open_browsers_now=False
         )
 
-    # Nếu có preferred_acc_id, đã đăng nhập, KHÔNG bị loại trừ và KHÔNG đang trong 30 phút tạm dừng Limit thì dùng luôn
+    # Nếu có preferred_acc_id đã đăng nhập, KHÔNG bị loại trừ và KHÔNG đang tạm dừng Limit thì dùng luôn
     if (
         preferred_acc_id
         and preferred_acc_id in ACCOUNTS_CONFIG
         and preferred_acc_id not in excl
         and (
             preferred_acc_id in logged_in_accs
-            or status_all.get(preferred_acc_id, {}).get("browser_open")
+            or (not require_logged_in and status_all.get(preferred_acc_id, {}).get("browser_open"))
         )
     ):
         in_cd, _, _ = is_account_in_cooldown(preferred_acc_id)
@@ -1804,18 +1868,17 @@ def select_best_available_account(
         for aid in logged_in_accs
         if aid not in excl and not is_account_in_cooldown(aid)[0]
     ]
-    # Ưu tiên 2: Nếu mọi tài khoản ngoài excl đều đang tạm dừng, lấy tài khoản ĐÃ ĐĂNG NHẬP không bị cooldown
-    if not ready_accs:
+    # Ưu tiên 2: Chỉ chọn tài khoản khác chưa bị loại trừ (excl) — KHÔNG quay lại tài khoản đã bị loại trừ do chưa đăng nhập
+    if not ready_accs and not require_logged_in:
         ready_accs = [
             aid for aid in logged_in_accs if not is_account_in_cooldown(aid)[0]
         ]
-    # Ưu tiên 3: Nếu tất cả các nick ĐÃ ĐĂNG NHẬP đều đang trong 30p cooldown, chọn nick ĐÃ ĐĂNG NHẬP có thời gian chờ ngắn nhất
+    # Ưu tiên 3: Nếu các nick ĐÃ ĐĂNG NHẬP hợp lệ (ngoài excl) đều đang trong 30p cooldown, chọn nick có thời gian chờ ngắn nhất
     if not ready_accs and logged_in_accs:
-        cand_pool = [aid for aid in logged_in_accs if aid not in excl] or list(
-            logged_in_accs
-        )
-        cand_pool.sort(key=lambda a: is_account_in_cooldown(a)[1])
-        ready_accs = [cand_pool[0]]
+        cand_pool = [aid for aid in logged_in_accs if aid not in excl]
+        if cand_pool:
+            cand_pool.sort(key=lambda a: is_account_in_cooldown(a)[1])
+            ready_accs = [cand_pool[0]]
 
     if ready_accs:
         with _STATE_LOCK:
@@ -1837,7 +1900,13 @@ def select_best_available_account(
                 _PENDING_PROJECTS_BY_ACC.setdefault(chosen, set()).add(project_id)
             return chosen
 
-    # Chỉ khi chưa có bất kỳ tài khoản nào đăng nhập trên máy thì mới fallback về acc_1
+    if require_logged_in:
+        raise AccountNotLoggedInError(
+            "",
+            "⛔ Không có tài khoản ChatGPT nào đã đăng nhập khả dụng! "
+            "Vui lòng bấm mở Nick ChatGPT và đăng nhập trước khi chạy.",
+        )
+
     open_accs = [
         aid
         for aid in CHATGPT_ACCOUNTS
@@ -1914,6 +1983,16 @@ class ChatGPTWebSession:
         3 luồng BẮT BUỘC nhận được 3 `tab_id` hoàn toàn khác nhau (Mở đủ 3 Tab trên Chrome),
         tuyệt đối không bao giờ tranh chấp chung 1 Tab hoặc đóng nhầm Tab của luồng khác!
         """
+        # Chặn tuyệt đối không bật Chrome và không gửi lệnh vào tài khoản chưa đăng nhập
+        st_pre = _inspect_account_login_state(self.acc_id)
+        if not st_pre.get("logged_in") and not st_pre.get("saved_logged_in"):
+            _invalidate_account_login_state(self.acc_id, port=self.port)
+            raise AccountNotLoggedInError(
+                self.acc_id,
+                f"Tài khoản {self.cfg['label']} chưa đăng nhập ChatGPT! "
+                f"Khóa không gửi lệnh vào {self.cfg['label']}.",
+            )
+
         with _STATE_LOCK:
             is_hidden = _CHROME_HIDDEN_STATE.get(self.acc_id, False)
 
@@ -2054,6 +2133,30 @@ class ChatGPTWebSession:
             if isinstance(st, dict):
                 if st.get("ready"):
                     time.sleep(0.4)
+                    is_auth_live = False
+                    auth_reason = ""
+                    for _auth_try in range(2):
+                        is_auth_live, auth_reason = verify_ws_chatgpt_logged_in(
+                            self.ws_url, acc_id=self.acc_id, port=self.port
+                        )
+                        if is_auth_live:
+                            break
+                        if any(
+                            k in auth_reason.lower()
+                            for k in ("chưa đăng nhập", "trang login", "rỗng")
+                        ):
+                            break
+                        time.sleep(0.5)
+                    if not is_auth_live:
+                        _invalidate_account_login_state(self.acc_id, port=self.port)
+                        try:
+                            self.close_session_tab(keep_open=False)
+                        except Exception:
+                            pass
+                        raise AccountNotLoggedInError(
+                            self.acc_id,
+                            f"Tài khoản {self.cfg['label']} chưa đăng nhập ChatGPT ({auth_reason}) -> Khóa gửi lệnh!",
+                        )
                     self.ensure_thinking_effort_medium()
                     return True
                 if st.get("blank") and tick in (0, 3, 8, 16):
@@ -2553,6 +2656,15 @@ class ChatGPTWebSession:
         prev_backend_head = prev_backend_md[:120].strip() if prev_backend_md else ""
 
         if not already_streaming:
+            is_auth_send, auth_send_reason = verify_ws_chatgpt_logged_in(
+                self.ws_url, acc_id=self.acc_id, port=self.port
+            )
+            if not is_auth_send:
+                _invalidate_account_login_state(self.acc_id, port=self.port)
+                raise AccountNotLoggedInError(
+                    self.acc_id,
+                    f"Tài khoản {self.cfg['label']} đã mất phiên đăng nhập ChatGPT ({auth_send_reason}) -> Ngừng gửi lệnh!",
+                )
             # BẮT BUỘC KHÓA MODEL VIẾT Ở CHẾ ĐỘ "Thinking effort: Medium" TRƯỚC MỖI LẦN GỬI LỆNH
             self.ensure_thinking_effort_medium()
 
@@ -2698,6 +2810,15 @@ class ChatGPTWebSession:
                     )
                 if isinstance(inj_res, dict) and inj_res.get("ok"):
                     break
+                is_auth_retry, auth_retry_reason = verify_ws_chatgpt_logged_in(
+                    self.ws_url, acc_id=self.acc_id, port=self.port
+                )
+                if not is_auth_retry:
+                    _invalidate_account_login_state(self.acc_id, port=self.port)
+                    raise AccountNotLoggedInError(
+                        self.acc_id,
+                        f"Tài khoản {self.cfg['label']} chưa đăng nhập ChatGPT ({auth_retry_reason}) -> Dừng gửi lệnh!",
+                    )
                 log_warn(
                     f"[{self.project_id}] Thử gửi lệnh lại vào ChatGPT ({self.cfg['label']}) lần {inj_attempt + 2}/3 (kết quả trước: {inj_res})...",
                     category="CHROME",
@@ -2998,6 +3119,15 @@ class ChatGPTWebSession:
                 raise RuntimeError(
                     f"Không thể kết nối tới khung chat ChatGPT trên {self.cfg['label']}."
                 )
+        is_auth_img, auth_img_reason = verify_ws_chatgpt_logged_in(
+            self.ws_url, acc_id=self.acc_id, port=self.port
+        )
+        if not is_auth_img:
+            _invalidate_account_login_state(self.acc_id, port=self.port)
+            raise AccountNotLoggedInError(
+                self.acc_id,
+                f"Tài khoản {self.cfg['label']} chưa đăng nhập ChatGPT ({auth_img_reason}) -> Không gửi lệnh vẽ Thumbnail!",
+            )
 
         ref_sig = self._prepare_ref_image_signature(reference_image_b64)
         img_stamp = f"img_seen_{int(time.time() * 1000)}"
@@ -11293,6 +11423,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 pass
 
             tried_accs: set = set(exclude_accs or set())
+            unlogged_accs: set = set()
             max_rounds = max(
                 1, min(int(max_failover_rounds or 2), max(1, len(CHATGPT_ACCOUNTS)))
             )
@@ -11319,17 +11450,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     return _current_thumb_result()
 
                 use_exclude = (
-                    tried_accs if len(tried_accs) < len(CHATGPT_ACCOUNTS) else set()
+                    (tried_accs | unlogged_accs)
+                    if len(tried_accs | unlogged_accs) < len(CHATGPT_ACCOUNTS)
+                    else set(unlogged_accs)
                 )
-                sess = ChatGPTWebSession(
-                    project_id=f"{ma_id}_THUMB",
-                    acc_id=preferred_acc_id
-                    if (round_idx == 0 and preferred_acc_id not in use_exclude)
-                    else None,
-                    exclude_accs=use_exclude,
-                )
-                tried_accs.add(sess.acc_id)
+                sess = None
                 try:
+                    sess = ChatGPTWebSession(
+                        project_id=f"{ma_id}_THUMB",
+                        acc_id=preferred_acc_id
+                        if (round_idx == 0 and preferred_acc_id not in use_exclude)
+                        else None,
+                        exclude_accs=use_exclude,
+                    )
+                    tried_accs.add(sess.acc_id)
                     self._emit(
                         current_ma_id=ma_id,
                         current_step=f"🎨 Đang tạo Thumbnail trên {sess.cfg['label']}",
@@ -11381,17 +11515,35 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             project_id=ma_id,
                         )
                         return _current_thumb_result()
-                except Exception as e_th_fail:
+                except AccountNotLoggedInError as e_no_auth:
+                    if getattr(e_no_auth, "acc_id", ""):
+                        unlogged_accs.add(e_no_auth.acc_id)
                     log_warn(
                         "SCRIPT",
-                        f"[{ma_id}] ⚠️ Lỗi tạo Thumbnail trên {sess.cfg['label']}: {e_th_fail}",
+                        f"[{ma_id}] 🚫 Bỏ qua nick chưa đăng nhập khi tạo Thumbnail: {e_no_auth}",
+                        project_id=ma_id,
+                    )
+                    logged_rem = [
+                        aid
+                        for aid in CHATGPT_ACCOUNTS
+                        if aid not in unlogged_accs
+                        and _profile_has_saved_chatgpt_login(ACCOUNTS_CONFIG[aid]["profile_dir"], aid)
+                    ]
+                    if not logged_rem:
+                        break
+                except Exception as e_th_fail:
+                    acc_lbl = sess.cfg["label"] if sess is not None else "ChatGPT"
+                    log_warn(
+                        "SCRIPT",
+                        f"[{ma_id}] ⚠️ Lỗi tạo Thumbnail trên {acc_lbl}: {e_th_fail}",
                         project_id=ma_id,
                     )
                 finally:
-                    try:
-                        sess.close_session_tab(keep_open=False)
-                    except Exception:
-                        pass
+                    if sess is not None:
+                        try:
+                            sess.close_session_tab(keep_open=False)
+                        except Exception:
+                            pass
 
             if is_green_only_proj and _is_green_plate_clean_and_large(target_green):
                 self._update_idea_record(
@@ -12122,12 +12274,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         # TRƯỜNG HỢP CHƯA CÓ KỊCH BẢN -> MỞ CHROME CHATGPT WEB CHẠY STEP 2 -> STEP 7
         # ======================================================================
         provider_norm = "chatgpt_web"
-        session = ChatGPTWebSession(
-            project_id=ma_id, acc_id=preferred_acc_id, exclude_accs=exclude_accs
-        )
         provider_label = "ChatGPT Web (Medium)"
+        session: Optional[ChatGPTWebSession] = None
 
         try:
+            session = ChatGPTWebSession(
+                project_id=ma_id, acc_id=preferred_acc_id, exclude_accs=exclude_accs
+            )
             self._update_idea_record(
                 ma_id,
                 status="RUNNING",
@@ -13044,14 +13197,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
 
         except Exception as e:
             completed_ok = False
-            failed_acc = getattr(session, "acc_id", None)
+            failed_acc = getattr(session, "acc_id", None) if session is not None else getattr(e, "acc_id", None)
             try:
                 setattr(e, "failed_acc_id", failed_acc)
             except Exception:
                 pass
             # Nếu kịch bản đã kịp viết xong đủ 3 Part trước khi lỗi, giữ trạng thái SCRIPT_DONE thay vì ERROR
             has_sc_now, _, sc_chars_now = self.has_valid_script_on_disk(ma_id)
-            if (
+            if isinstance(e, AccountNotLoggedInError):
+                if failed_acc:
+                    _invalidate_account_login_state(failed_acc)
+            elif (
                 not (self.should_stop or "Đã dừng theo yêu cầu" in str(e))
                 and not has_sc_now
                 and failed_acc
@@ -13110,7 +13266,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             raise
         finally:
             # Nếu đã hoàn thành 100%, đóng hoặc tái chế Tab ngay để giải phóng RAM (Master Blueprint V6.0)
-            session.close_session_tab(keep_open=not locals().get("completed_ok", False))
+            if session is not None:
+                session.close_session_tab(keep_open=not locals().get("completed_ok", False))
 
     def start_render_video_for_ideas_async(
         self,
@@ -13532,6 +13689,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 # LUỒNG AI VIẾT KỊCH BẢN ĐA LUỒNG (VIẾT XONG MÃ NÀO -> ĐẨY SANG RENDER NGAY MÃ ĐÓ)
                 # ==============================================================
                 provider_tag = "CHATGPT WEB (MEDIUM)"
+                aborted_no_login = False
                 if need_script_ids and not self.should_stop:
                     saved_logged_accs = ensure_all_saved_chatgpt_accounts_open(
                         run_hidden=False, open_browsers_now=False
@@ -13546,25 +13704,67 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         or st_all.get(aid, {}).get("saved_logged_in")
                         or aid in saved_logged_accs
                     ]
-                    if (
-                        preferred_acc_id
-                        and preferred_acc_id in st_all
-                        and (
-                            preferred_acc_id in logged_accs
-                            or st_all.get(preferred_acc_id, {}).get("browser_open")
+                    if preferred_acc_id and preferred_acc_id in st_all:
+                        if preferred_acc_id not in logged_accs:
+                            acc_lbl = ACCOUNTS_CONFIG.get(preferred_acc_id, {}).get(
+                                "label", preferred_acc_id
+                            )
+                            err_no_login = (
+                                f"⛔ Tài khoản {acc_lbl} CHƯA ĐĂNG NHẬP ChatGPT! "
+                                f"Hệ thống khóa không gửi lệnh — vui lòng bấm mở {acc_lbl} và đăng nhập trước khi chạy."
+                            )
+                            log_error("SCRIPT", err_no_login)
+                            for mid_nl in need_script_ids:
+                                self._update_idea_record(
+                                    mid_nl,
+                                    status="ERROR",
+                                    current_step=f"⛔ {acc_lbl} chưa đăng nhập ChatGPT",
+                                )
+                            self._emit(
+                                status="error",
+                                current_step=f"⛔ {acc_lbl} chưa đăng nhập ChatGPT",
+                                progress=0.0,
+                                message=err_no_login,
+                            )
+                            need_script_ids = []
+                            aborted_no_login = True
+                        else:
+                            active_accs = [preferred_acc_id]
+                            max_workers = min(
+                                len(need_script_ids), MAX_THREADS_PER_ACCOUNT
+                            )
+                    elif not logged_accs:
+                        err_no_login = (
+                            "⛔ CHƯA CÓ TÀI KHOẢN CHATGPT NÀO ĐĂNG NHẬP! "
+                            "Hệ thống khóa không gửi lệnh để tránh mở nhầm Chrome chưa login — "
+                            "vui lòng mở ít nhất 1 Nick ChatGPT và đăng nhập trước khi chạy."
                         )
-                    ):
-                        active_accs = [preferred_acc_id]
-                        max_workers = min(len(need_script_ids), MAX_THREADS_PER_ACCOUNT)
+                        log_error("SCRIPT", err_no_login)
+                        for mid_nl in need_script_ids:
+                            self._update_idea_record(
+                                mid_nl,
+                                status="ERROR",
+                                current_step="⛔ Chưa đăng nhập ChatGPT",
+                            )
+                        self._emit(
+                            status="error",
+                            current_step="⛔ Chưa có nick ChatGPT nào đăng nhập",
+                            progress=0.0,
+                            message=err_no_login,
+                        )
+                        need_script_ids = []
+                        aborted_no_login = True
                     else:
-                        active_accs = logged_accs if logged_accs else ["acc_1"]
+                        active_accs = list(logged_accs)
                         max_workers = min(
                             len(need_script_ids),
                             max(1, len(active_accs)) * MAX_THREADS_PER_ACCOUNT,
                         )
 
-                    max_workers = max(1, max_workers)
+                    if need_script_ids:
+                        max_workers = max(1, max_workers)
 
+                if need_script_ids and not self.should_stop:
                     # Nếu đang chọn Chức năng 2: Chạy 70% công suất (work_70) -> Giới hạn tối đa 5 luồng AI (1 tab/Acc × 5 Acc)!
                     perf_mode_now = (
                         (os.environ.get("STUDIO_PERF_MODE") or "").strip().lower()
@@ -13670,6 +13870,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             # Tổng số lần chạy = 1 lần chạy chính + tối đa `max_retries` (tối thiểu 4 lượt để xoay vòng đủ các nick + chờ 30p nếu cần)
                             total_attempts = 1 + max(4, int(max_retries))
                             failed_accs_for_mid: set = set()
+                            unlogged_accs_for_mid: set = set()
                             restart_from_scratch_on_other_acc = False
 
                             for attempt_idx in range(total_attempts):
@@ -13680,11 +13881,15 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                     (force_rewrite_script and is_first_try)
                                     or restart_from_scratch_on_other_acc
                                 )
-                                try_acc = acc_item if is_first_try else None
+                                try_acc = (
+                                    acc_item
+                                    if (is_first_try and acc_item not in unlogged_accs_for_mid)
+                                    else None
+                                )
                                 try:
                                     if attempt_idx > 0:
                                         retry_msg = (
-                                            f"🔄 [{mid_item}] Tự động đẩy kịch bản sang tài khoản (nick) khác để làm lại từ đầu (Lần {attempt_idx}/{total_attempts - 1} — Đã tránh nick bị Limit 30p: {sorted(failed_accs_for_mid)})..."
+                                            f"🔄 [{mid_item}] Tự động đẩy kịch bản sang tài khoản (nick) khác để làm lại từ đầu (Lần {attempt_idx}/{total_attempts - 1} — Đã tránh: {sorted(failed_accs_for_mid | unlogged_accs_for_mid)})..."
                                             if restart_from_scratch_on_other_acc
                                             else f"🔄 [{mid_item}] Tự động Retry lần {attempt_idx}/{total_attempts - 1}..."
                                         )
@@ -13717,7 +13922,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         ),  # defer_video_handoff=False khi auto_produce_video=True
                                         use_force_rw,  # Làm lại từ đầu (Step 2) khi đổi sang nick khác do nick cũ bị Limit
                                         ai_provider,
-                                        exclude_accs=set(failed_accs_for_mid),
+                                        exclude_accs=set(failed_accs_for_mid | unlogged_accs_for_mid),
                                         use_original_title=use_original_title,
                                         voice_only=bool(voice_only),
                                         thumb_mode=thumb_mode,
@@ -13741,7 +13946,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                             self.ensure_project_thumbnail_with_failover_sync(
                                                 ma_id=mid_item,
                                                 preferred_acc_id=None,
-                                                exclude_accs=set(failed_accs_for_mid),
+                                                exclude_accs=set(failed_accs_for_mid | unlogged_accs_for_mid),
                                                 max_failover_rounds=1,
                                                 thumb_mode=thumb_mode,
                                             )
@@ -13771,9 +13976,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         return
                                     failed_acc = (
                                         getattr(exc_try, "failed_acc_id", None)
+                                        or getattr(exc_try, "acc_id", None)
                                         or try_acc
                                     )
-                                    if failed_acc:
+                                    is_unlogged_err = isinstance(
+                                        exc_try, AccountNotLoggedInError
+                                    )
+                                    if is_unlogged_err:
+                                        if failed_acc:
+                                            unlogged_accs_for_mid.add(failed_acc)
+                                            _invalidate_account_login_state(failed_acc)
+                                    elif failed_acc:
                                         failed_accs_for_mid.add(failed_acc)
                                         mark_account_rate_limited(
                                             failed_acc,
@@ -13800,7 +14013,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                             self.ensure_project_thumbnail_with_failover_sync(
                                                 ma_id=mid_item,
                                                 preferred_acc_id=None,
-                                                exclude_accs=set(failed_accs_for_mid),
+                                                exclude_accs=set(failed_accs_for_mid | unlogged_accs_for_mid),
                                                 max_failover_rounds=1,
                                                 thumb_mode=thumb_mode,
                                             )
@@ -13817,24 +14030,48 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                                     dispatched_video_ids.add(mid_item)
                                         return
 
+                                    logged_pool_now = [
+                                        aid
+                                        for aid in (logged_accs or CHATGPT_ACCOUNTS)
+                                        if aid not in unlogged_accs_for_mid
+                                        and _profile_has_saved_chatgpt_login(
+                                            ACCOUNTS_CONFIG[aid]["profile_dir"], aid
+                                        )
+                                    ]
+                                    if is_unlogged_err and not logged_pool_now:
+                                        log_error(
+                                            "SCRIPT",
+                                            f"[{mid_item}] ⛔ Dừng ngay lập tức: không còn nick ChatGPT nào đăng nhập hợp lệ ({sorted(unlogged_accs_for_mid)} chưa đăng nhập).",
+                                            project_id=mid_item,
+                                        )
+                                        self._update_idea_record(
+                                            mid_item,
+                                            status="ERROR",
+                                            retry_count=attempt_idx,
+                                            current_step="⛔ Chưa đăng nhập ChatGPT",
+                                        )
+                                        raise
+
                                     # Nếu kịch bản chưa xong mà nick bị limit/lỗi -> Đẩy kịch bản qua nick khác làm lại từ đầu!
                                     restart_from_scratch_on_other_acc = True
 
                                     if attempt_idx < total_attempts - 1:
-                                        # Kiểm tra xem còn nick nào đang rảnh (không bị khóa 30p) không
+                                        # Kiểm tra xem còn nick ĐÃ ĐĂNG NHẬP nào đang rảnh (không bị khóa 30p) không
                                         free_accs_now = [
                                             aid
                                             for aid in active_accs
-                                            if not is_account_in_cooldown(aid)[0]
+                                            if aid not in unlogged_accs_for_mid
+                                            and not is_account_in_cooldown(aid)[0]
                                             and aid not in failed_accs_for_mid
+                                            and _profile_has_saved_chatgpt_login(
+                                                ACCOUNTS_CONFIG[aid]["profile_dir"], aid
+                                            )
                                         ]
                                         if not free_accs_now:
-                                            # Mở rộng sang toàn bộ tài khoản đã đăng nhập chưa bị cooldown 30p
+                                            # Mở rộng sang toàn bộ tài khoản ĐÃ ĐĂNG NHẬP chưa bị cooldown 30p
                                             free_accs_now = [
                                                 aid
-                                                for aid in (
-                                                    logged_accs or CHATGPT_ACCOUNTS
-                                                )
+                                                for aid in logged_pool_now
                                                 if not is_account_in_cooldown(aid)[0]
                                                 and aid not in failed_accs_for_mid
                                             ]
@@ -13842,18 +14079,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                             wait_s = 3.0
                                             log_warn(
                                                 "SCRIPT",
-                                                f"[{mid_item}] 🚫 Nick '{failed_acc}' bị Limit/Lỗi -> Đã tạm dừng '{failed_acc}' 30 phút và đẩy ngay '{mid_item}' sang nick khác ({free_accs_now[0]}) làm lại từ đầu sau {wait_s:.0f}s!",
+                                                f"[{mid_item}] 🚫 {'Nick chưa đăng nhập' if is_unlogged_err else f'Nick {failed_acc} bị Limit/Lỗi'} -> Chuyển ngay '{mid_item}' sang nick đã đăng nhập ({free_accs_now[0]}) sau {wait_s:.0f}s!",
                                                 project_id=mid_item,
                                             )
                                             self._update_idea_record(
                                                 mid_item,
                                                 status="RUNNING",
                                                 retry_count=attempt_idx + 1,
-                                                current_step=f"🔄 Nick {failed_acc} tạm dừng 30p -> Đang đẩy sang {free_accs_now[0]} làm lại từ đầu...",
+                                                current_step=f"🔄 Đang chuyển sang {free_accs_now[0]} làm lại từ đầu...",
                                             )
                                             time.sleep(wait_s)
-                                        else:
-                                            # Tất cả các nick đều đang trong thời gian nghỉ 30 phút -> Chờ đúng tới khi nick sớm nhất hết 30 phút rồi tự động thử lại!
+                                        elif logged_pool_now:
+                                            # Tất cả các nick ĐÃ ĐĂNG NHẬP đều đang trong thời gian nghỉ 30 phút -> Chờ đúng tới khi nick sớm nhất hết 30 phút rồi tự động thử lại!
                                             rem_cooldown = (
                                                 get_earliest_cooldown_remaining_sec()
                                             )
@@ -13865,7 +14102,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                             )
                                             log_warn(
                                                 "SCRIPT",
-                                                f"[{mid_item}] ⏳ Tất cả các tài khoản đều đang bị Limit tạm dừng 30 phút -> Hệ thống chờ {wait_s // 60}p{wait_s % 60:02d}s rồi tự động chạy lại '{mid_item}' từ đầu!",
+                                                f"[{mid_item}] ⏳ Tất cả các tài khoản đã đăng nhập đều đang bị Limit tạm dừng 30 phút -> Hệ thống chờ {wait_s // 60}p{wait_s % 60:02d}s rồi tự động chạy lại '{mid_item}' từ đầu!",
                                                 project_id=mid_item,
                                             )
                                             waited = 0
@@ -13888,8 +14125,16 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                                     )
                                                 time.sleep(1.0)
                                                 waited += 1
-                                            # Sau khi hết 30 phút chờ, cho phép thử lại trên tất cả các nick đã hết hạn cooldown
+                                            # Sau khi hết 30 phút chờ, chỉ reset cooldown limit (TUYỆT ĐỐI KHÔNG gỡ unlogged_accs_for_mid)
                                             failed_accs_for_mid.clear()
+                                        else:
+                                            self._update_idea_record(
+                                                mid_item,
+                                                status="ERROR",
+                                                retry_count=attempt_idx,
+                                                current_step="⛔ Chưa đăng nhập ChatGPT",
+                                            )
+                                            raise
                                     else:
                                         log_error(
                                             "SCRIPT",
@@ -13963,7 +14208,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 # ==============================================================
                 # KIỂM TRA LẠI TOÀN BỘ KỊCH BẢN ĐÃ XONG: NẾU KỊCH BẢN NÀO CHƯA CÓ THUMBNAIL THÌ TẠO BÙ NGAY (ĐỔI NICK NẾU LIMIT)
                 # ==============================================================
-                if not self.should_stop:
+                if not self.should_stop and not aborted_no_login:
                     try:
                         self.ensure_all_projects_have_thumbnails_sync(
                             target_ids=clean_ids,
@@ -13982,11 +14227,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 # ==============================================================
                 # QUÉT VÉT LẦN CUỐI ĐẢM BẢO MỌI KỊCH BẢN CHƯA ĐẨY ĐỀU ĐƯỢC TẠO VOICE / RENDER MP4
                 # ==============================================================
-                if auto_produce_video and not self.should_stop:
+                if auto_produce_video and not self.should_stop and not aborted_no_login:
                     with dispatched_video_lock:
                         sweep_ids = [
                             m for m in clean_ids if m not in dispatched_video_ids
                         ]
+                    final_render_res = None
                     if sweep_ids:
                         only_unrendered = len(clean_ids) > 1
                         res_render = self.start_render_video_for_ideas_async(
@@ -13996,33 +14242,46 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             voice_only=bool(voice_only),
                             thumb_mode=thumb_mode,
                         )
+                        final_render_res = res_render
                         if (
                             not res_render.get("started")
                             and only_unrendered
                             and len(sweep_ids) == 1
                         ):
-                            self.start_render_video_for_ideas_async(
+                            final_render_res = self.start_render_video_for_ideas_async(
                                 ma_ids=sweep_ids,
                                 video_settings=video_settings,
                                 only_unrendered=False,
                                 voice_only=bool(voice_only),
                                 thumb_mode=thumb_mode,
                             )
-                    self._emit(
-                        status="completed",
-                        current_step=(
-                            "✅ Đã viết xong toàn bộ Kịch bản — Hàng đợi Tạo Voice GPU (Chưa Render MP4) đang chạy"
-                            if voice_only
-                            else "✅ Đã viết xong toàn bộ Kịch bản — Hàng đợi Render MP4 đang hoàn tất"
-                        ),
-                        progress=100.0,
-                        message=(
-                            "🎙️ Đã hoàn tất viết Kịch bản, tự động tắt Chrome ChatGPT và đẩy toàn bộ sang Tạo Voice GPU (Chưa Render MP4)!"
-                            if voice_only
-                            else "🎉 Đã hoàn tất viết Kịch bản, tự động tắt Chrome ChatGPT và đẩy toàn bộ vào Hàng Đợi Voice & Render MP4!"
-                        ),
+                    total_dispatched_now = len(dispatched_video_ids) + (
+                        int(final_render_res.get("queued_count", 0))
+                        if isinstance(final_render_res, dict)
+                        else 0
                     )
-                elif not auto_produce_video and not self.should_stop:
+                    if total_dispatched_now > 0:
+                        self._emit(
+                            status="completed",
+                            current_step=(
+                                "✅ Đã viết xong toàn bộ Kịch bản — Hàng đợi Tạo Voice GPU (Chưa Render MP4) đang chạy"
+                                if voice_only
+                                else "✅ Đã viết xong toàn bộ Kịch bản — Hàng đợi Render MP4 đang hoàn tất"
+                            ),
+                            progress=100.0,
+                            message=(
+                                "🎙️ Đã hoàn tất viết Kịch bản, tự động tắt Chrome ChatGPT và đẩy toàn bộ sang Tạo Voice GPU (Chưa Render MP4)!"
+                                if voice_only
+                                else "🎉 Đã hoàn tất viết Kịch bản, tự động tắt Chrome ChatGPT và đẩy toàn bộ vào Hàng Đợi Voice & Render MP4!"
+                            ),
+                        )
+                    elif isinstance(final_render_res, dict) and final_render_res.get("message"):
+                        self._emit(
+                            status="completed",
+                            progress=100.0,
+                            message=final_render_res["message"],
+                        )
+                elif not auto_produce_video and not self.should_stop and not aborted_no_login:
                     self._sync_projects_disk_state()
                     self._emit(
                         status="completed",
@@ -14364,11 +14623,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             self.should_stop = False
 
         def _thumb_worker():
-            session = ChatGPTWebSession(
-                project_id=f"{ma_id}_THUMB", acc_id=preferred_acc_id
-            )
+            session: Optional[ChatGPTWebSession] = None
             completed_ok = False
             try:
+                session = ChatGPTWebSession(
+                    project_id=f"{ma_id}_THUMB", acc_id=preferred_acc_id
+                )
                 ideas = self.load_saved_ideas()
                 idea = next((it for it in ideas if it.get("ma_id") == ma_id), {}) or {
                     "ma_id": ma_id
@@ -14547,7 +14807,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     message=f"[{ma_id}] ❌ Lỗi tạo Thumbnail: {str(e)}",
                 )
             finally:
-                session.close_session_tab(keep_open=not completed_ok)
+                if session is not None:
+                    session.close_session_tab(keep_open=not completed_ok)
                 with self.lock:
                     self.is_running = False
 

@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.5",
-  "build_number": 225,
-  "released_at": "2026-11-26 19:06:27",
+  "version": "V2.2.6",
+  "build_number": 226,
+  "released_at": "2026-11-26 21:40:06",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.2.5 (Build #225): Nâng cấp luồng viết kịch bản AI lên 5 tài khoản ChatGPT (15 luồng 100% / 5 luồng 70%), bổ sung chế độ Tạo Kịch bản + Voice chưa Render Video (tái sử dụng Voice khi Render), và tùy chọn Thumbnail Kịch bản Tạo Đủ 2 Ảnh hoặc Chỉ Tạo 1 Ảnh Nhân Vật Nền Xanh #00FF00."
+  "changelog": "V2.2.6 (Build #226): Bổ sung đầy đủ nút kích hoạt chế độ Viết KB + Thumbnail + Tạo Voice GPU (Chưa Render) ở cả bảng điều khiển, thanh công cụ và từng thẻ dự án; khóa cứng tuyệt đối không gửi lệnh vào tài khoản ChatGPT chưa đăng nhập hoặc đã mất phiên đăng nhập."
 }

@@ -2316,6 +2316,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   let adasVisibleLimit = 25;
 
+  function isVideoTrulyCompleted(it) {
+    return !!(it && it.has_video_mp4 && it.status === "COMPLETED_VIDEO");
+  }
+
   function renderSavedIdeasList(ideas) {
     lastSavedIdeasCache = ideas || [];
     const countEl = document.getElementById("adas-ideas-count");
@@ -2330,8 +2334,6 @@ document.addEventListener("DOMContentLoaded", () => {
         : (pureCount >= 35000 ? 3 : pureCount >= 24000 ? 2 : pureCount >= 9500 ? 1 : 0);
       return !!it.has_script && pureCount >= 35000 && doneParts >= 3;
     };
-
-    const isVideoTrulyCompleted = (it) => !!it.has_video_mp4 && it.status === "COMPLETED_VIDEO";
 
     const doneIdeas = ideas.filter((it) => classifyDone(it));
     const pendingIdeas = ideas.filter((it) => !classifyDone(it));
@@ -2482,6 +2484,18 @@ document.addEventListener("DOMContentLoaded", () => {
           : `<button type="button" class="btn-idea-toggle-thumb-mode px-1.5 py-0.5 rounded bg-secondary-container/15 hover:bg-secondary-container/30 text-secondary-container font-mono text-[9.5px] border border-secondary-container/35 shrink-0 cursor-pointer transition-all" data-id="${maId}" data-tm="both" title="Tạo đủ 2 ảnh (Thumbnail 16:9 + Nền Xanh 9:16) • Bấm để đổi sang Chỉ Tạo 1 Ảnh Nền Xanh">🖼 2 Ảnh</button>`)
         : "";
 
+      const activeOutputMode = (document.getElementById("adas-output-mode-select") || {}).value || "full_video";
+      const runCardLabel = activeOutputMode === "script_seo_thumb_voice_only"
+        ? (isPartialScript ? "Tiếp+Voice" : "KB+Voice")
+        : (activeOutputMode === "script_seo_thumb_only"
+          ? (isPartialScript ? "Tiếp" : "Viết")
+          : (isPartialScript ? "Tiếp" : "Chạy"));
+      const runCardTitle = activeOutputMode === "script_seo_thumb_voice_only"
+        ? "Chạy theo Chế độ 2: Viết Kịch bản + SEO + Thumbnail -> Tạo Voice GPU luôn (Chưa Render MP4)"
+        : (activeOutputMode === "script_seo_thumb_only"
+          ? "Chạy theo Chế độ 1: Chỉ Viết Kịch bản + SEO + Thumbnail (Không Render)"
+          : "Chạy theo Chế độ đang chọn (Viết KB + SEO + Thumbnail & Tạo Voice/Render)");
+
       return `
         <div class="adas-idea-card px-2.5 py-1.5 rounded bg-surface-container-high border border-outline-variant/25 hover:border-secondary-container/40 transition-all flex items-center justify-between gap-2" style="display:flex;" title="${safeTooltip}">
           <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
@@ -2496,10 +2510,15 @@ document.addEventListener("DOMContentLoaded", () => {
           <div class="flex items-center gap-1 shrink-0">
             ${statusPill}
             ${!hasScript ? `
-              <button type="button" class="btn-idea-script-only px-2 py-0.5 rounded bg-primary-container text-on-primary-fixed hover:brightness-110 text-[10.5px] font-bold flex items-center gap-0.5 transition-all" data-id="${maId}" title="Viết kịch bản cho mã này">
-                <span class="material-symbols-outlined text-[12px]">play_arrow</span>${isPartialScript ? "Tiếp" : "Viết"}
+              <button type="button" class="btn-idea-run px-2 py-0.5 rounded bg-primary-container text-on-primary-fixed hover:brightness-110 text-[10.5px] font-bold flex items-center gap-0.5 transition-all" data-id="${maId}" title="${runCardTitle}">
+                <span class="material-symbols-outlined text-[12px]">${activeOutputMode === "script_seo_thumb_voice_only" ? "record_voice_over" : "play_arrow"}</span>${runCardLabel}
               </button>
             ` : `
+              ${(!hasVoice && !hasMp4) ? `
+                <button type="button" class="btn-idea-voice-only px-1.5 py-0.5 rounded bg-secondary-container/20 hover:bg-secondary-container/35 text-secondary border border-secondary/45 text-[10px] font-bold flex items-center gap-0.5 transition-all" data-id="${maId}" title="Chỉ tạo Voice GPU cho kịch bản này (Chưa Render MP4)">
+                  <span class="material-symbols-outlined text-[12px]">record_voice_over</span>Voice
+                </button>
+              ` : ""}
               <button type="button" class="btn-idea-render-mp4 px-1.5 py-0.5 rounded bg-secondary-container/20 hover:bg-secondary-container/30 text-secondary-container border border-secondary-container/40 text-[10px] font-bold flex items-center gap-0.5 transition-all" data-id="${maId}" title="Dựng Video MP4">
                 <span class="material-symbols-outlined text-[12px]">movie</span>Dựng
               </button>
@@ -2628,11 +2647,19 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     });
 
+    // Gắn sự kiện cho nút Chỉ Tạo Voice GPU (Chưa Render MP4) trên từng thẻ
+    listEl.querySelectorAll(".btn-idea-voice-only").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const mid = btn.dataset.id;
+        await triggerRenderOnly([mid], false, false, true);
+      });
+    });
+
     // Gắn sự kiện cho nút Render MP4 trực tiếp (dành cho các mã đã viết xong kịch bản)
     listEl.querySelectorAll(".btn-idea-render-mp4").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const mid = btn.dataset.id;
-        await triggerRenderOnly([mid], false);
+        await triggerRenderOnly([mid], false, false, false);
       });
     });
 
@@ -2835,7 +2862,9 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   }
 
-  async function triggerRenderOnly(maIds = null, onlyUnrendered = false, overrideQa = false) {
+  async function triggerRenderOnly(maIds = null, onlyUnrendered = false, overrideQa = false, voiceOnly = false) {
+    const thumbModeSel = document.getElementById("adas-thumb-mode-select");
+    const activeThumbMode = (thumbModeSel && !thumbModeSel.disabled) ? (thumbModeSel.value || "both") : null;
     try {
       const res = await fetch("/api/adas/render-only", {
         method: "POST",
@@ -2844,19 +2873,21 @@ document.addEventListener("DOMContentLoaded", () => {
           ma_ids: maIds,
           only_unrendered: onlyUnrendered,
           video_settings: getCurrentVideoSettings(),
-          override_qa: overrideQa === true
+          override_qa: overrideQa === true,
+          voice_only: voiceOnly === true,
+          thumb_mode: activeThumbMode
         })
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 409 && data.detail && data.detail.qa_blocked_ids) {
         await loadSavedIdeas();
         if (confirmRenderDespiteQa(data.detail.qa_blocked)) {
-          await triggerRenderOnly(data.detail.qa_blocked_ids, onlyUnrendered, true);
+          await triggerRenderOnly(data.detail.qa_blocked_ids, onlyUnrendered, true, voiceOnly);
         }
         return;
       }
       if (!res.ok) {
-        alert(data.detail || "Không có kịch bản nào sẵn sàng Render MP4!");
+        alert(data.detail || (voiceOnly ? "Không có kịch bản nào sẵn sàng tạo Voice GPU!" : "Không có kịch bản nào sẵn sàng Render MP4!"));
         return;
       }
       if (
@@ -2865,21 +2896,31 @@ document.addEventListener("DOMContentLoaded", () => {
         data.skipped_qa_blocked_ids.length > 0 &&
         confirmRenderDespiteQa(data.skipped_qa_blocked)
       ) {
-        await triggerRenderOnly(data.skipped_qa_blocked_ids, onlyUnrendered, true);
+        await triggerRenderOnly(data.skipped_qa_blocked_ids, onlyUnrendered, true, voiceOnly);
       }
-      switchStudioTab("tab-render");
+      if (!voiceOnly) {
+        switchStudioTab("tab-render");
+      } else {
+        appendInstantLogToUI(
+          data.message || "🎙️ Đang khởi tạo hàng đợi tạo Voice GPU (Chưa Render MP4)...",
+          "VOICE",
+          "INFO"
+        );
+      }
       if (progressSection) {
         progressSection.style.display = "block";
-        progressMsg.innerText = data.message || "🎬 Đang khởi tạo hàng đợi tạo Voice & Render MP4...";
+        progressMsg.innerText = data.message || (voiceOnly
+          ? "🎙️ Đang khởi tạo hàng đợi tạo Voice GPU (Chưa Render MP4)..."
+          : "🎬 Đang khởi tạo hàng đợi tạo Voice & Render MP4...");
       }
       await loadSavedIdeas();
       await fetchSystemLogs();
     } catch (e) {
-      alert("Lỗi khởi chạy Render MP4: " + e.message);
+      alert((voiceOnly ? "Lỗi khởi chạy Tạo Voice GPU: " : "Lỗi khởi chạy Render MP4: ") + e.message);
     }
   }
 
-  async function triggerRunADAS(maIds, forceAutoVideo = null, forceRewriteScript = false) {
+  async function triggerRunADAS(maIds, forceAutoVideo = null, forceRewriteScript = false, forceVoiceOnly = null) {
     if (!maIds || maIds.length === 0) return;
     const accSel = document.getElementById("adas-acc-select");
     const autoVid = document.getElementById("adas-auto-video");
@@ -2891,15 +2932,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const outputModeVal = outputModeSel ? outputModeSel.value : "full_video";
 
     // Nếu người dùng đang chọn chế độ 4 ("render_ready_only" — Chỉ Render các kịch bản đã xong) và không ép chế độ khác
-    if (forceAutoVideo === null && !forceRewriteScript && outputModeVal === "render_ready_only") {
-      await triggerRenderOnly(maIds, true);
+    if (forceAutoVideo === null && forceVoiceOnly === null && !forceRewriteScript && outputModeVal === "render_ready_only") {
+      await triggerRenderOnly(maIds, true, false, false);
       return;
     }
 
     let shouldProduceVideo = true;
     let voiceOnlyMode = false;
-    if (typeof forceAutoVideo === "boolean") {
+    if (forceVoiceOnly === true) {
+      shouldProduceVideo = true;
+      voiceOnlyMode = true;
+    } else if (typeof forceAutoVideo === "boolean") {
       shouldProduceVideo = forceAutoVideo;
+      voiceOnlyMode = (forceVoiceOnly === false) ? false : false;
     } else if (outputModeVal === "script_seo_thumb_only") {
       shouldProduceVideo = false;
     } else if (outputModeVal === "script_seo_thumb_voice_only") {
@@ -3238,6 +3283,38 @@ document.addEventListener("DOMContentLoaded", () => {
     // 0b. Lưu & đồng bộ Chế Độ Chạy (4 Chế Độ: Chỉ Viết KB+Thumb+SEO / Viết + Tạo Voice GPU [Chưa Render] / Viết + Render Song Song / Chỉ Tạo Voice & Render MP4)
     const outputModeSel = document.getElementById("adas-output-mode-select");
     const autoVidChk = document.getElementById("adas-auto-video");
+    const syncOutputModeActionLabels = (modeVal) => {
+      const m = modeVal || "full_video";
+      const runMainTxt = document.getElementById("text-adas-save-and-run");
+      const runMainIcon = document.getElementById("icon-adas-save-and-run");
+      const runAllTxt = document.getElementById("text-adas-run-all");
+      if (runMainTxt && runMainIcon) {
+        if (m === "script_seo_thumb_voice_only") {
+          runMainIcon.innerText = "record_voice_over";
+          runMainTxt.innerText = "Kích Hoạt Mode 2: Viết KB + Thumb + Voice (Chưa Render)";
+        } else if (m === "script_seo_thumb_only") {
+          runMainIcon.innerText = "draw";
+          runMainTxt.innerText = "Kích Hoạt Mode 1: Chỉ Viết KB + SEO + Thumb";
+        } else if (m === "render_ready_only") {
+          runMainIcon.innerText = "movie_edit";
+          runMainTxt.innerText = "Kích Hoạt Mode 4: Tạo Voice & Render MP4 KB Đã Xong";
+        } else {
+          runMainIcon.innerText = "play_circle";
+          runMainTxt.innerText = "Kích Hoạt Mode 3: Chạy Tự Động A ➔ Z";
+        }
+      }
+      if (runAllTxt) {
+        if (m === "script_seo_thumb_voice_only") {
+          runAllTxt.innerText = "5 Nick: KB + Voice";
+        } else if (m === "script_seo_thumb_only") {
+          runAllTxt.innerText = "5 Nick: Chỉ KB";
+        } else if (m === "render_ready_only") {
+          runAllTxt.innerText = "5 Nick: Render Xong";
+        } else {
+          runAllTxt.innerText = "Đa Luồng 5 Nick";
+        }
+      }
+    };
     if (outputModeSel) {
       const savedOutMode = localStorage.getItem("adas_output_mode");
       if (savedOutMode && ["full_video", "script_seo_thumb_only", "script_seo_thumb_voice_only", "render_ready_only"].includes(savedOutMode)) {
@@ -3246,11 +3323,16 @@ document.addEventListener("DOMContentLoaded", () => {
           autoVidChk.checked = (savedOutMode !== "script_seo_thumb_only");
         }
       }
+      syncOutputModeActionLabels(outputModeSel.value);
       outputModeSel.addEventListener("change", () => {
         const modeVal = outputModeSel.value;
         localStorage.setItem("adas_output_mode", modeVal);
         if (autoVidChk) {
           autoVidChk.checked = (modeVal !== "script_seo_thumb_only");
+        }
+        syncOutputModeActionLabels(modeVal);
+        if (Array.isArray(lastSavedIdeasCache) && lastSavedIdeasCache.length > 0) {
+          renderSavedIdeasList(lastSavedIdeasCache);
         }
         const logMsg = modeVal === "script_seo_thumb_only"
           ? "📝 Đã chọn Chế độ 1: CHỈ VIẾT KỊCH BẢN + THUMBNAIL + SEO (Chưa Tạo Voice / Video)"
@@ -3266,6 +3348,7 @@ document.addEventListener("DOMContentLoaded", () => {
       autoVidChk.addEventListener("change", () => {
         outputModeSel.value = autoVidChk.checked ? "full_video" : "script_seo_thumb_only";
         localStorage.setItem("adas_output_mode", outputModeSel.value);
+        syncOutputModeActionLabels(outputModeSel.value);
       });
     }
 
@@ -3854,71 +3937,111 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
+    const getEligibleIdeasForMode = (ideasArr, modeVal) => {
+      const list = Array.isArray(ideasArr) ? ideasArr : [];
+      return list
+        .filter((it) => {
+          const hasFullScript = !!it.has_script && (it.pure_char_count || 0) >= 35000;
+          const hasMp4 = isVideoTrulyCompleted(it);
+          const hasVoice = !!it.has_voice || it.status === "VOICE_DONE";
+          if (modeVal === "script_seo_thumb_only") {
+            return !(hasFullScript && !!it.has_thumbnail && !!it.has_seo);
+          }
+          if (modeVal === "script_seo_thumb_voice_only") {
+            if (hasMp4) return false;
+            return !(hasFullScript && !!it.has_thumbnail && !!it.has_seo && hasVoice);
+          }
+          if (modeVal === "render_ready_only") {
+            return hasFullScript && !hasMp4;
+          }
+          return !hasMp4;
+        })
+        .map((it) => it.ma_id)
+        .filter(Boolean);
+    };
+
+    const saveAndRunByMode = async (modeOverride = null, forceAutoVideoArg = null, forceVoiceOnlyArg = null) => {
+      const targetMode = modeOverride || (outputModeSel ? outputModeSel.value : "full_video");
+      if (modeOverride && outputModeSel && outputModeSel.value !== modeOverride) {
+        outputModeSel.value = modeOverride;
+        localStorage.setItem("adas_output_mode", modeOverride);
+        if (autoVidChk) {
+          autoVidChk.checked = (modeOverride !== "script_seo_thumb_only");
+        }
+        syncOutputModeActionLabels(modeOverride);
+        if (Array.isArray(lastSavedIdeasCache) && lastSavedIdeasCache.length > 0) {
+          renderSavedIdeasList(lastSavedIdeasCache);
+        }
+      }
+      const raw = rawInputEl ? rawInputEl.value.trim() : "";
+      if (raw) {
+        const res = await fetch("/api/adas/ideas/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            raw_text: raw,
+            custom_id: null,
+            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
+            channel_key: window.currentActiveChannelKey || "padre_mx",
+            thumb_mode: (document.getElementById("adas-thumb-mode-select") && !document.getElementById("adas-thumb-mode-select").disabled) ? document.getElementById("adas-thumb-mode-select").value : null
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.success && data.idea) {
+          renderSavedIdeasList(data.ideas || []);
+          rawInputEl.value = "";
+          refreshDetectedCountBadge();
+          if (typeof window.loadMachineCodeConfig === "function") window.loadMachineCodeConfig();
+          const idsToRun = (data.saved_ids && data.saved_ids.length > 0) ? data.saved_ids : [data.idea.ma_id];
+          await triggerRunADAS(idsToRun, forceAutoVideoArg, false, forceVoiceOnlyArg);
+        } else {
+          alert(data.detail || "Không thể lưu tiêu đề!");
+        }
+        return;
+      }
+
+      const ideasRes = await fetch("/api/adas/ideas");
+      if (!ideasRes.ok) {
+        alert("Vui lòng dán 1 hoặc nhiều Tiêu đề (mỗi tiêu đề 1 dòng)!");
+        return;
+      }
+      const ideasData = await ideasRes.json();
+      const eligibleIds = getEligibleIdeasForMode(ideasData.ideas || [], targetMode);
+      if (eligibleIds.length === 0) {
+        const emptyHint = targetMode === "script_seo_thumb_voice_only"
+          ? "Chưa có tiêu đề mới trong ô nhập và các dự án trong Kho Dự Án đều đã hoàn thành Voice GPU hoặc MP4!\n\n👉 Vui lòng dán Tiêu đề mới để chạy 'Viết KB + Thumb + Voice'."
+          : "Vui lòng dán 1 hoặc nhiều Tiêu đề (mỗi tiêu đề 1 dòng) hoặc thêm dự án vào Kho Dự Án!";
+        alert(emptyHint);
+        return;
+      }
+      if (targetMode === "render_ready_only" && forceAutoVideoArg === null && forceVoiceOnlyArg === null) {
+        await triggerRenderOnly(eligibleIds, true, false, false);
+        return;
+      }
+      await triggerRunADAS(eligibleIds, forceAutoVideoArg, false, forceVoiceOnlyArg);
+    };
+
     // 7. Nút Lưu & Chỉ Viết KB + SEO + Thumbnail (Không Render Video)
     const saveAndScriptOnlyBtn = document.getElementById("btn-adas-save-and-script-only");
     if (saveAndScriptOnlyBtn && rawInputEl) {
       saveAndScriptOnlyBtn.addEventListener("click", async () => {
-        const raw = rawInputEl.value.trim();
-        if (!raw) {
-          alert("Vui lòng dán 1 hoặc nhiều Tiêu đề (mỗi tiêu đề 1 dòng)!");
-          return;
-        }
-        const res = await fetch("/api/adas/ideas/save", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            raw_text: raw,
-            custom_id: null,
-            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
-            channel_key: window.currentActiveChannelKey || "padre_mx",
-            thumb_mode: (document.getElementById("adas-thumb-mode-select") && !document.getElementById("adas-thumb-mode-select").disabled) ? document.getElementById("adas-thumb-mode-select").value : null
-          })
-        });
-        const data = await res.json();
-        if (res.ok && data.success && data.idea) {
-          renderSavedIdeasList(data.ideas || []);
-          rawInputEl.value = "";
-          refreshDetectedCountBadge();
-          if (typeof window.loadMachineCodeConfig === "function") window.loadMachineCodeConfig();
-          const idsToRun = (data.saved_ids && data.saved_ids.length > 0) ? data.saved_ids : [data.idea.ma_id];
-          await triggerRunADAS(idsToRun, false);
-        } else {
-          alert(data.detail || "Không thể lưu tiêu đề!");
-        }
+        await saveAndRunByMode("script_seo_thumb_only", false, false);
       });
     }
 
-    // 7b. Nút Lưu & Chạy Ngay (Hỗ trợ cả 1 mã hoặc SLL nhiều mã vừa dán)
+    // 7a. Nút Lưu & Viết KB + Thumbnail + SEO -> Tạo Voice GPU Luôn (Chưa Render MP4)
+    const saveAndVoiceOnlyBtn = document.getElementById("btn-adas-save-and-voice-only");
+    if (saveAndVoiceOnlyBtn && rawInputEl) {
+      saveAndVoiceOnlyBtn.addEventListener("click", async () => {
+        await saveAndRunByMode("script_seo_thumb_voice_only", true, true);
+      });
+    }
+
+    // 7b. Nút Lưu & Kích Hoạt Theo Chế Độ Đang Chọn (Hỗ trợ dán tiêu đề mới hoặc chạy các mã đang chờ trong Kho)
     const saveAndRunBtn = document.getElementById("btn-adas-save-and-run");
     if (saveAndRunBtn && rawInputEl) {
       saveAndRunBtn.addEventListener("click", async () => {
-        const raw = rawInputEl.value.trim();
-        if (!raw) {
-          alert("Vui lòng dán 1 hoặc nhiều Tiêu đề (mỗi tiêu đề 1 dòng)!");
-          return;
-        }
-        const res = await fetch("/api/adas/ideas/save", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            raw_text: raw,
-            custom_id: null,
-            use_original_title: (window.currentAdasTitleMode || currentAdasTitleMode) === "original",
-            channel_key: window.currentActiveChannelKey || "padre_mx",
-            thumb_mode: (document.getElementById("adas-thumb-mode-select") && !document.getElementById("adas-thumb-mode-select").disabled) ? document.getElementById("adas-thumb-mode-select").value : null
-          })
-        });
-        const data = await res.json();
-        if (res.ok && data.success && data.idea) {
-          renderSavedIdeasList(data.ideas || []);
-          rawInputEl.value = "";
-          refreshDetectedCountBadge();
-          if (typeof window.loadMachineCodeConfig === "function") window.loadMachineCodeConfig();
-          const idsToRun = (data.saved_ids && data.saved_ids.length > 0) ? data.saved_ids : [data.idea.ma_id];
-          await triggerRunADAS(idsToRun, null);
-        } else {
-          alert(data.detail || "Không thể lưu tiêu đề!");
-        }
+        await saveAndRunByMode(null, null, null);
       });
     }
 
@@ -4202,6 +4325,28 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
+    const voiceOnlyAllBtn = document.getElementById("btn-adas-voice-only-all");
+    if (voiceOnlyAllBtn) {
+      voiceOnlyAllBtn.addEventListener("click", async () => {
+        const res = await fetch("/api/adas/ideas");
+        if (!res.ok) return;
+        const data = await res.json();
+        const voiceReadyIds = (data.ideas || [])
+          .filter((it) => {
+            const hasFullScript = !!it.has_script && (it.pure_char_count || 0) >= 35000;
+            const hasVoice = !!it.has_voice || it.status === "VOICE_DONE";
+            const hasMp4 = isVideoTrulyCompleted(it);
+            return hasFullScript && !hasVoice && !hasMp4;
+          })
+          .map((it) => it.ma_id);
+        if (voiceReadyIds.length === 0) {
+          alert("Hiện chưa có kịch bản nào viết xong (>= 35,000 chữ) đang chờ tạo Voice GPU!\n\n👉 Nếu bạn muốn chạy luôn từ bước Viết Kịch Bản + Thumbnail -> Tạo Voice GPU, hãy bấm nút '🎙️ Viết KB + Thumb + Voice' hoặc chọn Mode 2 rồi bấm '🎙️ 5 Nick: KB + Voice'.");
+          return;
+        }
+        await triggerRenderOnly(voiceReadyIds, true, false, true);
+      });
+    }
+
     const renderReadyBtn = document.getElementById("btn-adas-render-ready");
     if (renderReadyBtn) {
       renderReadyBtn.addEventListener("click", async () => {
@@ -4215,7 +4360,7 @@ document.addEventListener("DOMContentLoaded", () => {
           alert("Hiện chưa có dự án nào đã viết xong đủ 3 Part kịch bản (>= 35,000 chữ) mà đang chờ xuất MP4!\n\n• Với các dự án đang thiếu Part B/C (màu cam), hãy bấm '▶️ Viết Tiếp' hoặc '▶️ Chạy Đa Luồng' để hoàn thành đủ 3 Part trước.");
           return;
         }
-        await triggerRenderOnly(readyIds, true);
+        await triggerRenderOnly(readyIds, true, false, false);
       });
     }
 
@@ -4234,7 +4379,7 @@ document.addEventListener("DOMContentLoaded", () => {
           })
           .map((it) => it.ma_id);
         if (pendingScriptIds.length === 0) {
-          alert("Tất cả các mã trong kho đã có đủ Kịch bản 3 Part (>= 35,000 chữ) + SEO + Thumbnail!\n\n👉 Bạn có thể copy thư mục sang máy khác hoặc bấm '🎬 Render Tất Cả Đã Xong' nếu muốn xuất MP4.");
+          alert("Tất cả các mã trong kho đã có đủ Kịch bản 3 Part (>= 35,000 chữ) + SEO + Thumbnail!\n\n👉 Bạn có thể bấm '🎙️ Tạo Voice Đã Xong' để tạo Voice GPU hoặc bấm '🎬 Render Sẵn Sàng' nếu muốn xuất MP4.");
           return;
         }
         await triggerRunADAS(pendingScriptIds, false);
@@ -4247,11 +4392,15 @@ document.addEventListener("DOMContentLoaded", () => {
         const res = await fetch("/api/adas/ideas");
         if (!res.ok) return;
         const data = await res.json();
-        const pendingIds = (data.ideas || [])
-          .filter((it) => !it.has_video_mp4 && it.status !== "COMPLETED_VIDEO")
-          .map((it) => it.ma_id);
+        const activeMode = outputModeSel ? outputModeSel.value : "full_video";
+        const pendingIds = getEligibleIdeasForMode(data.ideas || [], activeMode);
         if (pendingIds.length === 0) {
-          alert("Tất cả các mã trong kho đã hoàn tất xuất Video MP4! Bạn có thể bấm '🎬 Render MP4' trên từng mã nếu muốn xuất lại.");
+          const doneMsg = activeMode === "script_seo_thumb_voice_only"
+            ? "Tất cả các mã trong kho đã tạo xong Voice GPU (hoặc đã có Video MP4)!"
+            : (activeMode === "script_seo_thumb_only"
+              ? "Tất cả các mã trong kho đã viết xong Kịch bản + SEO + Thumbnail!"
+              : "Tất cả các mã trong kho đã hoàn tất xuất Video MP4! Bạn có thể bấm '🎬 Dựng' trên từng mã nếu muốn xuất lại.");
+          alert(doneMsg);
           return;
         }
         await triggerRunADAS(pendingIds, null);
