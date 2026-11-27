@@ -360,6 +360,239 @@ def run_machine_script_gate(full_script: str, channel_key: str, root_dir: Path) 
     }
 
 
+def _stage_and_part_targets(channel_key: str) -> Dict[int, Dict[str, int]]:
+    """Tính ngân sách chuẩn từng [PART 1]..[PART 7] theo hồ sơ kênh."""
+    profile = get_script_length_profile(channel_key)
+    cfg = profile["stages"]
+    result: Dict[int, Dict[str, int]] = {}
+    for letter, p_nums in STAGE_PARTS.items():
+        st_cfg = cfg[letter]
+        cnt = max(1, len(p_nums))
+        p_target = int(round(st_cfg["target"] / float(cnt), -2))
+        p_min = max(int(st_cfg.get("part_floor") or profile.get("min_part") or 8500), int(round(st_cfg["min"] / float(cnt), -2)))
+        p_max = int(round(st_cfg["max"] / float(cnt), -2))
+        for p_no in p_nums:
+            result[p_no] = {"stage": letter, "target": p_target, "min": p_min, "max": p_max}
+    return result
+
+
+def inspect_stage_part_lengths(
+    stage_text: str, stage: str, channel_key: str, slack_ratio: float = 1.08
+) -> Dict[str, Any]:
+    """Kiểm tra ngay độ dài từng [PART N] bên trong 1 Stage vừa viết xong để sửa từng Part kịp thời."""
+    st_up = str(stage or "A").strip().upper()
+    expected = STAGE_PARTS.get(st_up, (1, 2))
+    targets = _stage_and_part_targets(channel_key)
+    profile = get_script_length_profile(channel_key)
+    st_cfg = profile["stages"][st_up]
+
+    norm = normalize_script_text(stage_text).strip()
+    numbers, part_map = split_script_parts(norm)
+    parts_info: List[Dict[str, Any]] = []
+    stage_body_chars = 0
+    for p_no in expected:
+        p_body = (part_map.get(p_no) or "").strip()
+        p_len = len(p_body)
+        stage_body_chars += p_len
+        t = targets[p_no]
+        soft_max = int(round(t["max"] * slack_ratio))
+        status = "ok"
+        if p_len < t["min"]:
+            status = "under"
+        elif p_len > soft_max:
+            status = "over"
+        parts_info.append(
+            {
+                "part_num": p_no,
+                "chars": p_len,
+                "min": t["min"],
+                "target": t["target"],
+                "max": t["max"],
+                "soft_max": soft_max,
+                "status": status,
+                "part_text": f"[PART {p_no}]\n\n{p_body}" if p_body else "",
+            }
+        )
+    if not part_map and norm:
+        stage_body_chars = len(_HEADING_LINE_RX.sub("", norm).strip())
+
+    # Sắp xếp ưu tiên Part lệch xa mục tiêu nhất để sửa trước
+    need_adjust = [
+        p for p in parts_info if p["status"] in ("over", "under")
+    ]
+    need_adjust.sort(
+        key=lambda x: abs(x["chars"] - x["target"]), reverse=True
+    )
+    return {
+        "stage": st_up,
+        "headings_valid": tuple(numbers) == expected,
+        "headings_found": numbers,
+        "stage_chars": stage_body_chars,
+        "stage_min": int(st_cfg["min"]),
+        "stage_target": int(st_cfg["target"]),
+        "stage_max": int(st_cfg["max"]),
+        "parts": parts_info,
+        "need_adjust": need_adjust,
+        "passed": (tuple(numbers) == expected and not need_adjust and int(st_cfg["min"]) <= stage_body_chars <= int(st_cfg["max"] * slack_ratio)),
+    }
+
+
+def _split_paragraphs_into_n_parts(body_text: str, part_nums: Tuple[int, ...]) -> str:
+    """Chia văn bản thuần thành các `[PART N]` tại ranh giới đoạn văn tự nhiên khi file cũ bị mất nhãn."""
+    norm = _HEADING_LINE_RX.sub("", normalize_script_text(body_text)).strip()
+    if not norm:
+        return ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", norm) if p.strip()]
+    k = len(part_nums)
+    if len(paragraphs) < k:
+        lines = [ln.strip() for ln in norm.splitlines() if ln.strip()]
+        paragraphs = lines if len(lines) >= k else [norm]
+    total_len = sum(len(p) for p in paragraphs)
+    target_per = total_len / float(max(1, k))
+    grouped: List[List[str]] = [[] for _ in range(k)]
+    bucket_idx, cur_len = 0, 0
+    for idx_p, para in enumerate(paragraphs):
+        rem_paras = len(paragraphs) - idx_p
+        rem_buckets = k - 1 - bucket_idx
+        if bucket_idx < k - 1 and cur_len >= target_per * 0.88 and rem_paras > rem_buckets:
+            bucket_idx += 1
+            cur_len = 0
+        grouped[bucket_idx].append(para)
+        cur_len += len(para)
+    out = []
+    for p_no, grp in zip(part_nums, grouped):
+        out.append(f"[PART {p_no}]\n\n" + ("\n\n".join(grp) if grp else ""))
+    return "\n\n".join(out).strip()
+
+
+def recover_stages_from_disk_texts(
+    part_texts: Dict[str, str], full_fallback_text: str = ""
+) -> Optional[Dict[str, str]]:
+    """Khôi phục đủ 3 Stage A/B/C có đủ 7 nhãn `[PART 1]..[PART 7]` từ kịch bản cũ trên ổ cứng."""
+    a_raw = normalize_script_text(part_texts.get("A") or "").strip()
+    b_raw = normalize_script_text(part_texts.get("B") or "").strip()
+    c_raw = normalize_script_text(part_texts.get("C") or "").strip()
+
+    if a_raw and b_raw and c_raw:
+        out: Dict[str, str] = {}
+        for st_let, raw_s in (("A", a_raw), ("B", b_raw), ("C", c_raw)):
+            expected = STAGE_PARTS[st_let]
+            nums, _ = split_script_parts(raw_s)
+            out[st_let] = raw_s if tuple(nums) == expected else _split_paragraphs_into_n_parts(raw_s, expected)
+        return out
+
+    full_norm = normalize_script_text(full_fallback_text).strip()
+    if not full_norm:
+        return None
+    nums, part_map = split_script_parts(full_norm)
+    if nums == list(range(1, 8)) and len(part_map) == 7:
+        return {
+            st_let: "\n\n".join(f"[PART {n}]\n\n{part_map[n].strip()}" for n in p_nums).strip()
+            for st_let, p_nums in STAGE_PARTS.items()
+        }
+
+    # File cũ mất nhãn hoàn toàn (ví dụ script_clean.txt): tách đoạn văn tự nhiên theo tỷ lệ 2 : 3 : 2
+    seven_text = _split_paragraphs_into_n_parts(full_norm, tuple(range(1, 8)))
+    _, map7 = split_script_parts(seven_text)
+    if len(map7) != 7:
+        return None
+    return {
+        st_let: "\n\n".join(f"[PART {n}]\n\n{map7[n].strip()}" for n in p_nums).strip()
+        for st_let, p_nums in STAGE_PARTS.items()
+    }
+
+
+def plan_part_resize(
+    stages: Dict[str, str], channel_key: str, gate: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Chọn đúng 1 [PART N] đang lệch xa đích nhất để thu gọn hoặc mở rộng độc lập (tỷ lệ thành công cao hơn sửa cả Stage)."""
+    profile = get_script_length_profile(channel_key)
+    metrics = gate.get("metrics") or {}
+    if metrics.get("headings") != list(range(1, 8)):
+        return None
+    full_text = assemble_stages(stages)
+    _, part_map = split_script_parts(full_text)
+    if len(part_map) != 7:
+        return None
+
+    targets = _stage_and_part_targets(channel_key)
+    chars = int(gate.get("chars") or 0)
+    part_chars = {n: len(part_map[n].strip()) for n in range(1, 8)}
+
+    for p_no in range(1, 8):
+        if part_chars[p_no] < targets[p_no]["min"]:
+            st_let = targets[p_no]["stage"]
+            return {
+                "stage": st_let,
+                "part_num": p_no,
+                "part_text": f"[PART {p_no}]\n\n{part_map[p_no]}",
+                "part_chars": part_chars[p_no],
+                "target_chars": targets[p_no]["target"],
+                "action": "expand",
+            }
+
+    over_words = 0
+    if profile.get("max_words") and metrics.get("words", 0) > profile["max_words"]:
+        ratio = chars / max(1, int(metrics["words"]))
+        over_words = int((int(metrics["words"]) - int(profile["target_words"])) * ratio)
+
+    if chars > int(profile["total_max"]) or over_words > 0:
+        excess = max(chars - int(profile["total_target"]), over_words)
+        p_no = max(range(1, 8), key=lambda n: part_chars[n] - targets[n]["target"])
+        over_part = part_chars[p_no] - targets[p_no]["target"]
+        if over_part <= 400:
+            return None
+        reduce_amt = min(over_part, max(600, int(round(excess * 0.65))))
+        target = max(targets[p_no]["min"] + 300, part_chars[p_no] - reduce_amt)
+        if target >= part_chars[p_no] - 300:
+            target = max(targets[p_no]["min"] + 300, targets[p_no]["target"])
+        if target >= part_chars[p_no]:
+            return None
+        return {
+            "stage": targets[p_no]["stage"],
+            "part_num": p_no,
+            "part_text": f"[PART {p_no}]\n\n{part_map[p_no]}",
+            "part_chars": part_chars[p_no],
+            "target_chars": int(target),
+            "action": "condense",
+        }
+
+    if chars < int(profile["total_min"]):
+        deficit = int(profile["total_target"]) - chars
+        p_no = min(range(1, 8), key=lambda n: part_chars[n] - targets[n]["target"])
+        add_amt = min(targets[p_no]["max"] - part_chars[p_no], max(600, int(round(deficit * 0.65))))
+        target = min(targets[p_no]["max"], part_chars[p_no] + max(400, add_amt))
+        if target <= part_chars[p_no]:
+            return None
+        return {
+            "stage": targets[p_no]["stage"],
+            "part_num": p_no,
+            "part_text": f"[PART {p_no}]\n\n{part_map[p_no]}",
+            "part_chars": part_chars[p_no],
+            "target_chars": int(target),
+            "action": "expand",
+        }
+    return None
+
+
+def replace_single_part_in_stage(
+    stage_text: str, stage: str, part_num: int, new_part_text: str
+) -> str:
+    """Thay thế sạch nội dung của đúng 1 `[PART N]` trong Stage và giữ nguyên các Part còn lại."""
+    norm_stage = normalize_script_text(stage_text).strip()
+    numbers, part_map = split_script_parts(norm_stage)
+    expected = STAGE_PARTS.get(stage.upper(), ())
+    if not expected or tuple(numbers) != expected or part_num not in part_map:
+        return stage_text
+    _, new_parts = split_script_parts(normalize_script_text(new_part_text).strip())
+    body_new = new_parts.get(part_num)
+    if body_new is None:
+        body_new = _HEADING_LINE_RX.sub("", normalize_script_text(new_part_text)).strip()
+    part_map[part_num] = body_new.strip()
+    rebuilt = [f"[PART {n}]\n\n{part_map[n].strip()}" for n in expected]
+    return "\n\n".join(rebuilt).strip()
+
+
 def plan_stage_resize(
     stages: Dict[str, str], channel_key: str, gate: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
@@ -406,25 +639,41 @@ def extract_resized_stage(
     target_chars: int,
     clean_func: Callable[[str], str],
     previous_chars: Optional[int] = None,
+    single_part_num: Optional[int] = None,
 ) -> Tuple[Optional[str], str]:
-    """Chỉ nhận bản đủ marker, đúng nhãn Part, đúng độ dài và giữ đoạn kết của Stage.
+    """Chỉ nhận bản đủ marker, đúng nhãn Part, đúng độ dài và giữ đoạn kết.
 
-    Nếu truyền `previous_chars`, nhận thêm bản đi được >= 40% quãng đường tới đích (không vượt qua đích quá 12%)
-    để vòng biên tập kế tiếp tiếp tục thu gọn/mở rộng thay vì bỏ phí cả lượt.
+    - Giữ tương thích ngược 100% khi `single_part_num=None` (biên tập nguyên Stage).
+    - Khi truyền `single_part_num`, biên tập gọn riêng 1 `[PART N]` với độ chính xác rất cao.
+    - Chấp nhận bản đi được >= 15% quãng đường tới đích (cùng phía) để lượt kế tiếp co/giãn tiếp thay vì vứt bỏ công sức.
     """
-    match = re.search(r"@@STAGE_BEGIN\s*(.*?)\s*@@STAGE_END", response or "", re.S)
+    match = re.search(
+        r"@@(?:STAGE|PART)_BEGIN\s*(.*?)\s*@@(?:STAGE|PART)_END",
+        response or "",
+        re.S,
+    )
     if not match:
-        return None, "Phản hồi thiếu @@STAGE_BEGIN/@@STAGE_END hoặc bị cắt giữa chừng"
+        return None, "Phản hồi thiếu @@STAGE_BEGIN/@@STAGE_END hoặc @@PART_BEGIN/@@PART_END hoặc bị cắt giữa chừng"
     # Giao diện chat có thể gộp dòng nhãn với câu đầu tiên của Part.
     separated = re.sub(
         r"(?m)^[ \t]*\[\s*PART\s*([1-7])\s*\][ \t]+(?=\S)", r"[PART \1]\n", match.group(1)
     )
     cleaned = normalize_script_text(clean_func(separated)).strip()
-    numbers, _ = split_script_parts(cleaned)
-    if tuple(numbers) != STAGE_PARTS[stage]:
-        return None, f"Sai nhãn Part của Stage {stage}: {numbers}"
-    size = len(cleaned)
-    in_window = int(target_chars * 0.88) <= size <= int(target_chars * 1.12)
+    if single_part_num is not None:
+        numbers, part_map = split_script_parts(cleaned)
+        if not numbers and cleaned:
+            cleaned = f"[PART {int(single_part_num)}]\n\n{cleaned}"
+            numbers, part_map = split_script_parts(cleaned)
+        if tuple(numbers) != (int(single_part_num),):
+            return None, f"Sai nhãn Part mục tiêu [PART {single_part_num}]: {numbers}"
+        size = len(part_map.get(int(single_part_num), "").strip())
+    else:
+        numbers, _ = split_script_parts(cleaned)
+        if tuple(numbers) != STAGE_PARTS[stage]:
+            return None, f"Sai nhãn Part của Stage {stage}: {numbers}"
+        size = len(cleaned)
+
+    in_window = int(target_chars * 0.86) <= size <= int(target_chars * 1.14)
     if not in_window:
         gap_before = abs(int(previous_chars or 0) - target_chars)
         gap_after = abs(size - target_chars)
@@ -432,16 +681,22 @@ def extract_resized_stage(
         made_progress = (
             previous_chars is not None
             and gap_before > 0
-            and gap_after <= gap_before * 0.6
+            and gap_after <= gap_before * 0.85
             and (same_side or in_window)
         )
         if not made_progress:
             return None, f"Độ dài {size:,} lệch xa đích {target_chars:,}"
-    old_tail = re.sub(r"\s+", " ", normalize_script_text(original).strip())[-220:]
-    new_tail = re.sub(r"\s+", " ", cleaned)[-320:]
+
+    old_tail = re.sub(r"\s+", " ", normalize_script_text(original).strip())[-260:]
+    new_tail = re.sub(r"\s+", " ", cleaned)[-360:]
     matcher = difflib.SequenceMatcher(None, old_tail, new_tail, autojunk=False)
-    if matcher.find_longest_match(0, len(old_tail), 0, len(new_tail)).size < 40:
-        return None, "Bản mới không giữ đoạn kết của Stage"
+    longest_tail_hit = matcher.find_longest_match(0, len(old_tail), 0, len(new_tail)).size
+    # Khi model rút câu cuối gọn hơn, giữ ngưỡng 22 ký tự hoặc tỷ lệ từ chung >= 45% cuối đoạn.
+    old_words = set(w.lower() for w in _WORD_RX.findall(old_tail[-140:]) if len(w) >= 3)
+    new_words = set(w.lower() for w in _WORD_RX.findall(new_tail[-180:]) if len(w) >= 3)
+    tail_word_overlap = (len(old_words & new_words) / float(max(1, len(old_words)))) if old_words else 1.0
+    if longest_tail_hit < 22 and tail_word_overlap < 0.45:
+        return None, "Bản mới không giữ đoạn kết"
     return cleaned, ""
 
 
@@ -635,13 +890,28 @@ def decide_script_release(
         reasons.append("Không đọc được kết luận QA_VERDICT từ giám khảo")
         decision = DECISION_PENDING
     else:
-        if verdict["status"] != "PASS":
+        # Chế độ QA đúng 2 lượt (Logic + Truyền cảm/Giữ chân):
+        # nếu lượt 2 vừa áp bản vá thành công (patches_applied > 0) và không có P0/P1 chưa vá hay lỗi bị chặn,
+        # cho phép chốt đạt bằng kiểm tra cấu trúc máy mà không bắt gọi ChatGPT lượt 3.
+        r2_clean_after_patches = (
+            not final_verify_ran
+            and patches_applied > 0
+            and not (patches_failed or [])
+            and verdict.get("p0", 0) == 0
+            and verdict.get("p1", 0) == 0
+            and verdict.get("remaining_issues", 0) == 0
+        )
+        if verdict["status"] != "PASS" and not r2_clean_after_patches:
             reasons.append(f"Giám khảo kết luận {verdict['status']}")
         if verdict["p0"] or verdict["p1"]:
             reasons.append(f"Còn lỗi nghiêm trọng: P0={verdict['p0']}, P1={verdict['p1']}")
-        if verdict["remaining_issues"]:
+        if verdict["remaining_issues"] and not r2_clean_after_patches:
             reasons.append(f"Còn {verdict['remaining_issues']} lỗi chưa xử lý")
-        if profile.get("score_min") is not None and verdict["score"] < profile["score_min"]:
+        if (
+            profile.get("score_min") is not None
+            and verdict["score"] < profile["score_min"]
+            and not r2_clean_after_patches
+        ):
             reasons.append(f"Điểm {verdict['score']} dưới ngưỡng {profile['score_min']}")
         if reasons:
             decision = DECISION_NOT_READY

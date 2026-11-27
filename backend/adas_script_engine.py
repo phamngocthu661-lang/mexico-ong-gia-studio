@@ -1833,6 +1833,7 @@ def select_best_available_account(
     project_id: Optional[str] = None,
     exclude_accs: Optional[set] = None,
     require_logged_in: bool = True,
+    prefer_plus: bool = False,
 ) -> str:
     """
     Chọn tài khoản ChatGPT ĐÃ ĐĂNG NHẬP (lưu trên ổ cứng), KHÔNG bị tạm dừng Limit 30 phút và đang rảnh nhất
@@ -1907,6 +1908,14 @@ def select_best_available_account(
             loads = {a: _live_load(a) for a in ready_accs}
             min_load = min(loads.values())
             least_loaded = [a for a in ready_accs if loads[a] == min_load]
+            if prefer_plus:
+                def _is_paid_plan(a: str) -> bool:
+                    return str(status_all.get(a, {}).get("plan_type") or "").strip().lower() in ("plus", "pro", "team", "enterprise")
+
+                paid_ready = [a for a in ready_accs if _is_paid_plan(a)]
+                if paid_ready:
+                    paid_min = min(loads[a] for a in paid_ready)
+                    least_loaded = [a for a in paid_ready if loads[a] == paid_min]
             chosen = least_loaded[_ROUND_ROBIN_IDX % len(least_loaded)]
             _ROUND_ROBIN_IDX += 1
             if project_id:
@@ -1946,11 +1955,16 @@ class ChatGPTWebSession:
         project_id: str,
         acc_id: Optional[str] = None,
         exclude_accs: Optional[set] = None,
+        prefer_plus: bool = False,
     ):
         self.project_id = project_id
         self.excluded_accs: set = set(exclude_accs or set())
+        self.prefer_plus = bool(prefer_plus)
         self.acc_id = select_best_available_account(
-            acc_id, project_id=project_id, exclude_accs=self.excluded_accs
+            acc_id,
+            project_id=project_id,
+            exclude_accs=self.excluded_accs,
+            prefer_plus=self.prefer_plus,
         )
         self.cfg = ACCOUNTS_CONFIG[self.acc_id]
         self.port = self.cfg["port"]
@@ -1974,6 +1988,7 @@ class ChatGPTWebSession:
             preferred_acc_id=None,
             project_id=self.project_id,
             exclude_accs=self.excluded_accs,
+            prefer_plus=getattr(self, "prefer_plus", False),
         )
         self.acc_id = new_acc
         self.cfg = ACCOUNTS_CONFIG[self.acc_id]
@@ -2128,10 +2143,25 @@ class ChatGPTWebSession:
         # Đợi ô nhập ChatGPT (ProseMirror / #prompt-textarea / #mobile-composer-prompt) xuất hiện trên Tab của luồng này.
         # Chrome vừa bật hoặc trang tải chậm: hết 50 nhịp mà chưa thấy ô nhập thì tải lại trang 1 lần và chờ thêm 40 nhịp.
         composer_sel = COMPOSER_SELECTOR
-        for tick in range(90):
-            if tick == 50:
+        for tick in range(100):
+            if tick == 35:
+                st_mid = _cdp_eval_js(
+                    self.ws_url,
+                    "(() => ({ href: window.location.href || '' }))()",
+                    await_promise=False,
+                    timeout=2.0,
+                )
+                href_mid = (st_mid.get("href") or "") if isinstance(st_mid, dict) else ""
+                if (
+                    not href_mid
+                    or href_mid.startswith("about:blank")
+                    or "/auth/" in href_mid
+                    or ("/c/" not in href_mid and "chatgpt.com" not in href_mid)
+                ):
+                    _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=4.0)
+            if tick == 58:
                 log_warn(
-                    f"[{self.project_id}] Khung chat trên {self.cfg['label']} chưa sẵn sàng -> Tải lại trang 1 lần rồi chờ tiếp...",
+                    f"[{self.project_id}] Khung chat trên {self.cfg['label']} chưa sẵn sàng -> Tải lại trang sạch 1 lần rồi chờ tiếp...",
                     category="CHROME",
                 )
                 _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=4.0)
@@ -3790,12 +3820,17 @@ from .script_quality_gate import (
     extract_patch_ledger,
     extract_resized_stage,
     get_script_length_profile,
+    inspect_stage_part_lengths,
     normalize_script_text,
     parse_qa_verdict,
+    plan_part_resize,
     plan_stage_resize,
     read_script_release_record,
+    recover_stages_from_disk_texts,
+    replace_single_part_in_stage,
     run_machine_script_gate,
     script_fingerprint,
+    split_script_parts,
     write_script_release_record,
 )
 from .voice_service import split_japanese_script, strip_leaked_titles_and_metadata
@@ -6442,16 +6477,24 @@ class ADASScriptEngine:
                 pass
 
     def _sanitize_and_note_script_text(
-        self, ma_id: str, raw_text: str, source_label: str = ""
+        self,
+        ma_id: str,
+        raw_text: str,
+        source_label: str = "",
+        strip_part_headings: bool = True,
     ) -> Tuple[str, int]:
         """
         Quét, ghi nhận (note) và xóa sạch 100% các dòng [LOCKED_TITLE], SELECTED_TITLE,
         PART A/B/C header, CONTINUITY, ENDING hoặc thẻ XML bị rò rỉ trong kịch bản.
+        Khi `strip_part_headings=False` (file Stage `part_a/b/c.txt` và `PMX_FULL_SCRIPT.txt`),
+        bảo toàn nguyên vẹn 7 nhãn `[PART 1]..[PART 7]` trên ổ đĩa.
         Trả về `(cleaned_text, removed_lines_count)`.
         """
         if not raw_text:
             return "", 0
-        cleaned, removed_lines = strip_leaked_titles_and_metadata(raw_text)
+        cleaned, removed_lines = strip_leaked_titles_and_metadata(
+            raw_text, strip_part_headings=strip_part_headings
+        )
         if removed_lines:
             lbl = f" ({source_label})" if source_label else ""
             removed_strs = [
@@ -6528,7 +6571,10 @@ class ADASScriptEngine:
                 try:
                     raw_p = p_file.read_text(encoding="utf-8").strip()
                     txt, rem_cnt = self._sanitize_and_note_script_text(
-                        ma_id, raw_p, source_label=f"part_{p_let.lower()}.txt"
+                        ma_id,
+                        raw_p,
+                        source_label=f"part_{p_let.lower()}.txt",
+                        strip_part_headings=False,
                     )
                     if rem_cnt > 0 and txt:
                         p_file.write_text(txt, encoding="utf-8")
@@ -9081,16 +9127,53 @@ class ADASScriptEngine:
         return evaluate_render_gate(record, script_text)
 
     def _script_needs_reaudit(self, ma_id: str) -> bool:
-        """Kịch bản đang chờ (PENDING) hoặc đã kiểm định nhưng CHƯA ĐẠT (NOT_READY) thì phải chạy lại để sửa.
+        """Kịch bản đang chờ (PENDING), chưa đạt (NOT_READY), hoặc bản ADAS cũ bị lỗi độ dài/mất [PART]/chưa có QA thì phải sửa lại.
 
-        Ngoại lệ: người dùng đã chủ động cho render bản này (human_override) thì giữ nguyên.
+        Ngoại lệ: người dùng đã chủ động cho render bản này (`human_override`), hoặc dự án nhập thuần bên ngoài
+        chỉ có `script_clean.txt` không kèm hồ sơ ADAS (`part_a/b/c.txt`, `PMX_FULL_SCRIPT.txt`, `step3_architecture.txt`).
         """
-        record, _ = self._read_project_release_record(ma_id)
-        if not record:
+        record, record_dir = self._read_project_release_record(ma_id)
+        if record is not None:
+            if isinstance(record.get("human_override"), dict):
+                return False
+            return record.get("release_decision") in (DECISION_PENDING, DECISION_NOT_READY)
+
+        # Kiểm tra các dự án ADAS cũ bị kẹt/lỗi trước khi kịp xuất QA_RELEASE.json
+        proj_dir = record_dir or self._get_effective_project_dir(ma_id)
+        if not proj_dir.exists():
             return False
-        if isinstance(record.get("human_override"), dict):
+        has_adas_markers = any(
+            (proj_dir / fn).exists()
+            for fn in (
+                "part_a.txt",
+                "part_b.txt",
+                "part_c.txt",
+                "PMX_FULL_SCRIPT.txt",
+                "step3_architecture.txt",
+                "step5_audit_report.txt",
+            )
+        )
+        if not has_adas_markers:
             return False
-        return record.get("release_decision") in (DECISION_PENDING, DECISION_NOT_READY)
+
+        ch_key = self._get_idea_channel_key(ma_id=ma_id)
+        pmx_f = proj_dir / "PMX_FULL_SCRIPT.txt"
+        sc_f = proj_dir / "script_clean.txt"
+        if pmx_f.exists() and pmx_f.stat().st_size > 1000:
+            gate = run_machine_script_gate(
+                pmx_f.read_text(encoding="utf-8", errors="ignore"), ch_key, self.root_dir
+            )
+            if not gate.get("passed"):
+                return True
+        elif sc_f.exists() and sc_f.stat().st_size > 1000:
+            # Nếu thiếu PMX_FULL_SCRIPT.txt hoặc độ dài nằm ngoài chuẩn kênh -> cần khôi phục & kiểm định QA 2 vòng
+            sc_raw = sc_f.read_text(encoding="utf-8", errors="ignore")
+            prof = get_script_length_profile(ch_key)
+            sc_cnt = pure_char_count(sc_raw)
+            if not (int(prof["total_min"]) <= sc_cnt <= int(prof["total_max"])):
+                return True
+            return True
+        return False
 
     def _seo_release_line(self, ma_id: str) -> str:
         record, _ = self._read_project_release_record(ma_id)
@@ -9264,14 +9347,21 @@ class ADASScriptEngine:
             else hashlib.sha256((pmx_full_script or "").encode("utf-8")).hexdigest()
         )
 
+        release = release_record or {}
+        release_decision = str(release.get("release_decision") or "NOT_VERIFIED")
+        release_verdict = release.get("verdict") or {}
+        is_ready = release_decision == DECISION_READY
+
         ledger_c_data = {
             "version": "4.0.0",
             "project_id": ma_id,
             "stage": "C",
             "locked_title": locked_title,
-            "open_loops": [],
-            "closed_loops": [],
-            "status": "NOT_TOOL_VERIFIED",
+            "part_counts": part_counts,
+            "total_pure_chars": total_pure,
+            "open_loops": [x.get("id") for x in blueprint_data.get("setup_payoff_map", [])],
+            "closed_loops": [x.get("id") for x in blueprint_data.get("setup_payoff_map", [])] if is_ready else [],
+            "status": "VERIFIED_BY_GATE" if is_ready else "NEEDS_AUDIT_OR_RESIZE",
         }
         (proj_dir / "LEDGER_C.json").write_text(
             json.dumps(ledger_c_data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -9300,10 +9390,6 @@ class ADASScriptEngine:
             else ""
         )
 
-        release = release_record or {}
-        release_decision = str(release.get("release_decision") or "NOT_VERIFIED")
-        release_verdict = release.get("verdict") or {}
-        is_ready = release_decision == DECISION_READY
         qa_final_v4: Dict[str, Any] = {
             "schema": "PADRE_MX_QA_FINAL_V4",
             "version": "4.0.0",
@@ -9524,45 +9610,203 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
    - `PREMISE_DECONSTRUCTION` & `ORIGINALITY_SIGNATURE` (Ngôi kể thứ nhất của người cha lớn tuổi Mexico, vết thương gia đình, tài sản/vật chứng pháp lý, cơ chế lật ngược tình thế hợp pháp tại Mexico).
    - `CANON_CONTINUITY_HANDOFF` & `CHARACTER_KNOWLEDGE_MATRIX` (Bảng Nhân vật + Tuổi + Quan hệ + Ai biết sự thật/vật chứng nào ở Part mấy; Địa điểm Mexico thực tế; Tài sản/Số tiền MXN; Văn bản công chứng/Di chúc/Hợp đồng/Sao kê).
    - `TIMELINE_AGE_LEDGER` & `SETUP_PAYOFF_MAP` (Kiểm toán toán học tuổi nhân vật, số năm đóng góp, ngày tháng sự kiện không mâu thuẫn; tối thiểu 3 cặp gieo-gặt `seed_part` < `payoff_part`).
-   - Thiết kế chi tiết 7 Phần `[PART 1]` đến `[PART 7]` (Mỗi Part gồm **8–12 cảnh (`scenes`)**, tối thiểu **2 `retention_beats` / Part**, `Dramatic Role`, `Causal Chain`, `Evidence/Legal Mechanism`, `Retention Cliffhanger`, `Target Character Budget`).
+   - Thiết kế chi tiết 7 Phần `[PART 1]` đến `[PART 7]` (Mỗi Part chỉ đúng **5–6 cảnh trọng tâm (`scenes`)** vừa khít ~10.000–11.500 ký tự/Part, tổng 35–42 cảnh cả truyện — không vẽ 8–12 cảnh tránh viết bị tràn trần; tối thiểu **2 `retention_beats` / Part**, `Dramatic Role`, `Causal Chain`, `Evidence/Legal Mechanism`, `Retention Cliffhanger`, `Target Character Budget`).
+   - Cấm tuyệt đối xuất thẻ HTML/UI/Svelte (`<grid>`, `<card>`, `{{#each}}`, `svelte`) trong dàn ý.
    - Chốt `APPROVED_FOR_DRAFTING: YES`. Không viết văn bản kịch bản ở bước này."""
+
+    @staticmethod
+    def _clean_step3_outline_markup(step3_text: str) -> str:
+        """Làm sạch thẻ UI/HTML thừa (<grid>, <card>, {#each}) bị rò rỉ trong Dàn ý Step 2."""
+        if not step3_text:
+            return ""
+        cleaned = re.sub(
+            r"</?(?:grid|card|section|column|row|div|span|details|summary)[^>]*>",
+            "",
+            step3_text,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\{[#/:@][^}\n]{1,120}\}", "", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _find_step3_part_heading_pos(text: str, part_no: int) -> int:
+        """Tìm vị trí tiêu đề [PART N] đầu dòng (bỏ qua bảng ngân sách nhắc tới [PART N] inline)."""
+        if not text:
+            return -1
+        for m in re.finditer(
+            rf"(?im)^[#*>\s`\-]*\[?\s*PART\s*{part_no}\s*\]?(?=[\s:：*`\-—–\)\.]|$)",
+            text,
+        ):
+            line_end = text.find("\n", m.start())
+            line = text[m.start() : (line_end if line_end != -1 else len(text))]
+            if "|" in line and line.count("|") >= 2:
+                continue
+            return m.start()
+        return -1
+
+    def _extract_stage_parts_slice(self, step3_context: str, part_letter: str) -> str:
+        """Trích đúng dàn ý các Part thuộc Stage đang viết ([PART 1..2], [PART 3..5] hoặc [PART 6..7])."""
+        clean_s3 = self._clean_step3_outline_markup(step3_context)
+        if not clean_s3:
+            return ""
+        p_up = part_letter.upper()
+        first_part, next_part = {"A": (1, 3), "B": (3, 6), "C": (6, None)}.get(
+            p_up, (1, None)
+        )
+        start_idx = self._find_step3_part_heading_pos(clean_s3, first_part)
+        if start_idx >= 0:
+            end_idx = (
+                self._find_step3_part_heading_pos(clean_s3, next_part)
+                if next_part
+                else -1
+            )
+            if end_idx <= start_idx:
+                end_idx = len(clean_s3)
+            return clean_s3[start_idx : min(end_idx, start_idx + 18000)].strip()
+        return clean_s3[-12000:].strip()
+
+    def _extract_single_part_outline(self, step3_context: str, part_no: int) -> str:
+        """Trích dàn ý đúng 1 Part và đầu mối Canon rút gọn phục vụ biên tập từng Part."""
+        clean_s3 = self._clean_step3_outline_markup(step3_context)
+        if not clean_s3:
+            return ""
+        head = clean_s3[:5500]
+        p_start = self._find_step3_part_heading_pos(clean_s3, part_no)
+        if p_start >= 0:
+            p_end = (
+                self._find_step3_part_heading_pos(clean_s3, part_no + 1)
+                if part_no < 7
+                else len(clean_s3)
+            )
+            if p_end <= p_start:
+                p_end = min(len(clean_s3), p_start + 7000)
+            p_slice = clean_s3[p_start : min(p_end, p_start + 7000)]
+            return f"{head}\n\n[DÀN Ý PART {part_no}]\n{p_slice}".strip()
+        return clean_s3[:10500]
+
+    @staticmethod
+    def _strip_local_cli_blocks_for_web(skill_md: str) -> str:
+        """Loại bỏ lệnh CLI/Python local trong SKILL.md khi gửi lên ChatGPT Web để tránh nhiễu."""
+        if not skill_md:
+            return ""
+        cleaned = re.sub(
+            r"```(?:powershell|bash|sh|python)[^\n]*\n[\s\S]*?(?:kiem_tra\.py|antigravity_kich_ban)[\s\S]*?```",
+            "(Bỏ qua lệnh CLI máy cục bộ — ChatGPT chỉ xuất văn bản thuần ra khung chat.)",
+            skill_md,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"^[^\n]*(?:kiem_tra\.py|antigravity_kich_ban)[^\n]*$",
+            "",
+            cleaned,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+        return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
     def _extract_compact_step3_for_part(
         self, step3_context: str, part_letter: str
     ) -> str:
         """
-        Rút gọn thông minh ngữ cảnh Dàn ý 7 Phần (STEP 3) nếu quá dài (> 26.000 ký tự):
-        Giữ nguyên phần CANON_CONTINUITY_HANDOFF + TIMELINE_AGE_LEDGER ở đầu và các PART thuộc Stage đang viết.
+        Rút gọn thông minh Dàn ý 7 Phần (STEP 3) mà không làm rơi Canon/Timeline/Part thuộc Stage:
+        Giữ trọn đầu mối Canon + Knowledge Matrix + Timeline/Setup-Payoff (~10.500 ký tự) + đúng `[PART X..Y]` của Stage.
         """
-        if not step3_context or len(step3_context) <= 26000:
-            return step3_context
-        head_bible = step3_context[:11500]
+        clean_s3 = self._clean_step3_outline_markup(step3_context)
+        if not clean_s3 or len(clean_s3) <= 22000:
+            return clean_s3
+        p1_pos = self._find_step3_part_heading_pos(clean_s3, 1)
+        head_limit = min(p1_pos if p1_pos > 1500 else 10500, 11500)
+        head_bible = clean_s3[:head_limit].strip()
         p_up = part_letter.upper()
-        first_part, next_part = {"A": (1, 3), "B": (3, 6), "C": (6, None)}.get(
-            p_up, (1, None)
+        part_slice = self._extract_stage_parts_slice(clean_s3, p_up)
+        tail_note = ""
+        if p_up != "C" and len(clean_s3) > 4000:
+            ap_idx = clean_s3.rfind("APPROVED_FOR_DRAFTING")
+            if ap_idx > 0:
+                tail_note = clean_s3[max(0, ap_idx - 1200) :].strip()
+        sections = [head_bible]
+        if part_slice and part_slice not in head_bible:
+            sections.append(f"...[TRỌNG TÂM DÀN Ý STAGE {p_up}]...\n\n{part_slice}")
+        if tail_note and tail_note not in part_slice:
+            sections.append(tail_note)
+        return "\n\n".join(s for s in sections if s).strip()
+
+    @staticmethod
+    def _extract_stage_handoff_state(
+        stage_text: str, completed_stage: str, total_so_far: int
+    ) -> str:
+        """Trích xuất trạng thái ràng buộc (nhân vật, số tiền, địa điểm, đoạn nối cuối) sau Stage A/B."""
+        clean = normalize_script_text(stage_text or "").strip()
+        if not clean:
+            return ""
+        amounts = list(
+            dict.fromkeys(
+                re.findall(
+                    r"(?:\$\s*[\d,.]+(?:\s*(?:mil|millones|pesos|dólares|USD|MXN))?|[\d,.]+\s*(?:pesos|dólares|MXN|USD|años|hectáreas|meses|días|percent|por\s+ciento))",
+                    clean,
+                    flags=re.IGNORECASE,
+                )
+            )
+        )[:12]
+        cap_names = list(
+            dict.fromkeys(
+                re.findall(
+                    r"\b(?:Don|Doña|Señor|Señora|Sr\.|Sra\.|Lic\.|Notario|Juez|Dr\.)\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?",
+                    clean,
+                )
+            )
+        )[:10]
+        parts_found = re.findall(r"(?im)^\[PART\s*(\d+)\]", clean)
+        last_part_lbl = f"[PART {parts_found[-1]}]" if parts_found else f"STAGE {completed_stage}"
+        lines = [
+            f"- ĐÃ VIẾT XONG STAGE {completed_stage} ({', '.join(f'[PART {p}]' for p in parts_found) or completed_stage}): Tổng tích lũy hiện tại = {total_so_far:,} ký tự.",
+            f"- ĐIỂM DỪNG HIỆN TẠI: cuối {last_part_lbl}. Tuyệt đối KHÔNG lặp lại bất kỳ cảnh, câu thoại hoặc sự kiện nào đã diễn ra trong {last_part_lbl}.",
+        ]
+        if cap_names:
+            lines.append(f"- XƯNG HÔ / NHÂN VẬT ĐÃ XUẤT HIỆN (GIỮ ĐÚNG 100%): {', '.join(cap_names)}.")
+        if amounts:
+            lines.append(f"- MỐC SỐ / TIỀN TỆ / THỜI GIAN ĐÃ KHÓA: {', '.join(amounts)}.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _recalibrate_next_stage_budget(
+        channel_key: str, next_stage: str, written_so_far: int
+    ) -> Tuple[int, int, int, str]:
+        """Tính lại ngân sách còn lại động cho Stage B hoặc Stage C dựa trên số chữ Stage trước thực tế đã viết."""
+        profile = get_script_length_profile(channel_key)
+        stages_cfg = profile["stages"]
+        cfg = stages_cfg[next_stage.upper()]
+        total_min = int(profile["total_min"])
+        total_max = int(profile["total_max"])
+        total_target = (total_min + total_max) // 2
+        part_floor = int(cfg["part_floor"])
+        part_count = {"A": 2, "B": 3, "C": 2}.get(next_stage.upper(), 2)
+        min_safe = max(int(cfg["accept"]), part_floor * part_count)
+        max_safe = int(cfg["max"])
+
+        if next_stage.upper() == "B":
+            c_cfg = stages_cfg["C"]
+            c_floor = max(int(c_cfg["accept"]), int(c_cfg["part_floor"]) * 2)
+            c_reserve = max(c_floor, int(c_cfg["target"]))
+            rem_total = total_target - int(written_so_far)
+            dyn_target = max(min_safe + 1000, min(max_safe, rem_total - c_reserve))
+            dyn_min = max(min_safe, min(int(cfg["min"]), dyn_target - 1800))
+            dyn_max = max(dyn_min + 2000, min(max_safe, dyn_target + 2000))
+        else:
+            rem_min = total_min - int(written_so_far)
+            rem_max = total_max - int(written_so_far)
+            rem_target = total_target - int(written_so_far)
+            dyn_target = max(min_safe + 600, min(max_safe, rem_target))
+            dyn_min = max(min_safe, min(max_safe - 1500, max(rem_min, dyn_target - 1800)))
+            dyn_max = max(dyn_min + 1500, min(max_safe, max(rem_max, dyn_target + 1800)))
+
+        note = (
+            f"📊 RÀNG BUỘC NGÂN SÁCH ĐỘNG (BẮT BUỘC): Tổng trước đó đã đạt {written_so_far:,} ký tự "
+            f"(Tổng toàn 7 Part BẮT BUỘC nằm gọn trong {total_min:,}–{total_max:,} ký tự, đích {total_target:,}). "
+            f"Vì vậy riêng STAGE {next_stage.upper()} PHẢI đạt đúng {dyn_min:,}–{dyn_max:,} ký tự (Đích: ~{dyn_target:,} ký tự; mỗi Part >= {part_floor:,} ký tự). "
+            f"Cấm viết tràn vượt {dyn_max:,} ký tự!"
         )
-
-        def _heading_pos(part_no: int) -> int:
-            # Chỉ nhận nhãn Part đứng đầu dòng để không bắt nhầm bảng ngân sách hay câu nhắc tới Part.
-            found = re.search(
-                rf"(?im)^[#*>\s`\-]*\[?\s*PART\s*{part_no}\s*\]?(?=[\s:：*`\-—–]|$)",
-                step3_context,
-            )
-            return found.start() if found else -1
-
-        start_idx = _heading_pos(first_part)
-        if start_idx >= 0:
-            end_idx = _heading_pos(next_part) if next_part else -1
-            if end_idx <= start_idx:
-                end_idx = len(step3_context)
-            part_slice = step3_context[start_idx : min(end_idx, start_idx + 22000)]
-            handoff_tail = (
-                step3_context[-4500:]
-                if min(end_idx, start_idx + 22000) < len(step3_context) - 4500
-                else ""
-            )
-            return f"{head_bible}\n\n...[TRÍCH XUẤT TRỌNG TÂM DÀN Ý STAGE {p_up}]...\n\n{part_slice}\n\n{handoff_tail}".strip()
-        return f"{head_bible}\n\n...\n\n{step3_context[-14500:]}".strip()
+        return dyn_min, dyn_max, dyn_target, note
 
     def _build_step4_part_initial_prompt(
         self,
@@ -9575,6 +9819,8 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
         step3_context: str = "",
         prev_part_tail: str = "",
         in_same_writer_chat: bool = False,
+        stage_handoff: str = "",
+        dynamic_budget_note: str = "",
     ) -> str:
         ck_s4 = self._get_idea_channel_key(ma_id=ma_id)
         is_homeless = ck_s4 == "homeless"
@@ -9587,13 +9833,24 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
         skill_md = (
             ""
             if in_same_writer_chat
-            else self._load_skill_markdown(skill_folder_s4)
+            else self._strip_local_cli_blocks_for_web(
+                self._load_skill_markdown(skill_folder_s4)
+            )
         )
         compact_s3 = self._extract_compact_step3_for_part(step3_context, part_letter)
+        stage_outline_slice = self._extract_stage_parts_slice(step3_context, part_letter)
+        handoff_block = (
+            f"\n\n========== KHÓA RÀNG BUỘC TỪ STAGE TRƯỚC ==========\n{stage_handoff}\n==================================================="
+            if stage_handoff
+            else ""
+        )
+        dyn_block = f"\n   {dynamic_budget_note}" if dynamic_budget_note else ""
         if is_homeless or is_mafia:
             profile_s4 = get_script_length_profile(ck_s4)
             stage_cfg = profile_s4["stages"].get(part_letter.upper(), profile_s4["stages"]["A"])
             part_floor = int(stage_cfg["part_floor"])
+            part_count_s4 = {"A": 2, "B": 3, "C": 2}.get(part_letter.upper(), 2)
+            per_part_target = int(round(target_c / max(1, part_count_s4), -2))
             niche_label = (
                 "MAFIA BOSS × MAID/WAITRESS STORY SCRIPT WRITER V2.0 (`viet-kich-ban-nguoi-hau-tu-gian-y`)"
                 if is_mafia
@@ -9608,8 +9865,8 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
             )
             outline_label = "MAFIA × MAID 7-PART OUTLINE" if is_mafia else "HOMELESS 7-PART OUTLINE"
             ctx_block = (
-                f"\n\n========== NHẮC LẠI DÀN Ý TRỌNG TÂM CỦA STAGE {part_letter.upper()} ({outline_label}) ==========\n{compact_s3[-10000:]}\n=========================================================================="
-                if in_same_writer_chat and compact_s3
+                f"\n\n========== DÀN Ý ĐÚNG CỦA STAGE {part_letter.upper()} ({outline_label}) ==========\n{stage_outline_slice or compact_s3}\n=========================================================================="
+                if in_same_writer_chat and (stage_outline_slice or compact_s3)
                 else (
                     f"\n\n========== DÀN Ý 7 PHẦN & CANON CONTINUITY TỪ BƯỚC TRƯỚC ==========\n{compact_s3}\n==================================================================="
                     if compact_s3
@@ -9618,7 +9875,7 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
             )
             prev_block = (
                 f"\n\n========== ĐOẠN KẾT CỦA STAGE TRƯỚC (ĐỂ NỐI MẠCH TRUYỆN LIỀN MẠCH 100%, TUYỆT ĐỐI KHÔNG LẶP LẠI) ==========\n"
-                f"«...{prev_part_tail[-450:]}»\n"
+                f"«...{prev_part_tail[-1200:]}»\n"
                 f"==========================================================================================================="
                 if prev_part_tail
                 else ""
@@ -9628,11 +9885,11 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
             parts_label = ", ".join(f"`[PART {n}]`" for n in stage_parts)
             stage_desc = (
                 f"STAGE {p_up} — Write complete {parts_label} in American English (`en-US`) "
-                f"(Each Part >= {part_floor:,} chars; Stage {p_up} Total: {min_c:,}–{max_c:,} chars)"
+                f"(Each Part ~{per_part_target:,} chars >= {part_floor:,} chars; Stage {p_up} Total: {min_c:,}–{max_c:,} chars)"
             )
             headings_rule = (
                 f"MUST use standalone heading lines {parts_label} in order and write every listed Part in full "
-                f"(each Part >= {part_floor:,} chars)."
+                f"(each Part >= {part_floor:,} chars; target ~{per_part_target:,} chars/Part)."
             )
             if is_mafia:
                 ledger_rule = {
@@ -9663,14 +9920,15 @@ YÊU CẦU THỰC THI NGAY CHO MÃ {ma_id} (TIẾNG TÂY BAN NHA MEXICO `es-MX` 
             )
 
             return f"""[NEW CHAT #2 — SKILL 03 STAGE {p_up}] CHẠY NGAY STEP 3 ({stage_desc}) CHO MÃ {ma_id}
-CURRENT_FINAL_TITLE: {locked_title}{ctx_block}{prev_block}{skill_block}
+CURRENT_FINAL_TITLE: {locked_title}{handoff_block}{ctx_block}{prev_block}{skill_block}
 
 QUY TẮC BẮT BUỘC (`{skill_name} — TIẾNG ANH MỸ `en-US`):
 1. NGÔN NGỮ & GIỌNG KỂ: Viết 100% bằng tiếng Anh Mỹ (`en-US`) chuẩn mực, giàu hình ảnh điện ảnh, cảm xúc chân thực, tự nhiên để đọc Voice TTS.
 2. NHÃN PHẦN BẮT BUỘC: {headings_rule}
 3. SỔ CÁI LIÊN TỤC (`CANON_CONTINUITY`): {ledger_rule}
 4. ⚠️ CẤM TUYỆT ĐỐI RÒ RỈ TIÊU ĐỀ & METADATA: Ngoài các dòng nhãn phần độc lập (`[PART 1]`..`[PART 7]`), TUYỆT ĐỐI KHÔNG in lại dòng `CURRENT_FINAL_TITLE:`, `LOCKED_TITLE:`, `STAGE_A_COUNT_GATE:`, `Scene 1:`, cue trong ngoặc vuông hay ghi chú đạo diễn vào trong văn bản truyện.
-5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự, mỗi Part trong Stage >= {part_floor:,} ký tự).{word_rule}{"" if word_rule else self._stage_length_budget_rule(p_up, min_c, max_c, target_c, "en")}
+5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự; chia đều ~{per_part_target:,} ký tự cho mỗi Part, mỗi Part >= {part_floor:,} ký tự).{dyn_block}{word_rule}{"" if word_rule else self._stage_length_budget_rule(p_up, min_c, max_c, target_c, "en")}
+   ⚠️ TỰ KIỂM SOÁT NGAY KHI VIẾT TỪNG PART: Đếm nhẩm số từ mỗi Part trước khi sang Part tiếp theo (~{int(round(per_part_target / 5.6, -1)):,} từ/Part). Không được kéo dài lan man một Part lên > {int(per_part_target * 1.25):,} ký tự.
 6. Triển khai chi tiết từng cảnh theo đúng Dàn ý 7 Phần bằng hành động vật lý cụ thể, đối thoại giàu kịch tính, {evidence_hint}. TUYỆT ĐỐI KHÔNG tóm tắt, không nhảy cóc thời gian, không lặp lại đoạn văn.
 7. ⚠️ QUY TẮC TỐC ĐỘ & HIỂN THỊ: TUYỆT ĐỐI KHÔNG bật công cụ Python / Code Interpreter, KHÔNG đóng gói thành file tải về (.txt/.md/.docx). BẮT BUỘC in trực tiếp toàn bộ 100% văn bản kịch bản tiếng Anh Mỹ (`en-US`) ra khung chat ngay lập tức."""
         skill_block = (
@@ -9681,8 +9939,8 @@ QUY TẮC BẮT BUỘC (`{skill_name} — TIẾNG ANH MỸ `en-US`):
             else ""
         )
         ctx_block = (
-            f"\n\n========== NHẮC LẠI DÀN Ý TRỌNG TÂM CỦA STAGE {part_letter.upper()} (`STORY_BLUEPRINT_V4`) ==========\n{compact_s3[-10000:]}\n======================================================================"
-            if in_same_writer_chat and compact_s3
+            f"\n\n========== DÀN Ý ĐÚNG CỦA STAGE {part_letter.upper()} (`STORY_BLUEPRINT_V4`) ==========\n{stage_outline_slice or compact_s3}\n======================================================================"
+            if in_same_writer_chat and (stage_outline_slice or compact_s3)
             else (
                 f"\n\n========== DÀN Ý 7 PHẦN, STORY BLUEPRINT V4.0 & CANON CONTINUITY TỪ BƯỚC TRƯỚC ==========\n{compact_s3}\n==================================================================="
                 if compact_s3
@@ -9691,34 +9949,37 @@ QUY TẮC BẮT BUỘC (`{skill_name} — TIẾNG ANH MỸ `en-US`):
         )
         prev_block = (
             f"\n\n========== ĐOẠN KẾT CỦA STAGE TRƯỚC (ĐỂ NỐI MẠCH TRUYỆN LIỀN MẠCH 100%, TUYỆT ĐỐI KHÔNG LẶP LẠI) ==========\n"
-            f"«...{prev_part_tail[-450:]}»\n"
+            f"«...{prev_part_tail[-1200:]}»\n"
             f"==========================================================================================================="
             if prev_part_tail
             else ""
         )
         p_up = part_letter.upper()
+        n_parts_es = 3 if p_up == "B" else 2
+        per_part_es = int(round(target_c / n_parts_es, -2))
         if p_up == "A":
-            stage_desc = "STAGE A — Viết trọn vẹn `[PART 1]` và `[PART 2]` (Mỗi Part >= 8.500 ký tự; Tổng Stage A: 20.000–24.000 ký tự)"
-            headings_rule = "BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 1]`, viết hết Phần 1 (>= 9.500 ký tự), sau đó xuống dòng ghi `[PART 2]` và viết hết Phần 2 (>= 9.500 ký tự)."
+            stage_desc = f"STAGE A — Viết trọn vẹn `[PART 1]` và `[PART 2]` (Mỗi Part ~{per_part_es:,} ký tự, >= 8.500; Tổng Stage A: {min_c:,}–{max_c:,} ký tự)"
+            headings_rule = f"BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 1]`, viết Phần 1 (~{per_part_es:,} ký tự ≈ {int(round(per_part_es/5.8, -1)):,} palabras), sau đó xuống dòng ghi `[PART 2]` và viết Phần 2 (~{per_part_es:,} ký tự)."
             ledger_rule = "Tuân thủ nghiêm ngặt `CONTINUITY_LEDGER_V4` (`LEDGER_INIT` -> `LEDGER_A`): Khởi tạo chính xác tuổi nhân vật, số tiền MXN, vật chứng pháp lý đang được giữ kín (chưa lộ diện cho phe phản diện ở Stage A) và cài cắm các vòng lặp giữ chân (`open_loops`)."
         elif p_up == "B":
-            stage_desc = "STAGE B — Viết nối tiếp trọn vẹn `[PART 3]`, `[PART 4]` và `[PART 5]` ngay trên cùng đoạn chat New Chat #2 (Mỗi Part >= 8.500 ký tự; Tổng Stage B: 30.000–35.000 ký tự)"
-            headings_rule = "BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 3]`, viết hết Phần 3 (>= 10.000 ký tự), sau đó xuống dòng ghi `[PART 4]` (>= 10.000 ký tự) và `[PART 5]` (>= 10.000 ký tự)."
+            stage_desc = f"STAGE B — Viết nối tiếp trọn vẹn `[PART 3]`, `[PART 4]` và `[PART 5]` ngay trên cùng đoạn chat New Chat #2 (Mỗi Part ~{per_part_es:,} ký tự, >= 8.500; Tổng Stage B: {min_c:,}–{max_c:,} ký tự)"
+            headings_rule = f"BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 3]`, viết Phần 3 (~{per_part_es:,} ký tự ≈ {int(round(per_part_es/5.8, -1)):,} palabras), rồi xuống dòng ghi `[PART 4]` (~{per_part_es:,} ký tự) và `[PART 5]` (~{per_part_es:,} ký tự)."
             ledger_rule = "Tuân thủ nghiêm ngặt `CONTINUITY_LEDGER_V4` (`LEDGER_A` -> `LEDGER_B`): Giữ đồng nhất 100% tên gọi, tuổi, con số MXN, địa điểm và trạng thái hiểu biết của nhân vật (`character_knowledge_matrix`) từ Stage A; đẩy cao trào điều tra công chứng và đối đầu pháp lý ở `[PART 5]`."
         else:
-            stage_desc = "STAGE C — Viết nối tiếp trọn vẹn `[PART 6]` và `[PART 7]` ngay trên cùng đoạn chat New Chat #2 (Mỗi Part >= 8.500 ký tự; Tổng Stage C: 20.000–25.000 ký tự)"
-            headings_rule = "BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 6]`, viết hết Phần 6 (>= 10.000 ký tự), sau đó xuống dòng ghi `[PART 7]` và viết hết Phần 7 (>= 10.000 ký tự) khép lại toàn bộ câu chuyện."
+            stage_desc = f"STAGE C — Viết nối tiếp trọn vẹn `[PART 6]` và `[PART 7]` ngay trên cùng đoạn chat New Chat #2 (Mỗi Part ~{per_part_es:,} ký tự, >= 8.500; Tổng Stage C: {min_c:,}–{max_c:,} ký tự)"
+            headings_rule = f"BẮT BUỘC mở đầu bằng dòng tiêu đề phần độc lập `[PART 6]`, viết Phần 6 (~{per_part_es:,} ký tự ≈ {int(round(per_part_es/5.8, -1)):,} palabras), sau đó xuống dòng ghi `[PART 7]` (~{per_part_es:,} ký tự) khép lại toàn bộ câu chuyện."
             ledger_rule = "Tuân thủ nghiêm ngặt `CONTINUITY_LEDGER_V4` (`LEDGER_B` -> `LEDGER_C`): Giải quyết trọn vẹn 100% các vòng lặp đã mở (`closed_loops`), thu hồi toàn bộ vật chứng pháp lý đã gieo (`setup_payoff_map`) tại `[PART 6]` và khép lại bằng sự bình yên, phẩm giá của người cha ở `[PART 7]`."
 
         return f"""[NEW CHAT #2 — SKILL 03 STAGE {p_up}] CHẠY NGAY STEP 3 ({stage_desc}) CHO MÃ {ma_id}
-CURRENT_FINAL_TITLE: {locked_title}{ctx_block}{prev_block}{skill_block}
+CURRENT_FINAL_TITLE: {locked_title}{handoff_block}{ctx_block}{prev_block}{skill_block}
 
 QUY TẮC BẮT BUỘC (`padre-mx-script-writer` V4.0.0 — TIẾNG TÂY BAN NHA MEXICO `es-MX`):
 1. NGÔN NGỮ & GIỌNG KỂ: Viết 100% bằng tiếng Tây Ban Nha Mexico (`es-MX`) chuẩn mực, ngôi thứ nhất của người cha lớn tuổi Mexico (`yo`), giàu cảm xúc, tự nhiên để đọc Voice TTS. Tuyệt đối KHÔNG dùng từ vựng Tây Ban Nha châu Âu (`vosotros`, `os`, `ordenador`, `coche`, `zumo`). Đầy đủ dấu câu mở `¿...?`, `¡...!` và trọng âm tiếng Tây Ban Nha.
 2. NHÃN PHẦN BẮT BUỘC: {headings_rule}
 3. SỔ CÁI LIÊN TỤC V4.0 (`CONTINUITY_LEDGER_V4`): {ledger_rule}
 4. ⚠️ CẤM TUYỆT ĐỐI RÒ RỈ TIÊU ĐỀ & METADATA: Ngoài các dòng nhãn phần độc lập (`[PART 1]`..`[PART 7]`), TUYỆT ĐỐI KHÔNG in lại dòng `CURRENT_FINAL_TITLE:`, `LOCKED_TITLE:`, `STAGE_A_COUNT_GATE:`, `LEDGER_A:`, `Escena 1:`, hay ghi chú đạo diễn vào trong văn bản truyện.
-5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự, mỗi Part trong Stage >= 8.500 ký tự).{self._stage_length_budget_rule(p_up, min_c, max_c, target_c, "es")}
+5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự; mỗi Part ~{per_part_es:,} ký tự, sàn 8.500 ký tự).{dyn_block}{self._stage_length_budget_rule(p_up, min_c, max_c, target_c, "es")}
+   ⚠️ TỰ KIỂM TRA TỪNG PART NGAY KHI VIẾT: Viết xong mỗi `[PART]` phải ước lượng ngay (~{int(round(per_part_es/5.8, -1)):,} palabras ≈ {per_part_es:,} ký tự). Nếu cảnh dài quá thì cô đọng câu thừa ngay trước khi sang `[PART]` tiếp theo — TUYỆT ĐỐI KHÔNG viết mỗi Part 18.000–25.000 ký tự!
 6. Triển khai chi tiết, sâu sắc từng cảnh theo Blueprint V4 bằng hành động cụ thể, đối thoại gia đình/pháp lý kịch tính, chi tiết văn bản công chứng/tài chính thực tế tại Mexico. TUYỆT ĐỐI KHÔNG tóm tắt, không nhảy cóc thời gian, không lặp lại cùng một câu cảm thán.
 7. ⚠️ QUY TẮC TỐC ĐỘ & HIỂN THỊ: TUYỆT ĐỐI KHÔNG bật công cụ Python / Code Interpreter, KHÔNG đóng gói thành file tải về (.txt/.md/.docx). BẮT BUỘC in trực tiếp toàn bộ 100% văn bản kịch bản tiếng Tây Ban Nha (`es-MX`) ra khung chat ngay lập tức."""
 
@@ -9755,32 +10016,37 @@ QUY TẮC BẮT BUỘC (`padre-mx-script-writer` V4.0.0 — TIẾNG TÂY BAN NHA
                 else "`[PART 6]` và `[PART 7]`"
             )
         )
+        stage_slice = (
+            self._extract_stage_parts_slice(step3_context, p_up)
+            if step3_context
+            else ""
+        )
         ctx_reminder = (
             f"\n\n========== NHẮC LẠI DÀN Ý STAGE {p_up} ({expected_parts_str}) ==========\n"
-            f"{step3_context[-12000:]}\n"
+            f"{stage_slice}\n"
             f"========================================================================\n"
-            if step3_context
+            if stage_slice
             else ""
         )
         if self._get_idea_channel_key(ma_id=ma_id) in ("homeless", "mafia"):
             return f"""[KIỂM TRA ĐỘ DÀI CỨNG — STAGE {p_up} ({expected_parts_str})]
 - Số ký tự hiện tại của STAGE {p_up} mới đạt: {current_pure:,} ký tự.
-- Ngưỡng bắt buộc của STAGE {p_up}: {min_c:,}–{max_c:,} ký tự (Còn thiếu khoảng {needed:,} ký tự để đạt đích {target_c:,}; mỗi Part phải >= {part_floor_cont:,} ký tự).{ctx_reminder}
+- Ngưỡng bắt buộc của STAGE {p_up}: {min_c:,}–{max_c:,} ký tự (Chỉ cần viết thêm khoảng {needed:,} ký tự nữa, KHÔNG viết vượt trần {max_c:,}; mỗi Part >= {part_floor_cont:,} ký tự).{ctx_reminder}
 YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG ANH MỸ (`en-US`):
 1. Hãy viết TIẾP NỐI NGAY LẬP TỨC từ đoạn kết vừa rồi:
    «...{last_tail_ja}»
-2. Triển khai tiếp các diễn biến còn lại của {expected_parts_str} theo đúng dàn ý (nếu chưa mở sang Part tiếp theo thuộc Stage {p_up} thì nhớ đặt dòng nhãn `[PART X]` độc lập rồi viết đầy đủ Part đó; nếu đã ở Part cuối của Stage {p_up} thì chỉ viết tiếp các diễn biến dàn ý còn thiếu).
-3. TUYỆT ĐỐI KHÔNG bật công cụ Python/Code Interpreter, KHÔNG tạo file tải về, KHÔNG lặp lại những đoạn đã viết ở trên, KHÔNG nhảy sang Stage tiếp theo. Chỉ xuất trực tiếp 100% văn bản tự sự và đối thoại tiếng Anh Mỹ (`en-US`) ra khung chat nối tiếp cho đủ thêm khoảng {needed:,} ký tự.
+2. Triển khai tiếp các diễn biến còn lại của {expected_parts_str} theo đúng dàn ý (nếu chưa mở sang Part tiếp theo thuộc Stage {p_up} thì nhớ đặt dòng nhãn `[PART X]` độc lập rồi viết vừa đủ Part đó; nếu đã ở Part cuối của Stage {p_up} thì chỉ viết tiếp vừa đủ ~{needed:,} ký tự rồi kết thúc Stage).
+3. TUYỆT ĐỐI KHÔNG bật công cụ Python/Code Interpreter, KHÔNG tạo file tải về, KHÔNG lặp lại những đoạn đã viết ở trên, KHÔNG nhảy sang Stage tiếp theo. Chỉ xuất trực tiếp 100% văn bản tự sự và đối thoại tiếng Anh Mỹ (`en-US`) ra khung chat nối tiếp.
 {stage_end_rule}"""
 
         return f"""[KIỂM TRA ĐỘ DÀI CỨNG — STAGE {p_up} ({expected_parts_str})]
 - Số ký tự hiện tại của STAGE {p_up} mới đạt: {current_pure:,} ký tự.
-- Ngưỡng bắt buộc của STAGE {p_up}: {min_c:,}–{max_c:,} ký tự (Còn thiếu khoảng {needed:,} ký tự để đạt đích {target_c:,}; mỗi Part phải >= 8.500 ký tự).{ctx_reminder}
+- Ngưỡng bắt buộc của STAGE {p_up}: {min_c:,}–{max_c:,} ký tự (Chỉ cần viết thêm khoảng {needed:,} ký tự nữa, KHÔNG viết vượt trần {max_c:,}; mỗi Part >= {part_floor_cont:,} ký tự).{ctx_reminder}
 YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG TÂY BAN NHA MEXICO (`es-MX`):
 1. Hãy viết TIẾP NỐI NGAY LẬP TỨC từ đoạn kết vừa rồi:
    «...{last_tail_ja}»
-2. Triển khai tiếp các diễn biến còn lại của {expected_parts_str} theo đúng dàn ý (nếu chưa mở sang Part tiếp theo thuộc Stage {p_up} thì nhớ đặt dòng nhãn `[PART X]` độc lập rồi viết đầy đủ Part đó; nếu đã ở Part cuối của Stage {p_up} thì chỉ viết tiếp các diễn biến dàn ý còn thiếu).
-3. TUYỆT ĐỐI KHÔNG bật công cụ Python/Code Interpreter, KHÔNG tạo file tải về, KHÔNG lặp lại những đoạn đã viết ở trên, KHÔNG nhảy sang Stage tiếp theo. Chỉ xuất trực tiếp 100% văn bản tự sự và đối thoại tiếng Tây Ban Nha Mexico (`es-MX`) ra khung chat nối tiếp cho đủ thêm khoảng {needed:,} ký tự.
+2. Triển khai tiếp các diễn biến còn lại của {expected_parts_str} theo đúng dàn ý (nếu chưa mở sang Part tiếp theo thuộc Stage {p_up} thì nhớ đặt dòng nhãn `[PART X]` độc lập rồi viết vừa đủ Part đó; nếu đã ở Part cuối của Stage {p_up} thì chỉ viết tiếp vừa đủ ~{needed:,} ký tự rồi kết thúc Stage).
+3. TUYỆT ĐỐI KHÔNG bật công cụ Python/Code Interpreter, KHÔNG tạo file tải về, KHÔNG lặp lại những đoạn đã viết ở trên, KHÔNG nhảy sang Stage tiếp theo. Chỉ xuất trực tiếp 100% văn bản tự sự và đối thoại tiếng Tây Ban Nha Mexico (`es-MX`) ra khung chat nối tiếp.
 {stage_end_rule}"""
 
     def _format_audit_script_payload(
@@ -9821,18 +10087,19 @@ YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG TÂY BAN NHA MEXICO (
         profile = get_script_length_profile(ck_s5)
         skill_md = self._load_skill_markdown(profile["audit_skill"])
         skill_block = (
-            f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 04 ({profile['label']} — ROUND 1 FORENSIC LOGIC) ==========\n{skill_md}\n================================================================================"
+            f"\n\n========== HƯỚNG DẪN CHUYÊN SÂU SKILL 04 ({profile['label']} — VÒNG 1/2: LOGIC, CANON & CHÍNH TẢ) ==========\n{skill_md}\n================================================================================"
             if skill_md
             else ""
         )
+        clean_arch = self._clean_step3_outline_markup(step3_context)
         arch_excerpt = (
-            f"\n\n========== DÀN Ý & CANON CONTINUITY ĐÃ KHÓA ==========\n{step3_context[:12000]}\n======================================================"
-            if step3_context
+            f"\n\n========== DÀN Ý & CANON CONTINUITY ĐÃ KHÓA ==========\n{clean_arch[:11000]}\n======================================================"
+            if clean_arch
             else ""
         )
         script_payload = self._format_audit_script_payload(
             profile["language"],
-            "TOÀN BỘ KỊCH BẢN 7 PHẦN CẦN KIỂM ĐỊNH VÒNG 1",
+            "TOÀN BỘ KỊCH BẢN 7 PHẦN CẦN KIỂM ĐỊNH VÒNG 1/2 (LOGIC)",
             count_a,
             count_b,
             count_c,
@@ -9840,7 +10107,7 @@ YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG TÂY BAN NHA MEXICO (
             part_b_text,
             part_c_text,
         )
-        return f"""CHẠY NGAY STEP 4 (VÒNG 1 — FORENSIC LOGIC, CONTINUITY & `{profile['language']}` ORTHOGRAPHY AUDIT) CHO MÃ {ma_id} — KÊNH {profile['label']}
+        return f"""CHẠY NGAY QA VÒNG 1/2 (LOGIC, NHÂN QUẢ, CANON LIÊN TỤC & CHÍNH TẢ `{profile['language']}`) CHO MÃ {ma_id} — KÊNH {profile['label']}
 - CURRENT_FINAL_TITLE: {locked_title}
 - Số liệu do hệ thống Python bên ngoài đếm:
   + STAGE A (`[PART 1]`–`[PART 2]`): {count_a:,} chars
@@ -9849,8 +10116,8 @@ YÊU CẦU VIẾT TIẾP NỐI STAGE {p_up} BẰNG TIẾNG TÂY BAN NHA MEXICO (
   + TOTAL (`[PART 1]`–`[PART 7]`): {total_count:,} chars
   + ĐỊNH MỨC KÊNH: {profile['total_min']:,}–{profile['total_max']:,} chars{arch_excerpt}{skill_block}{build_reference_block(self.root_dir, ck_s5, "audit_logic")}{build_runtime_adapter(ck_s5, "audit")}{script_payload}
 
-⚠️ YÊU CẦU KIỂM ĐỊNH VÒNG 1:
-Hãy đọc toàn bộ 7 Phần và kiểm tra nhân-quả, liên tục, {profile['logic_focus']} Đồng thời kiểm tra chính tả/ngữ pháp {profile['language_name']}, rò rỉ tiêu đề hoặc ghi chú đạo diễn.
+⚠️ YÊU CẦU KIỂM ĐỊNH VÒNG 1/2 (CHỈ TẬP TRUNG LOGIC & SỬA DỨT ĐIỂM 1 LẦN):
+Hãy đọc toàn bộ 7 Phần và kiểm tra chặt chẽ nhân-quả, timeline, tuổi nhân vật, con số tiền/tài sản, kiến thức từng nhân vật, {profile['logic_focus']} Đồng thời kiểm tra chính tả/ngữ pháp {profile['language_name']}, rò rỉ tiêu đề hoặc ghi chú đạo diễn. Gom toàn bộ lỗi logic tìm thấy vào 1 lượt bản vá chính xác để sửa xong dứt điểm trong lượt này.
 
 {build_audit_output_contract(ck_s5, allow_patches=True)}"""
 
@@ -9873,7 +10140,7 @@ Hãy đọc toàn bộ 7 Phần và kiểm tra nhân-quả, liên tục, {profil
         r1_excerpt = (
             ""
             if in_same_audit_chat
-            else f"\n\n========== TÓM TẮT KẾT QUẢ AUDIT VÒNG 1 ==========\n{round1_report[:3000] or 'Không có báo cáo'}\n================================================="
+            else f"\n\n========== TÓM TẮT KẾT QUẢ AUDIT VÒNG 1 ==========\n{round1_report[:2500] or 'Không có báo cáo'}\n================================================="
         )
         script_payload = (
             "\n\n(Dùng kịch bản 7 Phần đã có ngay phía trên trong đoạn chat này; Vòng 1 không thay đổi văn bản.)"
@@ -9889,14 +10156,15 @@ Hãy đọc toàn bộ 7 Phần và kiểm tra nhân-quả, liên tục, {profil
                 part_c_text,
             )
         )
-        return f"""CHẠY NGAY STEP 5 (VÒNG 2 — HOLISTIC QUALITY, PACING, ANTI-REPETITION & VOICE-READABILITY AUDIT) CHO MÃ {ma_id} — KÊNH {profile['label']}
+        return f"""CHẠY NGAY QA VÒNG 2/2 (TÍNH TRUYỀN CẢM, GIỮ CHÂN NGƯỜI NGHE, NHỊP ĐIỆU & GIỌNG ĐỌC TTS) CHO MÃ {ma_id} — KÊNH {profile['label']}
 - CURRENT_FINAL_TITLE: {locked_title}
 - Số ký tự hiện tại:
   + STAGE A: {count_a:,} chars | STAGE B: {count_b:,} chars | STAGE C: {count_c:,} chars
   + TOTAL: {total_count:,} chars (định mức {profile['total_min']:,}–{profile['total_max']:,}){r1_excerpt}{build_reference_block(self.root_dir, ck_r2, "audit_quality")}{build_runtime_adapter(ck_r2, "audit")}{script_payload}
 
-⚠️ YÊU CẦU KIỂM ĐỊNH VÒNG 2:
-Đánh giá toàn diện: {profile['quality_focus']} Kiểm tra lại mọi lỗi logic còn sót hoặc lỗi mới do bản vá. Đoạn đã đạt phải được giữ nguyên; chỉ đề xuất sửa khi có lỗi cụ thể ảnh hưởng người xem.
+⚠️ YÊU CẦU KIỂM ĐỊNH VÒNG 2/2 (CHỈ CHẠY ĐÚNG LƯỢT NÀY NỮA LÀ CHỐT XUẤT BẢN):
+Tập trung đánh giá sâu tính truyền cảm, sức hút giữ chân người nghe (đặc biệt 3 phút đầu & các chuyển đoạn cuối Part), nhịp điệu, tránh lặp ý/sáo rỗng và độ tự nhiên khi đọc Voice TTS: {profile['quality_focus']}
+Đoạn đã truyền cảm và tự nhiên phải giữ nguyên; chỉ vá đúng những chỗ lời văn bị khô, sượng, lặp ý hoặc mất lực giữ chân người nghe (tuyệt đối không làm lệch độ dài khỏi {profile['total_min']:,}–{profile['total_max']:,}).
 
 {build_audit_output_contract(ck_r2, allow_patches=True)}"""
 
@@ -9983,6 +10251,52 @@ YÊU CẦU:
 (toàn bộ Stage {stage})
 @@STAGE_END"""
 
+    def _build_part_resize_prompt(
+        self,
+        ma_id: str,
+        channel_key: str,
+        locked_title: str,
+        part_num: int,
+        part_text: str,
+        target_chars: int,
+        action: str,
+        step3_context: str = "",
+    ) -> str:
+        """Tạo prompt biên tập gọn/mở rộng đúng 1 [PART N] duy nhất để giữ trọn cốt truyện và cái kết."""
+        profile = get_script_length_profile(channel_key)
+        lang_code = "en" if profile["language"].startswith("en") else "es"
+        word_unit = "words" if lang_code == "en" else "palabras"
+        cpw = 5.6 if lang_code == "en" else 5.8
+        target_words = int(round(target_chars / cpw, -1))
+        part_outline = self._extract_single_part_outline(step3_context, part_num)
+        outline_blk = (
+            f"\n\n========== DÀN Ý CANON CỦA [PART {part_num}] ==========\n{part_outline}\n=================================================="
+            if part_outline
+            else ""
+        )
+        action_text = (
+            "Viết gọn sâu sắc lại bằng cách gọt câu cảm thán lặp, mô tả thừa nhưng GIỮ NGUYÊN 100% cốt truyện, tên tuổi, con số, tình tiết và cái kết"
+            if action == "condense"
+            else "Mở rộng chiều sâu cảm xúc, hành động vật lý và đối thoại ngay bên trong các cảnh đã có của Part này (không bịa tình tiết mâu thuẫn)"
+        )
+        return f"""BIÊN TẬP CHỈ RIÊNG `[PART {part_num}]` CHO MÃ {ma_id} — KÊNH {profile['label']}
+CURRENT_FINAL_TITLE: {locked_title}{outline_blk}
+
+========== NỘI DUNG `[PART {part_num}]` HIỆN TẠI ({len(part_text):,} ký tự) ==========
+{part_text}
+=========================================================================
+
+YÊU CẦU BẮT BUỘC:
+1. {action_text} để `[PART {part_num}]` đạt khoảng {target_chars:,} ký tự (≈ {target_words:,} {word_unit}, sai số tối đa ±5%).
+2. GIỮ NGUYÊN dòng tiêu đề `[PART {part_num}]` đứng riêng dòng đầu tiên.
+3. GIỮ NGUYÊN mọi tên nhân vật, tuổi, số tiền, địa điểm, vật chứng và ĐOẠN KẾT của `[PART {part_num}]`.
+4. Viết 100% bằng {profile['language_name']} (`{profile['language']}`), tự nhiên để đọc Voice TTS, không bình luận thêm, không dùng Python, không tạo file.
+5. Chỉ xuất theo đúng khung sau, marker nằm riêng một dòng:
+@@PART_BEGIN
+[PART {part_num}]
+(toàn bộ nội dung đã biên tập của PART {part_num})
+@@PART_END"""
+
     def _enforce_script_length(
         self,
         session: Any,
@@ -9994,19 +10308,79 @@ YÊU CẦU:
         part_files: Dict[str, Path],
         max_rounds: int = 3,
     ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-        """Cân độ dài bằng cách biên tập lại đúng một Stage mỗi lượt, không bao giờ cắt đuôi.
+        """Cân độ dài thông minh từng `[PART]` rồi mới đến từng Stage; tuyệt đối không cắt cơ học cụt đuôi."""
+        stages = {
+            k: ensure_part_headings_for_stage(v, k) for k, v in stage_texts.items()
+        }
+        for k in ("A", "B", "C"):
+            if k in part_files:
+                part_files[k].write_text(stages[k], encoding="utf-8")
 
-        Nhận cả bản rút gọn/mở rộng được một phần để lượt sau làm tiếp. Khi tổng độ dài lệch quá xa
-        (ví dụ ChatGPT viết gấp 2–3 lần), tự nới số lượt tối đa vì mỗi Stage có thể cần 2 lượt.
-        """
-        stages = dict(stage_texts)
         gate = run_machine_script_gate(assemble_stages(stages), channel_key, self.root_dir)
         profile = get_script_length_profile(channel_key)
-        if int(gate.get("chars") or 0) > int(profile["total_max"]) * 1.5:
-            max_rounds = max(max_rounds, 6)
+        if int(gate.get("chars") or 0) > int(profile["total_max"]) * 1.35:
+            max_rounds = max(max_rounds, 9)
+
         for round_no in range(1, max_rounds + 1):
             if gate["passed"] or self.should_stop:
                 break
+            part_plan = plan_part_resize(stages, channel_key, gate)
+            if part_plan:
+                letter = part_plan["stage"]
+                pnum = int(part_plan["part_num"])
+                part_cur = part_plan["part_text"]
+                cur_p_chars = int(part_plan["part_chars"])
+                t_chars = int(part_plan["target_chars"])
+                self._emit(
+                    message=(
+                        f"[{ma_id}] ✂️ Tổng {gate['chars']:,} chữ — `[PART {pnum}]` ({cur_p_chars:,} chữ) "
+                        f"đang {'vượt' if part_plan['action'] == 'condense' else 'thiếu'} chuẩn -> Cân về ~{t_chars:,} chữ (lượt {round_no}/{max_rounds})..."
+                    )
+                )
+                session.start_fresh_chat(f"PART_RESIZE_{pnum}_{round_no}")
+                response = session.send_prompt_and_wait(
+                    self._build_part_resize_prompt(
+                        ma_id=ma_id,
+                        channel_key=channel_key,
+                        locked_title=locked_title,
+                        part_num=pnum,
+                        part_text=part_cur,
+                        target_chars=t_chars,
+                        action=part_plan["action"],
+                        step3_context=step3_context,
+                    ),
+                    step_label=f"PART_RESIZE_{pnum}_{round_no}",
+                    timeout_sec=720,
+                    progress_cb=lambda st, ch, pn=pnum: self._emit(
+                        message=f"[{ma_id}] Đang cân lại [PART {pn}] ({ch:,} ký tự)..."
+                    ),
+                    should_stop_cb=lambda: self.should_stop,
+                )
+                revised_part, reason = extract_resized_stage(
+                    response,
+                    letter,
+                    part_cur,
+                    t_chars,
+                    extract_clean_japanese_narration,
+                    previous_chars=cur_p_chars,
+                    single_part_num=pnum,
+                )
+                if revised_part:
+                    stages[letter] = ensure_part_headings_for_stage(
+                        replace_single_part_in_stage(stages[letter], letter, pnum, revised_part),
+                        letter,
+                    )
+                    part_files[letter].write_text(stages[letter], encoding="utf-8")
+                    gate = run_machine_script_gate(
+                        assemble_stages(stages), channel_key, self.root_dir
+                    )
+                    continue
+                log_warn(
+                    "SCRIPT",
+                    f"[{ma_id}] Bản cân [PART {pnum}] bị từ chối: {reason} -> Thử cấp Stage nếu cần.",
+                    project_id=ma_id,
+                )
+
             plan = plan_stage_resize(stages, channel_key, gate)
             if not plan:
                 break
@@ -10103,8 +10477,9 @@ YÊU CẦU:
         step3_context: str,
         part_files: Dict[str, Path],
         report_files: Dict[str, Path],
+        run_final_verify: bool = False,
     ) -> Dict[str, Any]:
-        """Chạy Vòng 1, Vòng 2 và xác minh độc lập khi văn bản đã thay đổi ở Vòng 2."""
+        """Chạy đúng 2 vòng QA (Vòng 1 Logic + Repair 1; Vòng 2 Truyền cảm & Giữ chân + Repair 2); kiểm tra cuối bằng Python."""
         stages = dict(stage_texts)
         result: Dict[str, Any] = {
             "stages": stages,
@@ -10124,12 +10499,12 @@ YÊU CẦU:
             session.start_fresh_chat("NEW_CHAT_3_SKILL_04_AUDIT")
             self._update_idea_record(
                 ma_id,
-                current_step="New Chat #3 (Skill 04 Vòng 1): Kiểm định Logic & Chính tả",
+                current_step="QA Vòng 1/2: Kiểm định Logic, Canon & Chính tả",
             )
             self._emit(
-                current_step="New Chat #3 — Skill 04 Vòng 1: Logic & Chính tả",
+                current_step="QA Vòng 1/2 — Logic, Canon & Chính tả",
                 progress=78.0,
-                message=f"[{ma_id}] 💬 [Skill 04 Vòng 1] Đang kiểm tra logic và chính tả trên toàn bộ 7 Parts...",
+                message=f"[{ma_id}] 💬 [QA Vòng 1/2] Đang kiểm tra tính logic, nhân-quả và chính tả trên toàn bộ 7 Parts...",
             )
             ca, cb, cc, total = _counts()
             r1_out = session.send_prompt_and_wait(
@@ -10141,23 +10516,23 @@ YÊU CẦU:
                 step_label="STEP_5_ROUND_1",
                 timeout_sec=720,
                 progress_cb=lambda st, ch: self._emit(
-                    message=f"[{ma_id}] [Skill 04 Vòng 1] Đang kiểm tra ({ch:,} ký tự)..."
+                    message=f"[{ma_id}] [QA Vòng 1/2 — Logic] Đang kiểm tra ({ch:,} ký tự)..."
                 ),
                 should_stop_cb=lambda: self.should_stop,
             )
             report_files["r1"].write_text(r1_out, encoding="utf-8")
             stages, applied_r1, failed_r1 = self._apply_audit_patches(
-                ma_id, channel_key, r1_out, stages, part_files, "Repair 1"
+                ma_id, channel_key, r1_out, stages, part_files, "Repair 1 (Logic)"
             )
 
             self._update_idea_record(
                 ma_id,
-                current_step="New Chat #3 (Skill 04 Vòng 2): Kiểm định Chất lượng & Nhịp đọc TTS",
+                current_step="QA Vòng 2/2: Kiểm định Truyền cảm, Giữ chân & Nhịp TTS",
             )
             self._emit(
-                current_step="New Chat #3 — Skill 04 Vòng 2: Chất lượng & Nhịp đọc TTS",
+                current_step="QA Vòng 2/2 — Truyền cảm, Giữ chân & Nhịp đọc TTS",
                 progress=82.0,
-                message=f"[{ma_id}] 💬 [Skill 04 Vòng 2] Đang đánh giá chất lượng, nhịp truyện và độ tự nhiên khi đọc...",
+                message=f"[{ma_id}] 💬 [QA Vòng 2/2] Đang kiểm tra tính truyền cảm, giữ chân người nghe và nhịp đọc TTS...",
             )
             ca, cb, cc, total = _counts()
             r2_out = session.send_prompt_and_wait(
@@ -10170,21 +10545,22 @@ YÊU CẦU:
                 step_label="STEP_5_ROUND_2",
                 timeout_sec=720,
                 progress_cb=lambda st, ch: self._emit(
-                    message=f"[{ma_id}] [Skill 04 Vòng 2] Đang đánh giá ({ch:,} ký tự)..."
+                    message=f"[{ma_id}] [QA Vòng 2/2 — Truyền cảm] Đang kiểm tra ({ch:,} ký tự)..."
                 ),
                 should_stop_cb=lambda: self.should_stop,
             )
             report_files["r2"].write_text(r2_out, encoding="utf-8")
             stages, applied_r2, failed_r2 = self._apply_audit_patches(
-                ma_id, channel_key, r2_out, stages, part_files, "Repair 2"
+                ma_id, channel_key, r2_out, stages, part_files, "Repair 2 (Truyền cảm)"
             )
             result["applied"] = len(applied_r1) + len(applied_r2)
             result["failed"] = failed_r1 + failed_r2
             final_text = r2_out
             verdict = parse_qa_verdict(r2_out)
 
-            # Văn bản vừa đổi ở Vòng 2 thì kết luận cũ không còn giá trị.
-            if applied_r2 or failed_r2:
+            # Mặc định tắt vòng ChatGPT thứ 3 (run_final_verify=False) theo yêu cầu rút gọn đúng 2 vòng QA;
+            # cấu trúc, đủ 7 Part và độ dài được kiểm chứng lại bằng Python run_machine_script_gate ngay sau đây.
+            if run_final_verify and (applied_r2 or failed_r2):
                 self._emit(
                     current_step="Skill 04 — Xác minh cuối độc lập",
                     progress=84.0,
@@ -10212,8 +10588,8 @@ YÊU CẦU:
             result["verdict"] = verdict
             result["stages"] = stages
             result["report"] = (
-                f"==================== ROUND 1: FORENSIC LOGIC & ORTHOGRAPHY AUDIT ====================\n{r1_out}\n\n"
-                f"==================== ROUND 2: HOLISTIC QUALITY ====================\n{r2_out}\n"
+                f"==================== ROUND 1/2: LOGIC, CANON & ORTHOGRAPHY ====================\n{r1_out}\n\n"
+                f"==================== ROUND 2/2: EMOTIONAL DEPTH, RETENTION & TTS ====================\n{r2_out}\n"
                 + (
                     f"\n==================== FINAL INDEPENDENT VERIFY ====================\n{final_text}\n"
                     if result["final_verify_ran"]
@@ -11663,7 +12039,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     session_gr = None
                     try:
                         session_gr = ChatGPTWebSession(
-                            project_id=f"{ma_id}_GREEN_9_16", acc_id=use_acc_gr
+                            project_id=f"{ma_id}_GREEN_9_16",
+                            acc_id=use_acc_gr,
+                            prefer_plus=True,
                         )
                         self._generate_chatgpt_9_16_green_from_reference_sync(
                             session=session_gr,
@@ -11761,6 +12139,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         if (round_idx == 0 and preferred_acc_id not in use_exclude)
                         else None,
                         exclude_accs=use_exclude,
+                        prefer_plus=True,
                     )
                     tried_accs.add(sess.acc_id)
                     self._emit(
@@ -11947,48 +12326,120 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         channel_key: str,
         letter: str,
         stage_text: str,
-        max_tries: int = 3,
+        max_tries: int = 4,
     ) -> str:
-        """Chặng vừa viết dài quá trần -> yêu cầu viết lại gọn NGAY TRONG CÙNG đoạn chat viết (còn nhớ mạch truyện).
-
-        Lặp tới khi về trong trần (+5%) hoặc hết lượt; nhận cả bản rút gọn được một phần. Không bao giờ cắt cơ học.
-        """
-        cfg = get_script_length_profile(channel_key)["stages"][letter.upper()]
+        """Tự kiểm từng `[PART N]` và tổng Stage ngay sau khi viết xong ngay trong Writer Chat (không bao giờ cắt cụt đuôi)."""
+        letter_u = letter.upper()
+        cfg = get_script_length_profile(channel_key)["stages"][letter_u]
         max_c, target_c = int(cfg["max"]), int(cfg["target"])
         lang = "en" if get_script_length_profile(channel_key).get("language", "").startswith("en") else "es"
         word_unit = "palabras" if lang == "es" else "words"
-        current = stage_text
+        cpw = 5.8 if lang == "es" else 5.6
+        current = ensure_part_headings_for_stage(stage_text, letter_u)
+
+        # Bước 1: Kiểm tra & cân riêng từng [PART N] vượt trần hoặc thiếu sàn ngay khi vừa viết xong
+        stage_part_cnt = {"A": 2, "B": 3, "C": 2}.get(letter_u, 2)
+        part_ceiling = int(round(max_c / stage_part_cnt * 1.15))
+        part_floor = int(cfg.get("part_floor", 8500))
+        for _pass in range(stage_part_cnt):
+            if self.should_stop:
+                break
+            part_info = inspect_stage_part_lengths(current, letter_u, channel_key)
+            bad_items = [
+                it
+                for it in (part_info.get("parts") or [])
+                if int(it["chars"]) > max(part_ceiling, int(it["target"]) + 2000)
+                or int(it["chars"]) < part_floor
+            ]
+            bad_items.sort(key=lambda x: abs(int(x["chars"]) - int(x["target"])), reverse=True)
+            bad_item = bad_items[0] if bad_items else None
+            if not bad_item:
+                break
+            pnum = int(bad_item["part_num"])
+            cur_chars = int(bad_item["chars"])
+            t_chars = int(bad_item["target"])
+            part_cur_text = bad_item.get("part_text") or ""
+            action = "condense" if cur_chars > t_chars else "expand"
+            self._emit(
+                message=(
+                    f"[{ma_id}] 📐 [Tự kiểm PART {pnum}] {cur_chars:,} ký tự "
+                    f"({'vượt' if action == 'condense' else 'thiếu'} chuẩn ~{t_chars:,}) -> "
+                    f"Chỉnh ngay `[PART {pnum}]` trong Writer Chat..."
+                )
+            )
+            p_prompt = self._build_part_resize_prompt(
+                ma_id=ma_id,
+                channel_key=channel_key,
+                locked_title=ma_id,
+                part_num=pnum,
+                part_text=part_cur_text,
+                target_chars=t_chars,
+                action=action,
+                step3_context="",
+            )
+            p_resp = session.send_prompt_and_wait(
+                p_prompt,
+                step_label=f"WRITER_PART_CALIBRATE_{pnum}",
+                timeout_sec=720,
+                progress_cb=lambda st, ch, pn=pnum: self._emit(
+                    message=f"[{ma_id}] Đang cân chỉnh [PART {pn}] ({ch:,} ký tự)..."
+                ),
+                should_stop_cb=lambda: self.should_stop,
+            )
+            rev_p, reason_p = extract_resized_stage(
+                p_resp,
+                letter_u,
+                part_cur_text,
+                t_chars,
+                extract_clean_japanese_narration,
+                previous_chars=cur_chars,
+                single_part_num=pnum,
+            )
+            if rev_p:
+                current = ensure_part_headings_for_stage(
+                    replace_single_part_in_stage(current, letter_u, pnum, rev_p),
+                    letter_u,
+                )
+            else:
+                log_warn(
+                    "SCRIPT",
+                    f"[{ma_id}] Chỉnh tự kiểm [PART {pnum}] chưa đạt ({reason_p}) -> Chuyển kiểm cấp Stage.",
+                    project_id=ma_id,
+                )
+                break
+
+        # Bước 2: Nếu tổng Stage vẫn vượt trần (+5%) -> viết gọn cấp Stage
         for try_no in range(1, max_tries + 1):
             size = pure_char_count(current)
             if size <= int(max_c * 1.05) or self.should_stop:
                 break
-            words = int(round(target_c / (5.8 if lang == "es" else 5.6), -2))
-            parts = {"A": (1, 2), "B": (3, 4, 5), "C": (6, 7)}[letter.upper()]
+            words = int(round(target_c / cpw, -2))
+            parts = {"A": (1, 2), "B": (3, 4, 5), "C": (6, 7)}[letter_u]
             labels = ", ".join(f"[PART {n}]" for n in parts)
             self._emit(
-                message=f"[{ma_id}] ✂️ STAGE {letter} dài {size:,} ký tự (trần {max_c:,}) -> Viết lại gọn ngay trong đoạn chat viết (lượt {try_no}/{max_tries})..."
+                message=f"[{ma_id}] ✂️ STAGE {letter_u} dài {size:,} ký tự (trần {max_c:,}) -> Viết lại gọn ngay trong đoạn chat viết (lượt {try_no}/{max_tries})..."
             )
-            prompt = f"""VIẾT LẠI GỌN STAGE {letter} — BẢN VỪA VIẾT DÀI {size:,} KÝ TỰ, VƯỢT TRẦN {max_c:,}.
-Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoảng {target_c:,} ký tự (≈ {words:,} {word_unit}), sai số tối đa 5%.
+            prompt = f"""VIẾT LẠI GỌN STAGE {letter_u} — BẢN VỪA VIẾT DÀI {size:,} KÝ TỰ, VƯỢT TRẦN {max_c:,}.
+Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn khoảng {target_c:,} ký tự (≈ {words:,} {word_unit}), sai số tối đa 5%.
 - Giữ đủ mọi cảnh, sự kiện, tên, tuổi, số tiền, địa điểm, vật chứng, thứ tự cảnh và ĐOẠN KẾT của Stage.
 - Gọn bằng cách bỏ đoạn lặp ý, mô tả thừa, câu cảm thán trùng; gộp câu cụt liền nhau thành câu đầy đủ.
 - Không thêm tình tiết mới, không tóm tắt kiểu liệt kê, không ghi chú, không dùng Python, không tạo file.
 - Chỉ xuất theo đúng khung sau, marker nằm riêng một dòng:
 @@STAGE_BEGIN
-(toàn bộ Stage {letter})
+(toàn bộ Stage {letter_u})
 @@STAGE_END"""
             response = session.send_prompt_and_wait(
                 prompt,
-                step_label=f"STAGE_CONDENSE_{letter}_{try_no}",
+                step_label=f"STAGE_CONDENSE_{letter_u}_{try_no}",
                 timeout_sec=900,
                 progress_cb=lambda st, ch: self._emit(
-                    message=f"[{ma_id}] Đang viết lại gọn STAGE {letter} ({ch:,} ký tự)..."
+                    message=f"[{ma_id}] Đang viết lại gọn STAGE {letter_u} ({ch:,} ký tự)..."
                 ),
                 should_stop_cb=lambda: self.should_stop,
             )
             revised, reason = extract_resized_stage(
                 response,
-                letter.upper(),
+                letter_u,
                 current,
                 target_c,
                 extract_clean_japanese_narration,
@@ -11997,11 +12448,11 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
             if not revised:
                 log_warn(
                     "SCRIPT",
-                    f"[{ma_id}] Bản viết lại gọn STAGE {letter} lượt {try_no} bị từ chối: {reason}",
+                    f"[{ma_id}] Bản viết lại gọn STAGE {letter_u} lượt {try_no} bị từ chối: {reason}",
                     project_id=ma_id,
                 )
                 continue
-            current = ensure_part_headings_for_stage(revised, letter.upper())
+            current = ensure_part_headings_for_stage(revised, letter_u)
         return current
 
     @staticmethod
@@ -12038,11 +12489,15 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
         prev_part_tail: str = "",
         min_acceptable_chars: int = 9500,
         in_same_writer_chat: bool = False,
+        stage_handoff: str = "",
+        dynamic_budget_note: str = "",
     ) -> str:
         """
-        Điều khiển ChatGPT viết 1 Stage (A, B hoặc C) ngay trên cùng New Chat #2 và tự động nối thêm cho đến khi đủ ngưỡng độ dài.
-        - BẮT BUỘC mỗi Stage phải đạt tối thiểu `min_acceptable_chars`.
+        Điều khiển ChatGPT viết 1 Stage (A, B hoặc C) ngay trên cùng New Chat #2,
+        dừng viết tiếp ngay khi đủ các nhãn `[PART]` + đạt ngưỡng an toàn để tránh viết tràn trần,
+        và không cắt cụt đuôi cơ học (để `_condense_stage_in_writer_chat` chỉnh từng Part bằng AI).
         """
+        ck_loop = self._get_idea_channel_key(ma_id=ma_id)
         self._emit(
             current_step=f"New Chat #2 — Đang viết Skill 03 STAGE {part_letter}",
             progress=base_progress,
@@ -12059,6 +12514,8 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
             step3_context=step3_context,
             prev_part_tail=prev_part_tail,
             in_same_writer_chat=in_same_writer_chat,
+            stage_handoff=stage_handoff,
+            dynamic_budget_note=dynamic_budget_note,
         )
         raw_resp = session.send_prompt_and_wait(
             p_init,
@@ -12078,17 +12535,34 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
         combined_clean = "\n".join(clean_chunks)
         curr_pure = pure_char_count(combined_clean)
 
+        def _has_all_stage_parts_complete(txt: str) -> bool:
+            info = inspect_stage_part_lengths(txt, part_letter, ck_loop)
+            if not info or not info.get("headings_valid"):
+                return False
+            parts_list = info.get("parts") or []
+            part_floor_req = int(
+                get_script_length_profile(ck_loop)["stages"]
+                .get(part_letter.upper(), {})
+                .get("part_floor", 6500)
+            )
+            return bool(parts_list) and all(
+                int(it.get("chars") or 0) >= int(min(part_floor_req, int(it.get("min") or part_floor_req)) * 0.85)
+                for it in parts_list
+            )
+
         turn_idx = 2
         stalled_retries = 0
         max_turns = 8
         while curr_pure < min_chars and turn_idx <= max_turns:
             if self.should_stop:
                 raise RuntimeError("Đã dừng theo yêu cầu người dùng.")
+            if curr_pure >= max(min_acceptable_chars, int(min_chars * 0.96)) and _has_all_stage_parts_complete(combined_clean):
+                break
 
             tail_ja = (
-                combined_clean[-180:].replace("\n", "")
+                combined_clean[-260:].replace("\n", "")
                 if combined_clean
-                else prev_part_tail[-180:].replace("\n", "")
+                else prev_part_tail[-260:].replace("\n", "")
             )
             self._emit(
                 progress=min(base_progress + turn_idx * 2.2, base_progress + 14.0),
@@ -12117,6 +12591,8 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                     target_chars,
                     step3_context=step3_context,
                     prev_part_tail=prev_part_tail,
+                    stage_handoff=stage_handoff,
+                    dynamic_budget_note=dynamic_budget_note,
                 )
             else:
                 p_cont = self._build_step4_part_continue_prompt(
@@ -12126,7 +12602,7 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                     max_c=max_chars,
                     target_c=target_chars,
                     last_tail_ja=tail_ja,
-                    step3_context=step3_context if need_fresh_recovery else "",
+                    step3_context=step3_context,
                     ma_id=ma_id,
                 )
 
@@ -12157,10 +12633,8 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
 
             if new_pure <= curr_pure + 120:
                 stalled_retries += 1
-                # Nếu đã đủ ngưỡng chấp nhận tối thiểu (ví dụ >= 10,000 chữ) thì cho phép chốt Part
                 if curr_pure >= min_acceptable_chars and stalled_retries >= 2:
                     break
-                # Nếu vẫn chưa đủ và đã thử mở chat mới 3 lần liên tiếp không ra chữ -> báo lỗi rõ ràng
                 if stalled_retries >= 3:
                     break
             else:
@@ -12175,11 +12649,8 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                 f"Hệ thống dừng ghép kịch bản để bảo vệ chất lượng — Hãy bấm Chạy lại để viết tiếp STAGE {part_letter}!"
             )
 
-        if curr_pure > max_chars:
-            combined_clean = trim_japanese_to_max_pure_chars(
-                combined_clean, max_pure_chars=max_chars - 150
-            )
-
+        # KHÔNG dùng trim_japanese_to_max_pure_chars cắt cụt đuôi ở đây; `_condense_stage_in_writer_chat`
+        # ngay sau bước này sẽ rút gọn từng Part bằng AI mà vẫn giữ trọn đoạn kết.
         combined_clean = ensure_part_headings_for_stage(combined_clean, part_letter)
         return combined_clean
 
@@ -12662,6 +13133,293 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
             }
 
         # ======================================================================
+        # TRƯỜNG HỢP KỊCH BẢN CŨ ĐÃ CÓ NHƯNG BỊ LỖI / SAI ĐỘ DÀI / THIẾU QA:
+        # GIỮ NGUYÊN CỐT TRUYỆN CŨ -> KHÔI PHỤC 7 PART -> CÂN ĐỘ DÀI -> CHẠY ĐÚNG 2 VÒNG QA -> BÙ ẢNH -> RENDER
+        # ======================================================================
+        if (
+            has_existing_script
+            and not force_rewrite_script
+            and self._script_needs_reaudit(ma_id)
+        ):
+            channel_key_legacy = self._get_idea_channel_key(ma_id=ma_id, idea=idea)
+            disk_part_texts: Dict[str, str] = {}
+            for st_k, fn_k in (("A", "part_a.txt"), ("B", "part_b.txt"), ("C", "part_c.txt")):
+                fp_k = proj_dir / fn_k
+                if fp_k.exists():
+                    disk_part_texts[st_k] = fp_k.read_text(encoding="utf-8", errors="ignore")
+            fallback_full_legacy = ""
+            for fb_name in ("PMX_FULL_SCRIPT.txt", "script_clean.txt", f"{ma_id}_KICH_BAN.txt", f"{ma_id}.txt"):
+                fb_p = proj_dir / fb_name
+                if fb_p.exists() and fb_p.stat().st_size > 200:
+                    fallback_full_legacy = fb_p.read_text(encoding="utf-8", errors="ignore")
+                    break
+            if not fallback_full_legacy:
+                fallback_full_legacy = existing_script_text or ""
+            recovered_stages = recover_stages_from_disk_texts(
+                disk_part_texts, full_fallback_text=fallback_full_legacy
+            )
+            recovery_source = (
+                "part_a/b/c.txt"
+                if all(disk_part_texts.get(k, "").strip() for k in ("A", "B", "C"))
+                else "full_script_fallback"
+            )
+            if recovered_stages and all(recovered_stages.get(k) for k in ("A", "B", "C")):
+                session_leg: Optional[ChatGPTWebSession] = None
+                completed_ok_leg = False
+                try:
+                    self._emit(
+                        status="running",
+                        current_ma_id=ma_id,
+                        current_step="🛠️ Đang sửa kịch bản cũ (Giữ cốt truyện gốc -> Cân 7 Part & QA 2 vòng)...",
+                        progress=25.0,
+                        message=(
+                            f"[{ma_id}] 🛠️ Phát hiện kịch bản cũ bị lỗi/chưa đạt chuẩn "
+                            f"({existing_pure_chars:,} chữ, khôi phục từ {recovery_source}) "
+                            f"-> Giữ nguyên cốt truyện cũ để cân độ dài & chạy QA 2 vòng (Logic + Truyền cảm)!"
+                        ),
+                    )
+                    session_leg = ChatGPTWebSession(
+                        project_id=ma_id, acc_id=preferred_acc_id, exclude_accs=exclude_accs
+                    )
+                    if not session_leg.open_session_tab() and not session_leg.switch_to_another_account():
+                        raise RuntimeError("Không mở được tab ChatGPT để sửa & kiểm định kịch bản cũ.")
+
+                    step2_file = proj_dir / "step2_title_thumbnail.txt"
+                    step2_out = step2_file.read_text(encoding="utf-8", errors="ignore") if step2_file.exists() else ""
+                    step3_file = proj_dir / "step3_architecture.txt"
+                    step3_out = step3_file.read_text(encoding="utf-8", errors="ignore") if step3_file.exists() else ""
+                    locked_title = idea.get("locked_title") or extract_locked_title_from_step2(
+                        step2_out, fallback_title=idea.get("draft_title_ja", ma_id)
+                    )
+
+                    script_part_files = {
+                        "A": proj_dir / "part_a.txt",
+                        "B": proj_dir / "part_b.txt",
+                        "C": proj_dir / "part_c.txt",
+                    }
+                    stage_texts = {
+                        k: ensure_part_headings_for_stage(recovered_stages[k], k)
+                        for k in ("A", "B", "C")
+                    }
+                    for k in ("A", "B", "C"):
+                        script_part_files[k].write_text(stage_texts[k], encoding="utf-8")
+
+                    stage_texts, machine_gate = self._enforce_script_length(
+                        session_leg,
+                        ma_id,
+                        channel_key_legacy,
+                        locked_title,
+                        stage_texts,
+                        step3_out,
+                        script_part_files,
+                        max_rounds=8,
+                    )
+
+                    r1_file = proj_dir / "PMX_QA_ROUND1_LOGIC.md"
+                    r2_file = proj_dir / "PMX_QA_ROUND2_QUALITY.md"
+                    final_qa_file = proj_dir / "PMX_QA_FINAL.md"
+                    step5_file = proj_dir / "step5_audit_report.txt"
+
+                    if machine_gate["passed"]:
+                        audit_result = self._run_script_audit_rounds(
+                            session_leg,
+                            ma_id,
+                            channel_key_legacy,
+                            locked_title,
+                            stage_texts,
+                            step3_out,
+                            script_part_files,
+                            {"r1": r1_file, "r2": r2_file, "final": final_qa_file},
+                            run_final_verify=False,
+                        )
+                    else:
+                        audit_result = {
+                            "stages": dict(stage_texts),
+                            "verdict": None,
+                            "error": f"Độ dài sau biên tập vẫn chưa qua cổng: {'; '.join(machine_gate.get('failures', [])[:2])}",
+                            "applied": 0,
+                            "failed": [],
+                            "final_verify_ran": False,
+                            "report": "",
+                        }
+
+                    stage_texts = audit_result["stages"]
+                    count_a, count_b, count_c = (
+                        pure_char_count(stage_texts[k]) for k in ("A", "B", "C")
+                    )
+                    if audit_result["report"]:
+                        step5_file.write_text(audit_result["report"], encoding="utf-8")
+
+                    pmx_full_script = assemble_stages(stage_texts)
+                    (proj_dir / "PMX_FULL_SCRIPT.txt").write_text(pmx_full_script, encoding="utf-8")
+                    full_clean_script, _ = self._sanitize_and_note_script_text(
+                        ma_id, pmx_full_script, source_label="LEGACY_REPAIR_GATE"
+                    )
+                    total_pure = pure_char_count(full_clean_script)
+                    (proj_dir / "script_clean.txt").write_text(full_clean_script, encoding="utf-8")
+
+                    machine_gate = run_machine_script_gate(
+                        pmx_full_script, channel_key_legacy, self.root_dir
+                    )
+                    release_record = decide_script_release(
+                        channel_key_legacy,
+                        full_clean_script,
+                        machine_gate,
+                        audit_result["verdict"],
+                        audit_error=audit_result["error"],
+                        patches_applied=int(audit_result["applied"]),
+                        patches_failed=audit_result["failed"],
+                        final_verify_ran=bool(audit_result["final_verify_ran"]),
+                    )
+                    write_script_release_record(proj_dir, release_record)
+
+                    try:
+                        self._save_v4_project_artifacts_and_memory(
+                            ma_id=ma_id,
+                            proj_dir=proj_dir,
+                            locked_title=locked_title,
+                            idea=idea,
+                            step2_out=step2_out,
+                            step3_out=step3_out,
+                            pmx_full_script=pmx_full_script,
+                            total_pure=total_pure,
+                            release_record=release_record,
+                        )
+                    except Exception:
+                        pass
+
+                    step6_file = proj_dir / "seo_publish_pack.txt"
+                    if step6_file.exists() and step6_file.stat().st_size > 200:
+                        step6_out = step6_file.read_text(encoding="utf-8", errors="ignore")
+                    else:
+                        step6_out = self._build_fallback_seo_pack(
+                            ma_id, locked_title, total_pure, idea, step2_out
+                        )
+                        step6_file.write_text(step6_out, encoding="utf-8")
+
+                    master_seo_file = proj_dir / "00_TIEU_DE_VA_SEO_YOUTUBE.txt"
+                    if not master_seo_file.exists() or master_seo_file.stat().st_size < 200:
+                        master_seo_content = (
+                            f"================================================================================\n"
+                            f"🎬 HỒ SƠ XUẤT BẢN YOUTUBE — MÃ DỰ ÁN: {ma_id}\n"
+                            f"================================================================================\n"
+                            f"📌 TIÊU ĐỀ CHÍNH THỨC ĐÃ KHÓA (CURRENT_FINAL_TITLE):\n{locked_title}\n\n"
+                            f"📊 THỐNG KÊ KỊCH BẢN (SAU CÂN ĐỘ DÀI & QA 2 VÒNG):\n"
+                            f"- STAGE A: {count_a:,} | STAGE B: {count_b:,} | STAGE C: {count_c:,}\n"
+                            f"- TỔNG CỘNG: {total_pure:,} ký tự\n\n"
+                            f"{step6_out}\n"
+                        )
+                        master_seo_file.write_text(master_seo_content, encoding="utf-8")
+                    else:
+                        master_seo_content = master_seo_file.read_text(encoding="utf-8")
+
+                    try:
+                        session_leg.close_session_tab(keep_open=False)
+                        session_leg = None
+                    except Exception:
+                        pass
+
+                    from backend.renderer import check_render_thumbnail_prerequisites
+
+                    job_tm_leg = self._get_idea_thumb_mode(
+                        ma_id=ma_id, idea=idea, thumb_mode=thumb_mode
+                    )
+                    final_proj_dir_leg = (
+                        getattr(self, "final_video_dir", None) or self.projects_dir
+                    ) / ma_id
+                    preq_leg = check_render_thumbnail_prerequisites(
+                        proj_dir=proj_dir,
+                        final_proj_dir=final_proj_dir_leg,
+                        proj_name=ma_id,
+                        channel_key=channel_key_legacy,
+                        thumb_mode=job_tm_leg,
+                    )
+                    if not preq_leg.get("ok") and not self.should_stop:
+                        try:
+                            self.ensure_project_thumbnail_with_failover_sync(
+                                ma_id=ma_id,
+                                preferred_acc_id=preferred_acc_id,
+                                exclude_accs=exclude_accs,
+                                max_failover_rounds=2,
+                                thumb_mode=job_tm_leg,
+                            )
+                        except Exception as e_th_leg:
+                            log_warn(
+                                "SCRIPT",
+                                f"[{ma_id}] Tạo ảnh bù sau sửa kịch bản cũ: {e_th_leg}",
+                                project_id=ma_id,
+                            )
+                        preq_leg = check_render_thumbnail_prerequisites(
+                            proj_dir=proj_dir,
+                            final_proj_dir=final_proj_dir_leg,
+                            proj_name=ma_id,
+                            channel_key=channel_key_legacy,
+                            thumb_mode=job_tm_leg,
+                        )
+
+                    thumb_files_leg = [
+                        p
+                        for p in (preq_leg.get("thumbnail_path"), preq_leg.get("green_path"))
+                        if p
+                    ]
+                    has_th_leg = bool(preq_leg.get("ok"))
+                    is_ready_leg = release_record.get("release_decision") == DECISION_READY
+
+                    self._update_idea_record(
+                        ma_id,
+                        locked_title=locked_title,
+                        pure_char_count=total_pure,
+                        has_script=True,
+                        has_seo=True,
+                        has_thumbnail=has_th_leg,
+                        completed_parts_count=3,
+                        missing_parts=[],
+                        status="SCRIPT_DONE",
+                        current_step=(
+                            f"✅ Đã sửa xong kịch bản cũ ({total_pure:,} chữ) & ĐẠT QA 2 vòng"
+                            if is_ready_leg
+                            else f"⛔ Sửa kịch bản cũ chưa đạt QA: {'; '.join((release_record.get('reasons') or [])[:1])}"
+                        ),
+                    )
+                    video_triggered_leg = False
+                    if (
+                        auto_produce_video
+                        and not defer_video_handoff
+                        and self.video_pipeline is not None
+                        and is_ready_leg
+                        and has_th_leg
+                    ):
+                        video_triggered_leg = self._enqueue_or_start_video_job(
+                            ma_id=ma_id,
+                            script_text=full_clean_script,
+                            seo_text=master_seo_content,
+                            video_settings=video_settings,
+                            voice_only=voice_only,
+                            thumb_mode=job_tm_leg,
+                        )
+                    completed_ok_leg = True
+                    return {
+                        "success": is_ready_leg,
+                        "ma_id": ma_id,
+                        "locked_title": locked_title,
+                        "pure_char_count": total_pure,
+                        "project_dir": str(proj_dir),
+                        "renders_dir": str(renders_dir),
+                        "script_path": str(proj_dir / "script_clean.txt"),
+                        "seo_path": str(master_seo_file),
+                        "thumbnails": thumb_files_leg,
+                        "video_triggered": video_triggered_leg,
+                        "repaired_existing_script": True,
+                        "release_decision": release_record.get("release_decision"),
+                    }
+                finally:
+                    if session_leg is not None:
+                        try:
+                            session_leg.close_session_tab(keep_open=not completed_ok_leg)
+                        except Exception:
+                            pass
+
+        # ======================================================================
         # TRƯỜNG HỢP CHƯA CÓ KỊCH BẢN -> MỞ CHROME CHATGPT WEB CHẠY STEP 2 -> STEP 7
         # ======================================================================
         provider_norm = "chatgpt_web"
@@ -13012,13 +13770,18 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                 part_a_file.write_text(part_a_clean, encoding="utf-8")
                 count_a = pure_char_count(part_a_clean)
 
+            handoff_a = self._extract_stage_handoff_state(part_a_clean, "A", count_a)
+            min_b_dyn, max_b_dyn, target_b_dyn, dyn_note_b = self._recalibrate_next_stage_budget(
+                channel_key_script, "B", count_a
+            )
+
             self._update_idea_record(
                 ma_id,
                 pure_char_count=count_a,
                 has_script=False,
                 completed_parts_count=1,
                 missing_parts=["B", "C"],
-                current_step=f"New Chat #2: Xong STAGE A ([PART 1]–[PART 2]: {count_a:,} chữ) -> Tiếp tục STAGE B...",
+                current_step=f"New Chat #2: Xong STAGE A ([PART 1]–[PART 2]: {count_a:,} chữ) -> Tiếp tục STAGE B ({min_b_dyn:,}–{max_b_dyn:,})...",
             )
 
             # --- 4.2: STAGE B ([PART 3], [PART 4] & [PART 5]) ---
@@ -13040,21 +13803,23 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                     ma_id,
                     has_script=False,
                     status="RUNNING",
-                    current_step=f"New Chat #2 (Skill 03 Stage B): Đang viết nối tiếp [PART 3]–[PART 5] (Đã có {count_a:,} chữ)...",
+                    current_step=f"New Chat #2 (Skill 03 Stage B): Đang viết nối tiếp [PART 3]–[PART 5] (Đã có {count_a:,} chữ, mục tiêu Stage B {min_b_dyn:,}–{max_b_dyn:,})...",
                 )
                 part_b_clean = self._write_part_with_length_gate(
                     session,
                     ma_id,
                     "B",
                     locked_title,
-                    min_b,
-                    max_b,
-                    target_b,
+                    min_b_dyn,
+                    max_b_dyn,
+                    target_b_dyn,
                     base_progress=50.0,
                     step3_context=step3_out,
-                    prev_part_tail=part_a_clean[-450:],
+                    prev_part_tail=part_a_clean[-1200:],
                     min_acceptable_chars=accept_b,
                     in_same_writer_chat=reuse_chat2_for_b,
+                    stage_handoff=handoff_a,
+                    dynamic_budget_note=dyn_note_b,
                 )
                 part_b_clean = self._condense_stage_in_writer_chat(
                     session, ma_id, channel_key_script, "B", part_b_clean
@@ -13062,13 +13827,20 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                 part_b_file.write_text(part_b_clean, encoding="utf-8")
                 count_b = pure_char_count(part_b_clean)
 
+            handoff_b = self._extract_stage_handoff_state(
+                part_b_clean, "B", count_a + count_b
+            )
+            min_c_dyn, max_c_dyn, target_c_dyn, dyn_note_c = self._recalibrate_next_stage_budget(
+                channel_key_script, "C", count_a + count_b
+            )
+
             self._update_idea_record(
                 ma_id,
                 pure_char_count=count_a + count_b,
                 has_script=False,
                 completed_parts_count=2,
                 missing_parts=["C"],
-                current_step=f"New Chat #2: Xong STAGE A+B ([PART 1]–[PART 5]: {count_a + count_b:,} chữ) -> Tiếp tục STAGE C...",
+                current_step=f"New Chat #2: Xong STAGE A+B ([PART 1]–[PART 5]: {count_a + count_b:,} chữ) -> Tiếp tục STAGE C ({min_c_dyn:,}–{max_c_dyn:,})...",
             )
 
             # --- 4.3: STAGE C ([PART 6] & [PART 7]) ---
@@ -13076,12 +13848,6 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                 part_c_clean = ensure_part_headings_for_stage(
                     part_c_file.read_text(encoding="utf-8", errors="ignore"), "C"
                 )
-                if pure_char_count(part_c_clean) > max_c:
-                    part_c_clean = trim_japanese_to_max_pure_chars(
-                        part_c_clean, max_pure_chars=max_c - 150
-                    )
-                    part_c_clean = ensure_part_headings_for_stage(part_c_clean, "C")
-                    part_c_file.write_text(part_c_clean, encoding="utf-8")
                 count_c = pure_char_count(part_c_clean)
             else:
                 reuse_chat2_for_c = chat2_writer_opened
@@ -13092,21 +13858,23 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                     ma_id,
                     has_script=False,
                     status="RUNNING",
-                    current_step=f"New Chat #2 (Skill 03 Stage C): Đang viết nối tiếp [PART 6]–[PART 7] (Đã có {count_a + count_b:,} chữ)...",
+                    current_step=f"New Chat #2 (Skill 03 Stage C): Đang viết nối tiếp [PART 6]–[PART 7] (Đã có {count_a + count_b:,} chữ, mục tiêu Stage C {min_c_dyn:,}–{max_c_dyn:,})...",
                 )
                 part_c_clean = self._write_part_with_length_gate(
                     session,
                     ma_id,
                     "C",
                     locked_title,
-                    min_c,
-                    max_c,
-                    target_c,
+                    min_c_dyn,
+                    max_c_dyn,
+                    target_c_dyn,
                     base_progress=64.0,
                     step3_context=step3_out,
-                    prev_part_tail=part_b_clean[-450:],
+                    prev_part_tail=part_b_clean[-1200:],
                     min_acceptable_chars=accept_c,
                     in_same_writer_chat=reuse_chat2_for_c,
+                    stage_handoff=f"{handoff_a}\n{handoff_b}".strip(),
+                    dynamic_budget_note=dyn_note_c,
                 )
                 part_c_clean = self._condense_stage_in_writer_chat(
                     session, ma_id, channel_key_script, "C", part_c_clean
@@ -13143,6 +13911,7 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                 stage_texts,
                 step3_out,
                 script_part_files,
+                max_rounds=8,
             )
             part_a_headed = stage_texts["A"]
             part_b_headed = stage_texts["B"]
@@ -13704,10 +14473,12 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
         override_qa: bool = False,
         voice_only: bool = False,
         thumb_mode: Optional[str] = None,
+        auto_generate_missing_thumbs: bool = True,
     ) -> Dict[str, Any]:
         """
-        Đẩy trực tiếp 1 hoặc nhiều dự án ĐÃ CÓ KỊCH BẢN sang chạy Voice (và Render Video MP4 nếu `voice_only=False`)
-        mà TUYỆT ĐỐI KHÔNG MỞ CHROME và KHÔNG VIẾT LẠI KỊCH BẢN.
+        Đẩy trực tiếp 1 hoặc nhiều dự án ĐÃ CÓ KỊCH BẢN sang chạy Voice (và Render Video MP4 nếu `voice_only=False`).
+        Nếu dự án thiếu `THUMBNAIL.png` hoặc `THUMBNAIL-NENXANH.png` và có tài khoản ChatGPT đã đăng nhập,
+        tự động mở ChatGPT tạo bù ảnh trước khi render (chỉ chặn nếu không có nick đăng nhập hoặc tạo ảnh thất bại).
         """
         self._sync_projects_disk_state()
         ideas = self.load_saved_ideas()
@@ -13805,6 +14576,52 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                 channel_key=job_ck,
                 thumb_mode=job_tm,
             )
+            has_local_profiles = (self.root_dir / "config" / "browser_profiles").exists()
+            if (
+                not preq.get("ok")
+                and auto_generate_missing_thumbs
+                and has_local_profiles
+                and not self.should_stop
+            ):
+                has_logged_acc = False
+                try:
+                    acc_diag = ensure_all_saved_chatgpt_accounts_open(
+                        run_hidden=False, open_browsers_now=False
+                    )
+                    has_logged_acc = bool(
+                        acc_diag.get("logged_in")
+                        if isinstance(acc_diag, dict)
+                        else acc_diag
+                    )
+                except Exception:
+                    has_logged_acc = False
+                if has_logged_acc:
+                    missing_try = ", ".join(preq.get("missing") or ["THUMBNAIL.png"])
+                    self._emit(
+                        current_ma_id=mid,
+                        current_step=f"🎨 Tự động mở ChatGPT tạo bù {missing_try} trước khi Render...",
+                        progress=15.0,
+                        message=f"[{mid}] 🎨 Thiếu {missing_try} trước khi Render -> Tự động mở ChatGPT tạo bù...",
+                    )
+                    try:
+                        self.ensure_project_thumbnail_with_failover_sync(
+                            ma_id=mid,
+                            thumb_mode=job_tm,
+                            max_failover_rounds=2,
+                        )
+                    except Exception as e_auto_th:
+                        log_warn(
+                            "VIDEO",
+                            f"[{mid}] Tự tạo bù thumbnail trước Render thất bại: {e_auto_th}",
+                            project_id=mid,
+                        )
+                    preq = check_render_thumbnail_prerequisites(
+                        proj_dir=proj_dir,
+                        final_proj_dir=final_proj_dir,
+                        proj_name=mid,
+                        channel_key=job_ck,
+                        thumb_mode=job_tm,
+                    )
             if not preq.get("ok"):
                 missing_lbl = ", ".join(preq.get("missing") or ["THUMBNAIL.png"])
                 skipped_missing_thumbnails.append(f"{mid} (thiếu {missing_lbl})")
@@ -15086,7 +15903,9 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
             completed_ok = False
             try:
                 session = ChatGPTWebSession(
-                    project_id=f"{ma_id}_THUMB", acc_id=preferred_acc_id
+                    project_id=f"{ma_id}_THUMB",
+                    acc_id=preferred_acc_id,
+                    prefer_plus=True,
                 )
                 ideas = self.load_saved_ideas()
                 idea = next((it for it in ideas if it.get("ma_id") == ma_id), {}) or {
@@ -15151,9 +15970,9 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                         progress=45.0,
                         message=f"[{ma_id}] 🟩 Đang mở ChatGPT lấy {existing_main.name} làm ảnh tham chiếu (mặt & trang phục) để vẽ Ảnh Nền Xanh Khổ Dọc 9:16...",
                     )
-                    if not session.open_session_tab():
+                    if not session.open_session_tab() and not session.switch_to_another_account():
                         raise RuntimeError(
-                            f"Không mở được khung chat trên {session.cfg['label']}."
+                            f"Không mở được khung chat trên {session.cfg['label']} hoặc các tài khoản dự phòng."
                         )
                     g_bytes = self._generate_chatgpt_9_16_green_from_reference_sync(
                         session=session,
@@ -15231,9 +16050,9 @@ Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoản
                     progress=15.0,
                     message=f"[{ma_id}] 🎨 Đang mở trình duyệt {session.cfg['label']} để tạo & đánh giá 1 Thumbnail (6 dòng chữ)...",
                 )
-                if not session.open_session_tab():
+                if not session.open_session_tab() and not session.switch_to_another_account():
                     raise RuntimeError(
-                        f"Không mở được khung chat trên {session.cfg['label']}."
+                        f"Không mở được khung chat trên {session.cfg['label']} hoặc các tài khoản dự phòng."
                     )
 
                 paths = self.generate_and_verify_three_thumbnails_sync(

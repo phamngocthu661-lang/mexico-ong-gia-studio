@@ -1275,6 +1275,68 @@ class ProductionPipeline:
                         channel_key=job_channel_key,
                         thumb_mode=job.get("thumb_mode"),
                     )
+                    has_local_profiles = (self.root_dir / "config" / "browser_profiles").exists()
+                    if (
+                        not preq_early.get("ok")
+                        and has_local_profiles
+                        and not getattr(self, "disable_auto_thumb_failover", False)
+                    ):
+                        # Nếu trên máy có nick ChatGPT đang đăng nhập hợp lệ -> tự mở vẽ bù ảnh thiếu tuần tự rồi render luôn
+                        try:
+                            from backend.adas_script_engine import (
+                                ADASScriptEngine,
+                                ensure_all_saved_chatgpt_accounts_open,
+                            )
+
+                            logged_raw = ensure_all_saved_chatgpt_accounts_open(
+                                run_hidden=False, open_browsers_now=False
+                            )
+                            logged_now = (
+                                logged_raw.get("logged_in")
+                                if isinstance(logged_raw, dict)
+                                else logged_raw
+                            )
+                            if logged_now:
+                                missing_now = ", ".join(
+                                    preq_early.get("missing") or ["THUMBNAIL.png"]
+                                )
+                                log_info(
+                                    f"[{proj_name}] 🎨 Phát hiện thiếu {missing_now} trước Voice/Render -> Tự động gọi ChatGPT vẽ bù...",
+                                    category="RENDER",
+                                    project_id=proj_name,
+                                )
+                                self._update_job_card_status(
+                                    proj_name,
+                                    "VIDEO_RENDERING",
+                                    f"🎨 Đang tự vẽ bù {missing_now} trước khi Render...",
+                                )
+                                thumb_fill_lock = getattr(
+                                    self, "_auto_thumb_fill_lock", None
+                                )
+                                if thumb_fill_lock is None:
+                                    thumb_fill_lock = threading.Lock()
+                                    self._auto_thumb_fill_lock = thumb_fill_lock
+                                with thumb_fill_lock:
+                                    eng_auto_th = ADASScriptEngine(root_dir=self.root_dir)
+                                    eng_auto_th.ensure_project_thumbnail_with_failover_sync(
+                                        proj_name,
+                                        max_failover_rounds=2,
+                                        thumb_mode=job.get("thumb_mode"),
+                                    )
+                                preq_early = _renderer_preq_mod.check_render_thumbnail_prerequisites(
+                                    proj_dir=proj_dir,
+                                    final_proj_dir=final_proj_dir,
+                                    proj_name=proj_name,
+                                    channel_key=job_channel_key,
+                                    thumb_mode=job.get("thumb_mode"),
+                                )
+                        except Exception as e_auto_th:
+                            log_warn(
+                                "RENDER",
+                                f"[{proj_name}] Không thể tự vẽ bù ảnh trước Render: {e_auto_th}",
+                                project_id=proj_name,
+                            )
+
                     if not preq_early.get("ok"):
                         missing_early = ", ".join(
                             preq_early.get("missing") or ["THUMBNAIL.png"]

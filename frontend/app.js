@@ -566,6 +566,16 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
+    // 1B-2. Nút Tự Chọn Folder Lưu Tạm (SSD Staging)
+    const btnAdasPickSsd = document.getElementById("btn-adas-pick-ssd-staging-dir");
+    if (btnAdasPickSsd) {
+      btnAdasPickSsd.addEventListener("click", () => {
+        browseAndPickFolder(btnAdasPickSsd, "Chọn Thư Mục Lưu Tạm Khi Render (SSD Staging)", async (pickedPath) => {
+          await updateStoragePathsBackend({ ssd_staging_dir: pickedPath, use_ssd_staging: true }, true);
+        });
+      });
+    }
+
     // 1C. Nhấn Enter trên các ô nhập đường dẫn Folder Project / Nơi Chứa Video Cuối
     const adasProjInput = document.getElementById("adas-projects-dir-input");
     const renderProjInput = document.getElementById("render-projects-dir");
@@ -4487,9 +4497,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const readyRender = pending.length - needWrite;
         const ok = confirm(
           `▶️ CHẠY TIẾP A ➔ Z cho ${pending.length} tiêu đề chưa có Video MP4:\n\n` +
-          `• ${needWrite} mã chưa xong kịch bản -> Viết tiếp phần còn thiếu (giữ phần đã viết)\n` +
-          `• ${readyRender} mã đã có kịch bản -> Kiểm tra / sửa lại nếu chưa đạt, rồi Voice + Render MP4` +
-          (needThumb ? `\n• ${needThumb} mã còn thiếu Thumbnail -> Vẽ bù trước khi Render` : "") +
+          `• ${needWrite} mã chưa xong kịch bản -> Viết tiếp từng Part & tự kiểm tra độ dài ngay sau mỗi chặng\n` +
+          `• ${readyRender} mã đã có kịch bản -> Cân độ dài về chuẩn, sửa QA 2 vòng (1 Logic + 1 Truyền cảm), rồi Voice + Render MP4` +
+          (needThumb ? `\n• ${needThumb} mã còn thiếu Thumbnail/Nền Xanh -> Tự động vẽ bù trước khi Render` : "") +
           `\n\nMã: ${pending.map((it) => it.ma_id).join(", ")}\n\nBắt đầu chạy?`
         );
         if (!ok) return;

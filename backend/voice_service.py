@@ -1484,12 +1484,13 @@ _FAST_MAYBE_LEAK_RE = _re_mod.compile(
 )
 
 
-def strip_leaked_titles_and_metadata(raw_text: str):
+def strip_leaked_titles_and_metadata(raw_text: str, strip_part_headings: bool = True):
     """
-    Quét, ghi nhận và xóa sạch 100% các dòng [LOCKED_TITLE], [CURRENT_FINAL_TITLE], [PART 1]..[PART 7],
-    bao gồm cả phần câu tiêu đề bị tách thành 2–4 dòng kế tiếp, cũng như các dòng nhãn kỹ thuật
-    (STEP 3/4/5, STAGE_A_COUNT_GATE, PART_1_CHAR_COUNT, <CodeBlock>, <WritingBlock>, CONTINUITY:, ENDING:...)
-    để tuyệt đối không bao giờ bị lọt vào quá trình tạo Voice (TTS) hay Phụ đề Video (Render MP4).
+    Quét, ghi nhận và xóa sạch 100% các dòng [LOCKED_TITLE], [CURRENT_FINAL_TITLE],
+    cũng như các dòng nhãn kỹ thuật (STEP 3/4/5, STAGE_A_COUNT_GATE, PART_1_CHAR_COUNT,
+    <CodeBlock>, <WritingBlock>, CONTINUITY:, ENDING:...).
+    Khi `strip_part_headings=True` (mặc định cho TTS/Render), xóa cả `[PART 1]..[PART 7]`;
+    khi `strip_part_headings=False`, bảo toàn nguyên vẹn `[PART 1]..[PART 7]` trên file Stage.
     """
     import re
 
@@ -1546,9 +1547,14 @@ def strip_leaked_titles_and_metadata(raw_text: str):
             i += 1
             continue
 
-        # Xóa nhãn [PART 1] .. [PART 7] để không bao giờ đọc vào TTS/Subtitles
-        if standalone_part_heading_re.match(s_clean):
-            removed.append((i + 1, s))
+        # Nhãn [PART 1] .. [PART 7]: xóa khi chuẩn bị đọc TTS, bảo toàn khi giữ cấu trúc file Stage
+        m_part_keep = standalone_part_heading_re.match(s_clean)
+        if m_part_keep:
+            if strip_part_headings:
+                removed.append((i + 1, s))
+            else:
+                m_num = re.search(r"([1-7])", s_clean)
+                kept.append(f"[PART {m_num.group(1)}]" if m_num else s_clean)
             i += 1
             continue
 

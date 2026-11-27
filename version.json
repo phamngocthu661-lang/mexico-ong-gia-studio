@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.8",
-  "build_number": 228,
-  "released_at": "2026-11-27 15:24:45",
+  "version": "V2.2.9",
+  "build_number": 229,
+  "released_at": "2026-11-28 00:58:40",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.2.8 (Build #228): Thêm nút Chạy Tiếp A→Z cho tiêu đề đã có (viết tiếp → thumbnail → voice → render, không phụ thuộc ô Mode); kịch bản quá dài hoặc chưa đạt QA được tự viết lại / sửa lại thay vì bị chặn im lặng; nút Viết lại xóa sạch bản cũ; báo đúng khi nick ChatGPT bị đăng xuất và tự gửi lại lệnh khi ChatGPT không nhận; chỉ báo Hoàn tất khi xong thật; khóa an toàn nút Xóa."
+  "changelog": "V2.2.9 (Build #229): Đồng bộ prompt Step 2 sang Stage A/B/C và ngân sách động; cân độ dài từng [PART] 70k-80k; QA 2 vòng (Logic + Truyền cảm); sửa kịch bản cũ giữ cốt truyện; ưu tiên nick Plus & tự bù Thumbnail/Nền xanh trước Render; thêm chọn SSD Staging."
 }

@@ -20,7 +20,7 @@ Opening action: a specific betrayal while father cannot simply walk away; he res
 | 6 | Earned consequence, confrontation, witness/payoff | Prior seeds pay off; no instant ownership miracles |
 | 7 | Human aftermath and irreversible boundary | Closure by choices; restitution or realistic separation |
 
-Each Part: 8–12 scene beats with location, time, POV, objective, opposing intention, evidence, friction, new information, specific hook exit. Vary dramatic mode (quiet personal vs public vs factual) so not all Parts recycle a phone call. Provide 5 key first-person dialogue lines in es-MX but DO NOT draft screenplay.
+Each Part: 5–6 focused scene beats (35–42 scenes total across 7 Parts so prose naturally fits 70,000–80,000 body characters) with location, time, POV, objective, opposing intention, evidence, friction, new information, specific hook exit. Vary dramatic mode (quiet personal vs public vs factual) so not all Parts recycle a phone call. Provide 5 key first-person dialogue lines in es-MX but DO NOT draft screenplay. Do NOT emit HTML/Svelte tags (`<grid>`, `<card>`, `{#each}`).
 
 ## Mandatory canon ledger
 Names (given+family), ages and relations, chronic conditions and recovery limitations, assets and true current owner, pension/monthly expense, paperwork timeline, authorized access, evidence provenance (who had paper/video, when, how), witnesses, protagonist's knowledge vs audience's knowledge, antagonist incentives, educational/household dependencies, calendar, outstanding promises, legal process timeline, seed/payoff map and loopholes. Avoid legal detail unsupported by fact-check; annotate verification issue rather than inventing.
@@ -44,7 +44,7 @@ Later STEP4/STEP5 use TWO frozen audits and TWO targeted repairs: Round1 logic t
 
 ## V4 STEP2 — Mandatory Story Blueprint & Creative Selector
 Read `references/PADRE_MX_CREATIVE_DNA_V4.md` and build `STORY_BLUEPRINT_V4.json` following `references/STORY_BLUEPRINT_V4_TEMPLATE.json`. Choose one Primary DNA, 1–2 Secondary DNA, one Story Mode, one Hook Pattern and a seven-Part escalation path. Compare candidate twist/evidence against known local project signatures; do not rely on the title alone.
-Each Part must carry eight–twelve distinct scenes, two or more genuine retention beats (new action/proof/consequence), explicit entry/exit causality and a change in character cost. Plan at least three setup→payoff pairs with payoff after seed. Record character knowledge, evidence provenance and time constraints as separate structured lists. A generic slogan is NOT a retention beat.
+Each Part must carry five–six distinct, tightly focused scenes (~10,000–11,500 body characters per Part), two or more genuine retention beats (new action/proof/consequence), explicit entry/exit causality and a change in character cost. Plan at least three setup→payoff pairs with payoff after seed. Record character knowledge, evidence provenance and time constraints as separate structured lists. A generic slogan is NOT a retention beat.
 After saving true `CURRENT_FINAL_OUTLINE.txt` and the Blueprint, run:
 ```
 python scripts/padre_v4_planning.py blueprint --blueprint STORY_BLUEPRINT_V4.json --title "LOCKED_TITLE" --outline CURRENT_FINAL_OUTLINE.txt --memory PADRE_MX_PROJECT_MEMORY_V4.json
