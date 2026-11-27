@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.7",
-  "build_number": 227,
-  "released_at": "2026-11-27 12:26:40",
+  "version": "V2.2.8",
+  "build_number": 228,
+  "released_at": "2026-11-27 15:24:45",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.2.7 (Build #227): Tăng tốc viết kịch bản ChatGPT — không khóa oan nick 30 phút khi khung chat tải chậm, đổi nick thì viết tiếp phần đã có thay vì làm lại từ đầu, giới hạn độ dài để ChatGPT không viết dài gấp 2-3 lần, tự biên tập độ dài hiệu quả hơn và báo rõ khi kịch bản chưa đạt kiểm định."
+  "changelog": "V2.2.8 (Build #228): Thêm nút Chạy Tiếp A→Z cho tiêu đề đã có (viết tiếp → thumbnail → voice → render, không phụ thuộc ô Mode); kịch bản quá dài hoặc chưa đạt QA được tự viết lại / sửa lại thay vì bị chặn im lặng; nút Viết lại xóa sạch bản cũ; báo đúng khi nick ChatGPT bị đăng xuất và tự gửi lại lệnh khi ChatGPT không nhận; chỉ báo Hoàn tất khi xong thật; khóa an toàn nút Xóa."
 }
