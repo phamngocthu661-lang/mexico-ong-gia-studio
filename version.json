@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.6",
-  "build_number": 226,
-  "released_at": "2026-11-26 21:40:06",
+  "version": "V2.2.7",
+  "build_number": 227,
+  "released_at": "2026-11-27 12:26:40",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.2.6 (Build #226): Bổ sung đầy đủ nút kích hoạt chế độ Viết KB + Thumbnail + Tạo Voice GPU (Chưa Render) ở cả bảng điều khiển, thanh công cụ và từng thẻ dự án; khóa cứng tuyệt đối không gửi lệnh vào tài khoản ChatGPT chưa đăng nhập hoặc đã mất phiên đăng nhập."
+  "changelog": "V2.2.7 (Build #227): Tăng tốc viết kịch bản ChatGPT — không khóa oan nick 30 phút khi khung chat tải chậm, đổi nick thì viết tiếp phần đã có thay vì làm lại từ đầu, giới hạn độ dài để ChatGPT không viết dài gấp 2-3 lần, tự biên tập độ dài hiệu quả hơn và báo rõ khi kịch bản chưa đạt kiểm định."
 }
