@@ -365,6 +365,10 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     class DeleteIdeaRequest(BaseModel):
         ma_id: str
+        delete_from_disk: bool = False
+
+    class DeleteAllIdeasRequest(BaseModel):
+        delete_from_disk: bool = False
 
     class SaveStep2TemplateRequest(BaseModel):
         template_text: str
@@ -855,13 +859,23 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/adas/ideas/delete")
     def api_adas_delete_idea(req: DeleteIdeaRequest):
-        ideas = adas_engine.delete_idea(req.ma_id)
-        return {"success": True, "ideas": ideas, "deleted_id": req.ma_id}
+        ideas = adas_engine.delete_idea(
+            req.ma_id, delete_from_disk=bool(req.delete_from_disk)
+        )
+        summary = getattr(adas_engine, "_last_delete_summary", {})
+        return {
+            "success": True,
+            "ideas": ideas,
+            "deleted_id": req.ma_id,
+            "delete_summary": summary,
+        }
 
     @app.post("/api/adas/ideas/delete-all")
-    def api_adas_delete_all_ideas():
-        ideas = adas_engine.delete_all_ideas()
-        return {"success": True, "ideas": ideas}
+    def api_adas_delete_all_ideas(req: Optional[DeleteAllIdeasRequest] = None):
+        do_disk = bool(req.delete_from_disk) if req is not None else False
+        ideas = adas_engine.delete_all_ideas(delete_from_disk=do_disk)
+        summary = getattr(adas_engine, "_last_delete_summary", {})
+        return {"success": True, "ideas": ideas, "delete_summary": summary}
 
     @app.post("/api/adas/ideas/restore")
     @app.post("/api/adas/ideas/sync-folder")

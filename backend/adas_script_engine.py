@@ -2144,13 +2144,26 @@ class ChatGPTWebSession:
                     if (href.startsWith('about:blank') || (!href.includes('chatgpt.com') && !href.includes('openai.com'))) {{
                         return {{ blank: true, ready: false }};
                     }}
-                    return {{ blank: false, ready: Boolean(document.querySelector('{composer_sel}')) }};
+                    const onLogin = /\\/auth\\/login|auth\\.openai\\.com|\\/log-in/i.test(href);
+                    return {{ blank: false, login: onLogin, ready: !onLogin && Boolean(document.querySelector('{composer_sel}')) }};
                 }})()
                 """,
                 await_promise=False,
                 timeout=3.0,
             )
             if isinstance(st, dict):
+                # ChatGPT đã chuyển hẳn sang trang đăng nhập (phiên hết hạn): báo đăng xuất ngay, không chờ khung chat.
+                if st.get("login") and tick >= 4:
+                    _invalidate_account_login_state(self.acc_id, port=self.port)
+                    try:
+                        self.close_session_tab(keep_open=True)
+                    except Exception:
+                        pass
+                    raise AccountNotLoggedInError(
+                        self.acc_id,
+                        f"Tài khoản {self.cfg['label']} đã bị ChatGPT đăng xuất (đang ở trang đăng nhập). "
+                        f"Hãy mở {self.cfg['label']} và đăng nhập lại!",
+                    )
                 if st.get("ready"):
                     time.sleep(0.4)
                     is_auth_live = False
@@ -2872,6 +2885,17 @@ class ChatGPTWebSession:
         last_text = ""
         stable_ticks = 0
         started_responding = False
+        # Lệnh báo "đã gửi" nhưng không xuất hiện trên trang (lỗi thật 27/11: chờ 15 phút vô ích) -> gửi lại 1 lần sau 75s.
+        resend_budget = 0 if already_streaming else 1
+        # So bằng chữ cái/chữ số để markdown hiển thị (**, #, `) không làm lệch phép so sánh.
+        prompt_head_norm = re.sub(r"[\W_]+", "", (prompt_text or "").lower())[:30]
+        last_user_head_js = """
+        (() => {
+            const us = document.querySelectorAll('[data-message-author-role="user"]');
+            const last = us.length ? (us[us.length - 1].innerText || '') : '';
+            return last.replace(/\\s+/g, ' ').trim().slice(0, 200);
+        })()
+        """
 
         poll_js = f"""
         (() => {{
@@ -3008,6 +3032,33 @@ class ChatGPTWebSession:
                         if progress_cb:
                             progress_cb(step_label, len(backend_md))
                         return backend_md
+
+                # Sau 75 giây mà tin nhắn cuối của người dùng trên trang không phải lệnh vừa gửi -> lệnh đã mất, gửi lại 1 lần.
+                if (
+                    resend_budget > 0
+                    and not started_responding
+                    and not is_streaming
+                    and prompt_head_norm
+                    and (time.time() - start_t) > 75
+                ):
+                    last_user_head = _cdp_eval_js(
+                        self.ws_url, last_user_head_js, await_promise=False, timeout=4.0
+                    )
+                    if isinstance(last_user_head, str) and not re.sub(
+                        r"[\W_]+", "", last_user_head.lower()
+                    ).startswith(prompt_head_norm):
+                        resend_budget -= 1
+                        log_warn(
+                            f"[{self.project_id}] Lệnh {step_label} không xuất hiện trên ChatGPT ({self.cfg['label']}) sau 75 giây -> Gửi lại 1 lần...",
+                            category="CHROME",
+                            project_id=self.project_id,
+                        )
+                        with _PORT_INJECT_LOCKS.setdefault(self.port, threading.Lock()):
+                            _cdp_eval_js(
+                                self.ws_url, inject_js, await_promise=True, timeout=45.0
+                            )
+                        start_t = time.time()
+                        continue
 
                 # Nếu sau 25 giây vẫn chưa thấy phản hồi mới, kiểm tra xem nút Send còn đó không và bấm lại
                 if (
@@ -5315,27 +5366,8 @@ class ADASScriptEngine:
                                 d_f = p_sub / fn_up
                                 if r_f.exists() and not d_f.exists():
                                     shutil.copy2(r_f, d_f)
-                            shutil.rmtree(p_renders, ignore_errors=True)
                         except Exception:
                             pass
-                    # Xóa các bản ảnh trùng lặp nếu đã có file chuẩn THUMBNAIL.png / THUMBNAIL-NENXANH.png
-                    if (p_sub / "THUMBNAIL.png").exists():
-                        for dup_th in (
-                            p_sub / f"{mid}_THUMBNAIL_1.png",
-                            p_sub / "CHAR_REFERENCE_CROP.png",
-                        ):
-                            if dup_th.exists():
-                                try:
-                                    dup_th.unlink()
-                                except Exception:
-                                    pass
-                    if (p_sub / "THUMBNAIL-NENXANH.png").exists():
-                        dup_gr = p_sub / f"{mid}_THUMBNAIL_NENXANH.png"
-                        if dup_gr.exists():
-                            try:
-                                dup_gr.unlink()
-                            except Exception:
-                                pass
 
             if f_root == p_root or not f_root.exists():
                 return
@@ -5363,7 +5395,6 @@ class ADASScriptEngine:
                                 or item.stat().st_size > dest_it.stat().st_size
                             ):
                                 shutil.copy2(item, dest_it)
-                        shutil.rmtree(misplaced_assets, ignore_errors=True)
                     except Exception:
                         pass
 
@@ -5477,29 +5508,10 @@ class ADASScriptEngine:
                                     shutil.copy2(ts_src, ts_dst)
                                     break
 
-                        allowed_6 = {
-                            f"{mid}_master.mp4",
-                            f"{mid}_KICH_BAN.txt",
-                            f"{mid}_SEO.txt",
-                            f"{mid}_THUMBNAIL.png",
-                            f"{mid}.srt",
-                            f"{mid}_TIMESTAMPS.txt",
-                        }
-                        for it_f in list(sub.iterdir()):
-                            try:
-                                if it_f.is_dir():
-                                    shutil.rmtree(it_f, ignore_errors=True)
-                                elif it_f.name not in allowed_6:
-                                    it_f.unlink()
-                            except Exception:
-                                pass
+                        # Không tự ý xóa file hay thư mục con bên trong final_video_dir (ngăn 100% rủi ro mất dữ liệu người dùng)
                     except Exception:
                         pass
-                elif not has_finished_mp4 and target_proj.exists():
-                    try:
-                        shutil.rmtree(sub, ignore_errors=True)
-                    except Exception:
-                        pass
+                # Tuyệt đối không xóa `sub` ở final_video_dir trong tác vụ nền!
         except Exception:
             pass
 
@@ -5618,12 +5630,19 @@ class ADASScriptEngine:
             is_sep = self.final_video_dir.resolve() != self.projects_dir.resolve()
         except Exception:
             is_sep = False
+        link_info = self._inspect_path_link_safety(
+            self.projects_dir, check_external=True
+        )
         return {
             "projects_dir": str(self.projects_dir),
             "final_video_dir": str(self.final_video_dir),
             "ssd_staging_dir": str(self.ssd_staging_dir),
             "use_ssd_staging": bool(getattr(self, "use_ssd_staging", True)),
             "is_separate_final_dir": is_sep,
+            "projects_dir_is_linked_external": bool(
+                link_info.get("is_protected_link")
+            ),
+            "projects_dir_link_reasons": list(link_info.get("reasons") or []),
         }
 
     def set_storage_paths(
@@ -5834,7 +5853,6 @@ class ADASScriptEngine:
                         nm = d.name.strip()
                         if (d / ".deleted_by_user").exists():
                             self._mark_ids_deleted([nm])
-                            self._force_rmtree_path(d)
                             continue
                         if (
                             nm
@@ -5996,37 +6014,225 @@ class ADASScriptEngine:
                 pass
         return cur_max
 
-    def _force_rmtree_path(self, target_path: Path) -> bool:
-        """Xóa triệt để thư mục hoặc file trên Windows (tự động gỡ thuộc tính Read-Only nếu có)."""
-        if not target_path.exists():
-            return True
+    def _inspect_path_link_safety(
+        self, target_path: Path, check_external: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Kiểm tra toàn diện xem đường dẫn có liên kết local / thư mục ngoài / mạng LAN / đồng bộ đám mây /
+        Symlink / Windows Junction (Reparse Point) hay không.
+        Nếu thuộc bất kỳ nhóm nào -> BẮT BUỘC KHÓA BẢO VỆ (cấm tuyệt đối xóa dữ liệu bên trong).
+        """
+        reasons: List[str] = []
+        raw_str = str(target_path)
+        norm_str = raw_str.replace("/", "\\")
 
-        def _on_rm_error(func, path_str, _exc_info):
+        # 1. Đường dẫn mạng UNC (\\MayKhac\Share\...) hoặc ổ mạng ánh xạ (DRIVE_REMOTE)
+        is_network = norm_str.startswith("\\\\")
+        if not is_network and os.name == "nt":
             try:
-                os.chmod(path_str, 0o666)
-                func(path_str)
+                drive, _ = os.path.splitdrive(os.path.abspath(raw_str))
+                if drive:
+                    drive_root = drive + "\\"
+                    # DRIVE_REMOTE = 4
+                    if ctypes.windll.kernel32.GetDriveTypeW(drive_root) == 4:
+                        is_network = True
             except Exception:
                 pass
+        if is_network:
+            reasons.append("Mạng LAN / Ổ đĩa chia sẻ từ xa (UNC/Remote)")
 
-        for _ in range(3):
+        # 2. Symlink / Windows Junction / Mount Point (FILE_ATTRIBUTE_REPARSE_POINT = 0x400) trên chính đường dẫn hoặc thư mục cha
+        is_reparse = False
+        try:
+            cur: Optional[Path] = Path(raw_str)
+            visited: set[str] = set()
+            while cur is not None:
+                c_str = str(cur)
+                if c_str in visited:
+                    break
+                visited.add(c_str)
+                if cur.is_symlink() or os.path.islink(c_str):
+                    is_reparse = True
+                    break
+                if os.name == "nt" and cur.exists():
+                    attrs = ctypes.windll.kernel32.GetFileAttributesW(c_str)
+                    if attrs != -1 and (attrs & 0x400):
+                        is_reparse = True
+                        break
+                parent = cur.parent
+                if parent == cur:
+                    break
+                cur = parent
+        except Exception:
+            pass
+        if is_reparse:
+            reasons.append("Liên kết Symlink / Junction / Reparse Point")
+
+        # 3. Thư mục đồng bộ qua mạng/máy khác (OneDrive, Google Drive, Syncthing, Dropbox, Nextcloud, iCloud...)
+        is_synced = False
+        sync_tokens = (
+            "onedrive",
+            "google drive",
+            "googledrive",
+            "drivefs",
+            "dropbox",
+            "icloud",
+            "syncthing",
+            "nextcloud",
+            "owncloud",
+            "megasync",
+            "pcloud",
+            "zalo received",
+        )
+        try:
+            check_parts = [p.lower() for p in Path(os.path.abspath(raw_str)).parts]
+            if any(any(tok in part for tok in sync_tokens) for part in check_parts):
+                is_synced = True
+            if not is_synced:
+                # Kiểm tra file dấu hiệu Syncthing/Dropbox ở các cấp cha
+                probe = Path(os.path.abspath(raw_str))
+                for _ in range(5):
+                    if (
+                        (probe / ".stfolder").exists()
+                        or (probe / ".dropbox").exists()
+                        or (probe / ".owncloudsync.log").exists()
+                    ):
+                        is_synced = True
+                        break
+                    if probe.parent == probe:
+                        break
+                    probe = probe.parent
+        except Exception:
+            pass
+        if is_synced:
+            reasons.append("Thư mục đồng bộ đám mây / P2P giữa các máy")
+
+        # 4. Nằm ngoài thư mục `root_dir/projects` nội bộ của bản app hiện tại (hoặc chính thư mục root_dir/projects là Symlink/Junction!)
+        is_external = False
+        if check_external:
             try:
-                if target_path.is_dir():
-                    shutil.rmtree(target_path, onerror=_on_rm_error)
-                else:
-                    os.chmod(str(target_path), 0o666)
-                    target_path.unlink(missing_ok=True)
-                if not target_path.exists():
-                    return True
+                raw_default_internal = self.root_dir / "projects"
+                if raw_default_internal.is_symlink() or (
+                    os.name == "nt"
+                    and raw_default_internal.exists()
+                    and (ctypes.windll.kernel32.GetFileAttributesW(str(raw_default_internal)) & 0x400)
+                ):
+                    is_reparse = True
+                    if "Liên kết Symlink / Junction / Reparse Point" not in reasons:
+                        reasons.append("Liên kết Symlink / Junction / Reparse Point")
+                if getattr(self, "projects_dir", None):
+                    raw_proj_dir = Path(self.projects_dir)
+                    if raw_proj_dir.is_symlink() or (
+                        os.name == "nt"
+                        and raw_proj_dir.exists()
+                        and (ctypes.windll.kernel32.GetFileAttributesW(str(raw_proj_dir)) & 0x400)
+                    ):
+                        is_reparse = True
+                        if "Liên kết Symlink / Junction / Reparse Point" not in reasons:
+                            reasons.append("Liên kết Symlink / Junction / Reparse Point")
+                default_internal = raw_default_internal.resolve()
+                cand_res = Path(os.path.abspath(raw_str)).resolve()
+                is_ssd = False
+                if getattr(self, "ssd_staging_dir", None):
+                    try:
+                        cand_res.relative_to(Path(self.ssd_staging_dir).resolve())
+                        is_ssd = True
+                    except Exception:
+                        is_ssd = False
+                if not is_ssd:
+                    try:
+                        cand_res.relative_to(default_internal)
+                    except Exception:
+                        is_external = True
             except Exception:
-                time.sleep(0.08)
-        return not target_path.exists()
+                is_external = True
+        if is_external:
+            reasons.append("Thư mục ngoài / Liên kết ngoài projects/ mặc định")
 
-    def _force_delete_project_folder_and_files(self, ma_id: str) -> List[str]:
+        return {
+            "is_protected_link": bool(is_network or is_reparse or is_synced or is_external),
+            "is_network": is_network,
+            "is_reparse": is_reparse,
+            "is_synced": is_synced,
+            "is_external": is_external,
+            "reasons": reasons,
+        }
+
+    def _move_path_to_recycle_bin(self, target_path: Path) -> bool:
         """
-        Khi xóa tiêu đề: CHỈ xóa thư mục dự án bên trong `projects_dir` (`projects/{ma_id}`)
-        và thư mục render tạm (`ssd_staging_dir/{ma_id}`).
-        TUYỆT ĐỐI KHÔNG XÓA bất kỳ thư mục hay file video nào bên trong `final_video_dir` (folder xuất ra video).
+        Đưa thư mục/file nội bộ vào Thùng Rác Windows (Recycle Bin) qua SHFileOperationW (FOF_ALLOWUNDO),
+        tuyệt đối KHÔNG dùng shutil.rmtree xóa vĩnh viễn và KHÔNG đi qua Symlink/Junction.
         """
+        if not target_path.exists():
+            return True
+        if target_path.is_symlink() or os.path.islink(str(target_path)):
+            return False
+        if os.name == "nt":
+            try:
+                attrs = ctypes.windll.kernel32.GetFileAttributesW(str(target_path))
+                if attrs != -1 and (attrs & 0x400):
+                    return False
+
+                class _SHFILEOPSTRUCTW(ctypes.Structure):
+                    _fields_ = [
+                        ("hwnd", ctypes.c_void_p),
+                        ("wFunc", ctypes.c_uint),
+                        ("pFrom", ctypes.POINTER(ctypes.c_wchar)),
+                        ("pTo", ctypes.c_wchar_p),
+                        ("fFlags", ctypes.c_uint16),
+                        ("fAnyOperationsAborted", ctypes.c_int),
+                        ("hNameMappings", ctypes.c_void_p),
+                        ("lpszProgressTitle", ctypes.c_wchar_p),
+                    ]
+
+                abs_p = os.path.abspath(str(target_path))
+                from_buf = ctypes.create_unicode_buffer(abs_p + "\x00")
+                op = _SHFILEOPSTRUCTW()
+                op.hwnd = None
+                op.wFunc = 3  # FO_DELETE
+                op.pFrom = from_buf
+                op.pTo = None
+                op.fFlags = 0x0040 | 0x0010 | 0x0400 | 0x0004  # FOF_ALLOWUNDO | NOCONFIRMATION | NOERRORUI | SILENT
+                op.fAnyOperationsAborted = 0
+                op.hNameMappings = None
+                op.lpszProgressTitle = None
+                res_code = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+                return res_code == 0 and not target_path.exists()
+            except Exception as e:
+                log_warn("SCRIPT", f"⚠️ Không thể đưa vào Thùng Rác ({target_path}): {e}")
+                return False
+        return False
+
+    def _force_rmtree_path(self, target_path: Path) -> bool:
+        """
+        Hàm bảo vệ tương thích ngược: từ bản vá an toàn V2.2.8, CẤM tuyệt đối `shutil.rmtree` trên dữ liệu dự án,
+        chặn mọi đường dẫn liên kết (ngoài / mạng LAN / Cloud Sync / Symlink-Junction) và chỉ đưa vào Thùng Rác nếu hợp lệ nội bộ.
+        """
+        if not target_path.exists():
+            return True
+        safety = self._inspect_path_link_safety(target_path, check_external=True)
+        if safety.get("is_protected_link"):
+            log_warn(
+                "SCRIPT",
+                f"🛡️ Đã CHẶN XÓA thư mục được bảo vệ [{target_path}] (Lý do: {', '.join(safety.get('reasons') or [])}).",
+            )
+            return False
+        return self._move_path_to_recycle_bin(target_path)
+
+    def _force_delete_project_folder_and_files(
+        self, ma_id: str, delete_from_disk: bool = False
+    ) -> List[str]:
+        """
+        Khi xóa tiêu đề trên App:
+        - Mặc định `delete_from_disk=False`: KHÔNG xóa bất kỳ thư mục hay file nào trên ổ đĩa (chỉ gỡ khỏi danh sách App).
+        - Khi `delete_from_disk=True`: KHÓA CỨNG bảo vệ mọi thư mục liên kết ngoài / LAN / Cloud Sync / Symlink-Junction
+          và mọi thư mục bên trong `final_video_dir`; chỉ đưa thư mục dự án nội bộ (`root_dir/projects/{ma_id}`)
+          hoặc staging SSD tạm vào Thùng Rác Windows.
+        """
+        if not delete_from_disk:
+            self._last_protected_link_skips = []
+            return []
+
         target = str(ma_id or "").strip()
         reserved_names = {
             "",
@@ -6067,6 +6273,8 @@ class ADASScriptEngine:
         )
 
         candidates: List[Path] = []
+        if getattr(self, "projects_dir", None):
+            candidates.append(Path(self.projects_dir) / target)
         if p_root_resolved is not None:
             candidates.extend(
                 [
@@ -6085,10 +6293,11 @@ class ADASScriptEngine:
                 pass
 
         deleted_paths: List[str] = []
+        skipped_protected: List[Dict[str, Any]] = []
         seen: set[str] = set()
         for cand in candidates:
             try:
-                c_res = cand.resolve() if cand.exists() else cand
+                c_res = cand.resolve() if cand.exists() and not cand.is_symlink() else cand
                 c_str = str(c_res)
             except Exception:
                 c_res = cand
@@ -6096,17 +6305,29 @@ class ADASScriptEngine:
             if c_str in seen:
                 continue
             seen.add(c_str)
-            # Chốt chặn an toàn: Nếu đường dẫn nằm trong thư mục xuất video riêng (final_video_dir) -> BỎ QUA, KHÔNG XÓA!
+            # Chốt chặn 1: Nếu nằm trong thư mục xuất video riêng (final_video_dir) -> BỎ QUA!
             if is_separate_final_dir and f_root_resolved is not None:
                 try:
                     c_res.relative_to(f_root_resolved)
                     continue
                 except Exception:
                     pass
-            if cand.exists():
-                if self._force_rmtree_path(cand):
+            if cand.exists() or cand.is_symlink():
+                safety = self._inspect_path_link_safety(cand, check_external=True)
+                if safety.get("is_protected_link"):
+                    skipped_protected.append(
+                        {"path": str(cand), "reasons": safety.get("reasons") or []}
+                    )
+                    log_warn(
+                        "SCRIPT",
+                        f"🛡️ KHÓA BẢO VỆ THƯ MỤC LIÊN KẾT: Không xóa [{cand}] trên đĩa ({', '.join(safety.get('reasons') or [])}).",
+                        project_id=target,
+                    )
+                    continue
+                if self._move_path_to_recycle_bin(cand):
                     deleted_paths.append(str(cand))
 
+        self._last_protected_link_skips = skipped_protected
         if hasattr(self, "_proj_dir_mtime_cache"):
             self._proj_dir_mtime_cache.pop(target, None)
         if hasattr(self, "_mp4_valid_cache"):
@@ -7125,16 +7346,9 @@ class ADASScriptEngine:
                     if not mid or mid in existing_ids:
                         continue
                     del_marker = p_dir / ".deleted_by_user"
-                    has_sc_probe, _, _ = self.has_valid_script_on_disk(mid)
-                    has_mp4_probe = self.resolve_project_mp4_path(mid) is not None
-                    if (
-                        (has_sc_probe or has_mp4_probe)
-                        and not del_marker.exists()
-                        and mid in deleted_ids
-                    ):
-                        unblocked_deleted.add(mid)
-                        deleted_ids.discard(mid)
-                    elif del_marker.exists() or mid in deleted_ids:
+                    # Tôn trọng 100% danh sách deleted_ids (khi người dùng chỉ xóa trên App nhưng giữ nguyên folder trên ổ cứng);
+                    # chỉ khôi phục lại khi người dùng bấm 'Cập nhật Folder' (force_restore_deleted=True) hoặc 'Nhập Ngoài'!
+                    if del_marker.exists() or mid in deleted_ids:
                         if force_restore_deleted:
                             if del_marker.exists():
                                 try:
@@ -7253,7 +7467,7 @@ class ADASScriptEngine:
                 effective_chars = sc_chars if has_sc else prog["partial_chars"]
 
                 has_mp4, mp4_file, mp4_reason = self.has_valid_video_mp4_on_disk(
-                    mid, sc_chars=effective_chars, auto_delete_corrupted=True
+                    mid, sc_chars=effective_chars, auto_delete_corrupted=False
                 )
                 if dir_sig != (0, 0, 0):
                     self._proj_dir_mtime_cache[mid] = dir_sig
@@ -8354,9 +8568,12 @@ class ADASScriptEngine:
                 )
             return ideas
 
-    def delete_idea(self, ma_id: str) -> List[Dict[str, Any]]:
+    def delete_idea(
+        self, ma_id: str, delete_from_disk: bool = False
+    ) -> List[Dict[str, Any]]:
         target = (ma_id or "").strip()
         deleted_paths: List[str] = []
+        protected_skips: List[Dict[str, Any]] = []
         with self.ideas_io_lock:
             before_list = self.load_saved_ideas()
             all_known = [
@@ -8374,7 +8591,6 @@ class ADASScriptEngine:
                 it for it in before_list if str(it.get("ma_id", "")).strip() != target
             ]
             self.save_ideas_list(ideas)
-            # Cập nhật đồng bộ bản backup và file phụ trong app/saved_ideas.json
             for extra_fp in (
                 self.root_dir / "app" / "saved_ideas.json",
                 self._get_persistent_appdata_dir() / "saved_ideas_backup.json",
@@ -8388,18 +8604,44 @@ class ADASScriptEngine:
                     except Exception:
                         pass
 
-            # Xóa sạch 100% folder dự án chứa các file liên quan đến mã tiêu đề đó
-            deleted_paths = self._force_delete_project_folder_and_files(target)
+            # Mặc định CHỈ xóa khỏi danh sách App, GIỮ NGUYÊN 100% folder/file trên ổ đĩa;
+            # kể cả khi bật delete_from_disk=True vẫn khóa bảo vệ thư mục liên kết ngoài/LAN/Cloud/Symlink và chỉ đưa folder nội bộ vào Thùng Rác!
+            deleted_paths = self._force_delete_project_folder_and_files(
+                target, delete_from_disk=bool(delete_from_disk)
+            )
+            protected_skips = list(getattr(self, "_last_protected_link_skips", []) or [])
+            self._last_delete_summary = {
+                "mode": "recycle_bin" if delete_from_disk else "app_list_only",
+                "removed_count": 1 if target else 0,
+                "deleted_disk_count": len(deleted_paths),
+                "deleted_paths": deleted_paths,
+                "protected_link_skipped_count": len(protected_skips),
+                "protected_skips": protected_skips,
+            }
 
-        log_info(
-            "SCRIPT",
-            f"🗑️ Đã xóa vĩnh viễn mã [{target}] và toàn bộ folder/file liên quan ({len(deleted_paths)} đường dẫn) khỏi Kho Dự Án (Còn lại {len(ideas)} mã).",
-            project_id=target,
-        )
+        if delete_from_disk and deleted_paths:
+            log_info(
+                "SCRIPT",
+                f"♻️ Đã gỡ mã [{target}] khỏi App và chuyển {len(deleted_paths)} folder nội bộ vào Thùng Rác Windows (Còn {len(ideas)} mã).",
+                project_id=target,
+            )
+        elif protected_skips:
+            log_warn(
+                "SCRIPT",
+                f"🛡️ Đã gỡ mã [{target}] khỏi danh sách App — KHÓA BẢO VỆ {len(protected_skips)} folder liên kết/ngoài, GIỮ NGUYÊN 100% file trên đĩa!",
+                project_id=target,
+            )
+        else:
+            log_info(
+                "SCRIPT",
+                f"📋 Đã gỡ mã [{target}] khỏi danh sách trên App (GIỮ NGUYÊN 100% thư mục & file trên ổ đĩa — Còn {len(ideas)} mã).",
+                project_id=target,
+            )
         return ideas
 
-    def delete_all_ideas(self) -> List[Dict[str, Any]]:
+    def delete_all_ideas(self, delete_from_disk: bool = False) -> List[Dict[str, Any]]:
         deleted_folders_cnt = 0
+        protected_skips_total: List[Dict[str, Any]] = []
         with self.ideas_io_lock:
             old_ideas = self.load_saved_ideas()
             count = len(old_ideas)
@@ -8446,16 +8688,36 @@ class ADASScriptEngine:
                     except Exception:
                         pass
 
-            for mid in set(all_ids):
-                if mid:
-                    removed = self._force_delete_project_folder_and_files(mid)
-                    if removed:
-                        deleted_folders_cnt += 1
+            if delete_from_disk:
+                for mid in set(all_ids):
+                    if mid:
+                        removed = self._force_delete_project_folder_and_files(
+                            mid, delete_from_disk=True
+                        )
+                        if removed:
+                            deleted_folders_cnt += 1
+                        skips = list(getattr(self, "_last_protected_link_skips", []) or [])
+                        if skips:
+                            protected_skips_total.extend(skips)
 
-        log_info(
-            "SCRIPT",
-            f"🗑️ Đã xóa toàn bộ {count} mã tiêu đề và {deleted_folders_cnt} folder dự án liên quan (Mốc mã lưu giữ: #{max_id}).",
-        )
+            self._last_delete_summary = {
+                "mode": "recycle_bin" if delete_from_disk else "app_list_only",
+                "removed_count": count,
+                "deleted_disk_count": deleted_folders_cnt,
+                "protected_link_skipped_count": len(protected_skips_total),
+                "protected_skips": protected_skips_total,
+            }
+
+        if delete_from_disk:
+            log_info(
+                "SCRIPT",
+                f"♻️ Đã xóa khỏi App {count} mã | Đưa {deleted_folders_cnt} folder nội bộ vào Thùng Rác | Bảo vệ {len(protected_skips_total)} folder liên kết/ngoài (Mốc mã #{max_id}).",
+            )
+        else:
+            log_info(
+                "SCRIPT",
+                f"📋 Đã gỡ toàn bộ {count} mã khỏi danh sách trên App (GIỮ NGUYÊN 100% thư mục & file trên ổ đĩa — Mốc mã lưu giữ: #{max_id}).",
+            )
         return []
 
     def _update_idea_record(self, ma_id: str, **fields):
@@ -8819,8 +9081,16 @@ class ADASScriptEngine:
         return evaluate_render_gate(record, script_text)
 
     def _script_needs_reaudit(self, ma_id: str) -> bool:
+        """Kịch bản đang chờ (PENDING) hoặc đã kiểm định nhưng CHƯA ĐẠT (NOT_READY) thì phải chạy lại để sửa.
+
+        Ngoại lệ: người dùng đã chủ động cho render bản này (human_override) thì giữ nguyên.
+        """
         record, _ = self._read_project_release_record(ma_id)
-        return bool(record and record.get("release_decision") == DECISION_PENDING)
+        if not record:
+            return False
+        if isinstance(record.get("human_override"), dict):
+            return False
+        return record.get("release_decision") in (DECISION_PENDING, DECISION_NOT_READY)
 
     def _seo_release_line(self, ma_id: str) -> str:
         record, _ = self._read_project_release_record(ma_id)
@@ -11670,6 +11940,70 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
     # ==========================================================================
     # LUỒNG CHẠY TỰ ĐỘNG CHO 1 HOẶC NHIỀU DỰ ÁN
     # ==========================================================================
+    def _condense_stage_in_writer_chat(
+        self,
+        session: Any,
+        ma_id: str,
+        channel_key: str,
+        letter: str,
+        stage_text: str,
+        max_tries: int = 3,
+    ) -> str:
+        """Chặng vừa viết dài quá trần -> yêu cầu viết lại gọn NGAY TRONG CÙNG đoạn chat viết (còn nhớ mạch truyện).
+
+        Lặp tới khi về trong trần (+5%) hoặc hết lượt; nhận cả bản rút gọn được một phần. Không bao giờ cắt cơ học.
+        """
+        cfg = get_script_length_profile(channel_key)["stages"][letter.upper()]
+        max_c, target_c = int(cfg["max"]), int(cfg["target"])
+        lang = "en" if get_script_length_profile(channel_key).get("language", "").startswith("en") else "es"
+        word_unit = "palabras" if lang == "es" else "words"
+        current = stage_text
+        for try_no in range(1, max_tries + 1):
+            size = pure_char_count(current)
+            if size <= int(max_c * 1.05) or self.should_stop:
+                break
+            words = int(round(target_c / (5.8 if lang == "es" else 5.6), -2))
+            parts = {"A": (1, 2), "B": (3, 4, 5), "C": (6, 7)}[letter.upper()]
+            labels = ", ".join(f"[PART {n}]" for n in parts)
+            self._emit(
+                message=f"[{ma_id}] ✂️ STAGE {letter} dài {size:,} ký tự (trần {max_c:,}) -> Viết lại gọn ngay trong đoạn chat viết (lượt {try_no}/{max_tries})..."
+            )
+            prompt = f"""VIẾT LẠI GỌN STAGE {letter} — BẢN VỪA VIẾT DÀI {size:,} KÝ TỰ, VƯỢT TRẦN {max_c:,}.
+Viết lại TOÀN BỘ Stage {letter} (đúng các nhãn {labels}) còn khoảng {target_c:,} ký tự (≈ {words:,} {word_unit}), sai số tối đa 5%.
+- Giữ đủ mọi cảnh, sự kiện, tên, tuổi, số tiền, địa điểm, vật chứng, thứ tự cảnh và ĐOẠN KẾT của Stage.
+- Gọn bằng cách bỏ đoạn lặp ý, mô tả thừa, câu cảm thán trùng; gộp câu cụt liền nhau thành câu đầy đủ.
+- Không thêm tình tiết mới, không tóm tắt kiểu liệt kê, không ghi chú, không dùng Python, không tạo file.
+- Chỉ xuất theo đúng khung sau, marker nằm riêng một dòng:
+@@STAGE_BEGIN
+(toàn bộ Stage {letter})
+@@STAGE_END"""
+            response = session.send_prompt_and_wait(
+                prompt,
+                step_label=f"STAGE_CONDENSE_{letter}_{try_no}",
+                timeout_sec=900,
+                progress_cb=lambda st, ch: self._emit(
+                    message=f"[{ma_id}] Đang viết lại gọn STAGE {letter} ({ch:,} ký tự)..."
+                ),
+                should_stop_cb=lambda: self.should_stop,
+            )
+            revised, reason = extract_resized_stage(
+                response,
+                letter.upper(),
+                current,
+                target_c,
+                extract_clean_japanese_narration,
+                previous_chars=len(normalize_script_text(current).strip()),
+            )
+            if not revised:
+                log_warn(
+                    "SCRIPT",
+                    f"[{ma_id}] Bản viết lại gọn STAGE {letter} lượt {try_no} bị từ chối: {reason}",
+                    project_id=ma_id,
+                )
+                continue
+            current = ensure_part_headings_for_stage(revised, letter.upper())
+        return current
+
     @staticmethod
     def _stage_length_budget_rule(
         stage: str, min_c: int, max_c: int, target_c: int, lang: str = "es"
@@ -12052,6 +12386,14 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 "part_b.txt",
                 "part_c.txt",
                 "script_clean.txt",
+                # Bản ghép đủ 7 PART: nếu còn, has_valid_script_on_disk sẽ khôi phục lại kịch bản cũ ngay sau khi xóa
+                "PMX_FULL_SCRIPT.txt",
+                "PMX_QA_ROUND1_LOGIC.md",
+                "PMX_QA_ROUND2_QUALITY.md",
+                "PMX_QA_FINAL.md",
+                "PMX_SEO_PACK.md",
+                "QA_FINAL.json",
+                "QA_FINAL_V4.json",
                 "step5_audit_report.txt",
                 "QA_RELEASE.json",
                 "seo_publish_pack.txt",
@@ -12664,6 +13006,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     min_acceptable_chars=accept_a,
                     in_same_writer_chat=False,
                 )
+                part_a_clean = self._condense_stage_in_writer_chat(
+                    session, ma_id, channel_key_script, "A", part_a_clean
+                )
                 part_a_file.write_text(part_a_clean, encoding="utf-8")
                 count_a = pure_char_count(part_a_clean)
 
@@ -12710,6 +13055,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     prev_part_tail=part_a_clean[-450:],
                     min_acceptable_chars=accept_b,
                     in_same_writer_chat=reuse_chat2_for_b,
+                )
+                part_b_clean = self._condense_stage_in_writer_chat(
+                    session, ma_id, channel_key_script, "B", part_b_clean
                 )
                 part_b_file.write_text(part_b_clean, encoding="utf-8")
                 count_b = pure_char_count(part_b_clean)
@@ -12759,6 +13107,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     prev_part_tail=part_b_clean[-450:],
                     min_acceptable_chars=accept_c,
                     in_same_writer_chat=reuse_chat2_for_c,
+                )
+                part_c_clean = self._condense_stage_in_writer_chat(
+                    session, ma_id, channel_key_script, "C", part_c_clean
                 )
                 part_c_file.write_text(part_c_clean, encoding="utf-8")
                 count_c = pure_char_count(part_c_clean)
@@ -12825,8 +13176,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     or (
                         existing_release.get("script_fingerprint")
                         == script_fingerprint(full_clean_script)
-                        and existing_release.get("release_decision")
-                        in (DECISION_READY, DECISION_NOT_READY)
+                        # Chỉ dùng lại kết quả kiểm định ĐẠT; kết luận "chưa đạt" thì phải kiểm định + sửa lại
+                        and existing_release.get("release_decision") == DECISION_READY
                     )
                 )
             )
@@ -12847,11 +13198,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 has_script=True,
                 completed_parts_count=3,
                 missing_parts=[],
-                current_step=f"New Chat #2 Hoàn tất đủ 7 Parts / 3 Stages ({total_pure:,} ký tự {script_language})",
+                status="RUNNING",
+                current_step=f"📝 Đã ghép 7 Parts ({total_pure:,} ký tự {script_language}) — Đang kiểm định, sửa lỗi & làm SEO (chưa xong)...",
             )
             self._emit(
                 progress=74.0,
-                message=f"[{ma_id}] ✅ [New Chat #2] Đã viết & ghép xong đủ 7 Parts: STAGE A ({count_a:,}) + STAGE B ({count_b:,}) + STAGE C ({count_c:,}) = {total_pure:,} ký tự!",
+                message=f"[{ma_id}] 📝 [New Chat #2] Đã ghép 7 Parts: STAGE A ({count_a:,}) + STAGE B ({count_b:,}) + STAGE C ({count_c:,}) = {total_pure:,} ký tự -> Tiếp tục kiểm định, sửa lỗi và làm SEO (CHƯA XONG)...",
             )
 
             # ------------------------------------------------------------------
@@ -14258,11 +14610,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             done_cnt += 1
                             try:
                                 fut.result()
+                                with dispatched_video_lock:
+                                    was_dispatched = mid_done in dispatched_video_ids
                                 suffix_ren = (
                                     (
-                                        " -> Đã đẩy ngay sang Tạo Voice GPU (Chưa Render MP4)!"
-                                        if voice_only
-                                        else " -> Đã đẩy ngay sang Hàng Đợi Render MP4!"
+                                        (
+                                            " -> Đã đẩy ngay sang Tạo Voice GPU (Chưa Render MP4)!"
+                                            if voice_only
+                                            else " -> Đã đẩy ngay sang Hàng Đợi Render MP4!"
+                                        )
+                                        if was_dispatched
+                                        else " -> CHƯA đẩy sang Render (xem lý do trên thẻ dự án)."
                                     )
                                     if auto_produce_video
                                     else ""
@@ -14271,7 +14629,19 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                     rel_done = read_script_release_record(self.projects_dir / mid_done) or {}
                                 except Exception:
                                     rel_done = {}
-                                if rel_done and rel_done.get("release_decision") != DECISION_READY:
+                                try:
+                                    has_sc_done, _, _ = self.has_valid_script_on_disk(mid_done)
+                                except Exception:
+                                    has_sc_done = False
+                                if self.should_stop:
+                                    self._emit(
+                                        message=f"🛑 Đã dừng kịch bản [{done_cnt}/{len(need_script_ids)}] {mid_done} theo yêu cầu (chưa hoàn tất)."
+                                    )
+                                elif not has_sc_done:
+                                    self._emit(
+                                        message=f"❌ Kịch bản [{done_cnt}/{len(need_script_ids)}] {mid_done} CHƯA viết xong (lỗi nick/ChatGPT) -> Bấm Chạy lại để viết tiếp phần còn thiếu."
+                                    )
+                                elif rel_done and rel_done.get("release_decision") != DECISION_READY:
                                     self._emit(
                                         message=f"⚠️ Kịch bản [{done_cnt}/{len(need_script_ids)}] {mid_done} đã viết xong nhưng CHƯA ĐẠT kiểm định ({'; '.join(str(x) for x in (rel_done.get('reasons') or [])[:1])}) -> Cần bấm Viết lại."
                                     )

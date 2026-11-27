@@ -461,6 +461,18 @@ document.addEventListener("DOMContentLoaded", () => {
     if (ssdBadge && ssdDir) {
       ssdBadge.innerText = `SSD Cache: ${ssdDir}`;
     }
+    const linkBadge = document.getElementById("adas-projects-link-badge");
+    if (linkBadge) {
+      if (sp.projects_dir_is_linked_external) {
+        const rsStr = Array.isArray(sp.projects_dir_link_reasons) && sp.projects_dir_link_reasons.length
+          ? ` (${sp.projects_dir_link_reasons.join(", ")})`
+          : "";
+        linkBadge.innerText = `🛡️ Đang dùng Folder liên kết ngoài${rsStr} — Đã khóa bảo vệ: nút Xóa trên App KHÔNG BAO GIỜ xóa folder/file trên đĩa!`;
+        linkBadge.classList.remove("hidden");
+      } else {
+        linkBadge.classList.add("hidden");
+      }
+    }
   }
 
   async function updateStoragePathsBackend(payload, showAlert = false) {
@@ -2830,17 +2842,41 @@ document.addEventListener("DOMContentLoaded", () => {
         ev.stopPropagation();
         const mid = btn.dataset.id;
         if (!mid) return;
+        const delDiskChk = document.getElementById("chk-adas-delete-recycle");
+        const deleteFromDisk = Boolean(delDiskChk && delDiskChk.checked);
+        const confirmMsg = deleteFromDisk
+          ? `Gỡ mã [${mid}] khỏi danh sách App VÀ đưa thư mục NỘI BỘ vào Thùng Rác Windows?\n\n🛡️ Lưu ý: Nếu là thư mục liên kết ngoài / LAN / Cloud Sync / Symlink, hệ thống sẽ TỰ ĐỘNG KHÓA BẢO VỆ và giữ nguyên 100% file gốc.`
+          : `Gỡ mã [${mid}] khỏi danh sách trên App?\n\n✅ Thư mục & file trên ổ đĩa (cũng như máy/thư mục liên kết) sẽ được GIỮ NGUYÊN 100%.`;
+        if (!confirm(confirmMsg)) {
+          return;
+        }
         btn.disabled = true;
         btn.innerText = "⏳";
-        appendInstantLogToUI(`🗑️ Đang xóa mã dự án [${mid}] khỏi Kho Dự Án...`, "SCRIPT", "INFO", mid);
+        appendInstantLogToUI(
+          deleteFromDisk
+            ? `♻️ Đang gỡ [${mid}] khỏi App (chỉ đưa folder nội bộ vào Thùng Rác nếu không phải liên kết ngoài)...`
+            : `📋 Đang gỡ mã dự án [${mid}] khỏi danh sách App (giữ nguyên 100% folder/file trên đĩa)...`,
+          "SCRIPT",
+          "INFO",
+          mid
+        );
         try {
           const res = await fetch("/api/adas/ideas/delete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ma_id: mid })
+            body: JSON.stringify({ ma_id: mid, delete_from_disk: deleteFromDisk })
           });
           if (res.ok) {
             const data = await res.json();
+            const ds = data.delete_summary || {};
+            if (ds.protected_link_skipped_count > 0) {
+              appendInstantLogToUI(
+                `🛡️ Đã khóa bảo vệ [${mid}]: giữ nguyên 100% thư mục liên kết/ngoài trên đĩa!`,
+                "SCRIPT",
+                "WARN",
+                mid
+              );
+            }
             renderSavedIdeasList(data.ideas || []);
           } else {
             await loadSavedIdeas();
@@ -3741,15 +3777,37 @@ document.addEventListener("DOMContentLoaded", () => {
           alert("Kho dự án hiện đang trống!");
           return;
         }
-        if (!confirm(`Bạn có chắc chắn muốn XÓA TẤT CẢ (${lastSavedIdeasCache.length} mã) khỏi danh sách Kho Dự Án không?`)) {
+        const delDiskChk = document.getElementById("chk-adas-delete-recycle");
+        const deleteFromDisk = Boolean(delDiskChk && delDiskChk.checked);
+        const msgAll = deleteFromDisk
+          ? `Bạn có chắc chắn muốn XÓA TẤT CẢ (${lastSavedIdeasCache.length} mã) khỏi App VÀ đưa các folder NỘI BỘ vào Thùng Rác Windows không?\n\n🛡️ Mọi thư mục liên kết ngoài / LAN / Cloud Sync / Symlink sẽ TỰ ĐỘNG ĐƯỢC KHÓA BẢO VỆ (không bị xóa).`
+          : `Bạn có chắc chắn muốn GỠ TẤT CẢ (${lastSavedIdeasCache.length} mã) khỏi danh sách hiển thị trên App không?\n\n✅ Toàn bộ thư mục & file dự án trên ổ đĩa (cũng như máy/thư mục liên kết) sẽ được GIỮ NGUYÊN 100%!`;
+        if (!confirm(msgAll)) {
           return;
         }
         deleteAllBtn.disabled = true;
-        appendInstantLogToUI(`🗑️ Đang xóa toàn bộ ${lastSavedIdeasCache.length} mã khỏi Kho Dự Án...`, "SCRIPT", "WARN");
+        appendInstantLogToUI(
+          deleteFromDisk
+            ? `♻️ Đang gỡ ${lastSavedIdeasCache.length} mã khỏi App & chuyển folder nội bộ vào Thùng Rác...`
+            : `📋 Đang gỡ toàn bộ ${lastSavedIdeasCache.length} mã khỏi danh sách App (giữ nguyên 100% folder/file trên đĩa)...`,
+          "SCRIPT",
+          "WARN"
+        );
         try {
-          const res = await fetch("/api/adas/ideas/delete-all", { method: "POST" });
+          const res = await fetch("/api/adas/ideas/delete-all", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ delete_from_disk: deleteFromDisk })
+          });
           if (res.ok) {
             const data = await res.json();
+            const ds = data.delete_summary || {};
+            if (ds.protected_link_skipped_count > 0) {
+              alert(
+                `🛡️ ĐÃ KHÓA BẢO VỆ THƯ MỤC LIÊN KẾT!\n\n` +
+                `• Đã gỡ danh sách trên App nhưng GIỮ NGUYÊN 100% (${ds.protected_link_skipped_count}) thư mục liên kết ngoài / LAN / Cloud Sync / Symlink trên ổ đĩa.`
+              );
+            }
             renderSavedIdeasList(data.ideas || []);
           }
         } catch (e) {
@@ -4404,6 +4462,43 @@ document.addEventListener("DOMContentLoaded", () => {
           return;
         }
         await triggerRunADAS(pendingIds, null);
+      });
+    }
+
+    // ▶️ CHẠY TIẾP A ➔ Z: luôn chạy trọn A➔Z cho mọi tiêu đề đã có trong kho mà chưa có MP4,
+    // KHÔNG phụ thuộc ô Mode (trước đây nút A➔Z chạy theo Mode được nhớ từ lần bấm "Chỉ Viết KB" trước đó).
+    const continueAtoZBtn = document.getElementById("btn-adas-continue-a-to-z");
+    if (continueAtoZBtn) {
+      continueAtoZBtn.addEventListener("click", async () => {
+        const res = await fetch("/api/adas/ideas");
+        if (!res.ok) {
+          alert("Không đọc được Kho Dự Án. Vui lòng thử lại!");
+          return;
+        }
+        const data = await res.json();
+        const ideasAll = data.ideas || [];
+        const pending = ideasAll.filter((it) => it && it.ma_id && !isVideoTrulyCompleted(it));
+        if (pending.length === 0) {
+          alert("✅ Tất cả tiêu đề trong Kho Dự Án đều đã có Video MP4!\n\n👉 Dán tiêu đề mới vào ô bên trái rồi bấm 'Chạy Tự Động A ➔ Z' để làm video mới.");
+          return;
+        }
+        const needWrite = pending.filter((it) => !(it.has_script && (it.pure_char_count || 0) >= 35000)).length;
+        const needThumb = pending.filter((it) => it.has_script && !it.has_thumbnail).length;
+        const readyRender = pending.length - needWrite;
+        const ok = confirm(
+          `▶️ CHẠY TIẾP A ➔ Z cho ${pending.length} tiêu đề chưa có Video MP4:\n\n` +
+          `• ${needWrite} mã chưa xong kịch bản -> Viết tiếp phần còn thiếu (giữ phần đã viết)\n` +
+          `• ${readyRender} mã đã có kịch bản -> Kiểm tra / sửa lại nếu chưa đạt, rồi Voice + Render MP4` +
+          (needThumb ? `\n• ${needThumb} mã còn thiếu Thumbnail -> Vẽ bù trước khi Render` : "") +
+          `\n\nMã: ${pending.map((it) => it.ma_id).join(", ")}\n\nBắt đầu chạy?`
+        );
+        if (!ok) return;
+        appendInstantLogToUI(
+          `▶️ [CHẠY TIẾP A ➔ Z] Bắt đầu ${pending.length} mã (Viết tiếp ➔ SEO + Thumbnail ➔ Voice ➔ Render MP4): ${pending.map((it) => it.ma_id).join(", ")}`,
+          "SCRIPT",
+          "INFO"
+        );
+        await triggerRunADAS(pending.map((it) => it.ma_id), true, false, false);
       });
     }
 

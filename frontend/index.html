@@ -633,6 +633,9 @@
                     </button>
                   </div>
                   <input class="w-full h-7 px-2 rounded bg-surface-container-low text-primary font-mono text-[11px] border border-surface-container-high focus:outline-none focus:border-secondary" id="adas-projects-dir-input" placeholder="Đường dẫn Folder Project..." title="Nhập hoặc bấm Chọn Folder Project rồi nhấn Enter" type="text" value=""/>
+                  <div class="hidden text-[10px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-0.5 leading-tight" id="adas-projects-link-badge">
+                    🛡️ Folder liên kết ngoài — Chế độ khóa bảo vệ (nút Xóa trên App không bao giờ xóa file trên đĩa)
+                  </div>
                 </div>
                 <div class="flex flex-col gap-1">
                   <div class="flex items-center justify-between">
@@ -689,6 +692,16 @@
                   <span class="material-symbols-outlined text-[13px]">rocket_launch</span>
                   <span id="text-adas-run-all">Đa Luồng 5 Nick</span>
                 </button>
+                <button class="col-span-full flex items-center justify-center gap-1.5 h-9 rounded bg-primary-container text-on-primary-container font-label-md text-xs font-bold shadow-[0_0_12px_rgba(0,255,135,0.4)] hover:brightness-105 active:scale-98 transition-all" id="btn-adas-continue-a-to-z" title="Luôn chạy trọn A ➔ Z cho mọi tiêu đề đã có trong kho mà chưa có video MP4 (không phụ thuộc ô Mode): chưa có kịch bản thì viết tiếp phần còn thiếu, kịch bản chưa đạt thì sửa lại, rồi SEO + Thumbnail + Voice + Render MP4" type="button">
+                  <span class="material-symbols-outlined text-[16px]">fast_forward</span>
+                  <span>▶️ CHẠY TIẾP A ➔ Z (Tiêu đề đã có: Viết tiếp ➔ Thumbnail ➔ Voice ➔ Render MP4)</span>
+                </button>
+                <div class="col-span-full flex items-center justify-between gap-2 px-2 py-1 rounded bg-surface-container-low/80 border border-surface-container-high text-[10.5px]">
+                  <label class="inline-flex items-center gap-1.5 cursor-pointer select-none text-on-surface-variant" title="Mặc định TẮT: Bấm Xóa / Xóa Hết chỉ gỡ khỏi danh sách App, giữ nguyên 100% thư mục & file trên ổ đĩa. Khi bật, chỉ thư mục nội bộ được chuyển vào Thùng Rác Windows; mọi thư mục liên kết ngoài / mạng LAN / Cloud Sync / Symlink vẫn được khóa bảo vệ tuyệt đối.">
+                    <input class="w-3.5 h-3.5 accent-error rounded cursor-pointer" id="chk-adas-delete-recycle" type="checkbox"/>
+                    <span>Khi bấm Xóa: đưa thêm folder <b class="text-on-surface">nội bộ</b> vào Thùng Rác Windows <span class="text-primary-container font-semibold">(tắt mặc định • folder liên kết luôn được khóa bảo vệ)</span></span>
+                  </label>
+                </div>
               </div>
             </div>
 
