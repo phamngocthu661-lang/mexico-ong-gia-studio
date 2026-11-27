@@ -405,8 +405,13 @@ def extract_resized_stage(
     original: str,
     target_chars: int,
     clean_func: Callable[[str], str],
+    previous_chars: Optional[int] = None,
 ) -> Tuple[Optional[str], str]:
-    """Chỉ nhận bản đủ marker, đúng nhãn Part, đúng độ dài và giữ đoạn kết của Stage."""
+    """Chỉ nhận bản đủ marker, đúng nhãn Part, đúng độ dài và giữ đoạn kết của Stage.
+
+    Nếu truyền `previous_chars`, nhận thêm bản đi được >= 40% quãng đường tới đích (không vượt qua đích quá 12%)
+    để vòng biên tập kế tiếp tiếp tục thu gọn/mở rộng thay vì bỏ phí cả lượt.
+    """
     match = re.search(r"@@STAGE_BEGIN\s*(.*?)\s*@@STAGE_END", response or "", re.S)
     if not match:
         return None, "Phản hồi thiếu @@STAGE_BEGIN/@@STAGE_END hoặc bị cắt giữa chừng"
@@ -419,8 +424,19 @@ def extract_resized_stage(
     if tuple(numbers) != STAGE_PARTS[stage]:
         return None, f"Sai nhãn Part của Stage {stage}: {numbers}"
     size = len(cleaned)
-    if not int(target_chars * 0.88) <= size <= int(target_chars * 1.12):
-        return None, f"Độ dài {size:,} lệch xa đích {target_chars:,}"
+    in_window = int(target_chars * 0.88) <= size <= int(target_chars * 1.12)
+    if not in_window:
+        gap_before = abs(int(previous_chars or 0) - target_chars)
+        gap_after = abs(size - target_chars)
+        same_side = (size - target_chars) * (int(previous_chars or 0) - target_chars) > 0
+        made_progress = (
+            previous_chars is not None
+            and gap_before > 0
+            and gap_after <= gap_before * 0.6
+            and (same_side or in_window)
+        )
+        if not made_progress:
+            return None, f"Độ dài {size:,} lệch xa đích {target_chars:,}"
     old_tail = re.sub(r"\s+", " ", normalize_script_text(original).strip())[-220:]
     new_tail = re.sub(r"\s+", " ", cleaned)[-320:]
     matcher = difflib.SequenceMatcher(None, old_tail, new_tail, autojunk=False)

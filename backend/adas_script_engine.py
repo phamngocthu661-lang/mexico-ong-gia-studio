@@ -298,6 +298,19 @@ class AccountNotLoggedInError(RuntimeError):
         self.acc_id = acc_id
 
 
+# Mở tab ChatGPT chậm (Chrome vừa bật, trang tải lâu) không phải là nick bị Limit:
+# chỉ tạm nghỉ ngắn để luồng khác thử lại, không khóa nick 30 phút.
+CHAT_TAB_OPEN_COOLDOWN_SEC = 120
+
+
+class ChatTabOpenError(RuntimeError):
+    """Không mở được khung chat ChatGPT (lỗi tạm thời khi tải trang, không phải Limit)."""
+
+    def __init__(self, acc_id: str, message: str):
+        super().__init__(message)
+        self.acc_id = acc_id
+
+
 def mark_account_rate_limited(
     acc_id: str,
     reason: str = "",
@@ -2112,9 +2125,16 @@ class ChatGPTWebSession:
         if not self.ws_url or not self.tab_id:
             return False
 
-        # Đợi ô nhập ChatGPT (ProseMirror / #prompt-textarea / #mobile-composer-prompt) xuất hiện trên Tab của luồng này
+        # Đợi ô nhập ChatGPT (ProseMirror / #prompt-textarea / #mobile-composer-prompt) xuất hiện trên Tab của luồng này.
+        # Chrome vừa bật hoặc trang tải chậm: hết 50 nhịp mà chưa thấy ô nhập thì tải lại trang 1 lần và chờ thêm 40 nhịp.
         composer_sel = COMPOSER_SELECTOR
-        for tick in range(50):
+        for tick in range(90):
+            if tick == 50:
+                log_warn(
+                    f"[{self.project_id}] Khung chat trên {self.cfg['label']} chưa sẵn sàng -> Tải lại trang 1 lần rồi chờ tiếp...",
+                    category="CHROME",
+                )
+                _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=4.0)
             _install_chatgpt_tab_protection_js(self.ws_url)
             st = _cdp_eval_js(
                 self.ws_url,
@@ -3719,6 +3739,7 @@ from .script_quality_gate import (
     extract_patch_ledger,
     extract_resized_stage,
     get_script_length_profile,
+    normalize_script_text,
     parse_qa_verdict,
     plan_stage_resize,
     read_script_release_record,
@@ -9379,7 +9400,7 @@ QUY TẮC BẮT BUỘC (`{skill_name} — TIẾNG ANH MỸ `en-US`):
 2. NHÃN PHẦN BẮT BUỘC: {headings_rule}
 3. SỔ CÁI LIÊN TỤC (`CANON_CONTINUITY`): {ledger_rule}
 4. ⚠️ CẤM TUYỆT ĐỐI RÒ RỈ TIÊU ĐỀ & METADATA: Ngoài các dòng nhãn phần độc lập (`[PART 1]`..`[PART 7]`), TUYỆT ĐỐI KHÔNG in lại dòng `CURRENT_FINAL_TITLE:`, `LOCKED_TITLE:`, `STAGE_A_COUNT_GATE:`, `Scene 1:`, cue trong ngoặc vuông hay ghi chú đạo diễn vào trong văn bản truyện.
-5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự, mỗi Part trong Stage >= {part_floor:,} ký tự).{word_rule}
+5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự, mỗi Part trong Stage >= {part_floor:,} ký tự).{word_rule}{"" if word_rule else self._stage_length_budget_rule(p_up, min_c, max_c, target_c, "en")}
 6. Triển khai chi tiết từng cảnh theo đúng Dàn ý 7 Phần bằng hành động vật lý cụ thể, đối thoại giàu kịch tính, {evidence_hint}. TUYỆT ĐỐI KHÔNG tóm tắt, không nhảy cóc thời gian, không lặp lại đoạn văn.
 7. ⚠️ QUY TẮC TỐC ĐỘ & HIỂN THỊ: TUYỆT ĐỐI KHÔNG bật công cụ Python / Code Interpreter, KHÔNG đóng gói thành file tải về (.txt/.md/.docx). BẮT BUỘC in trực tiếp toàn bộ 100% văn bản kịch bản tiếng Anh Mỹ (`en-US`) ra khung chat ngay lập tức."""
         skill_block = (
@@ -9427,8 +9448,8 @@ QUY TẮC BẮT BUỘC (`padre-mx-script-writer` V4.0.0 — TIẾNG TÂY BAN NHA
 2. NHÃN PHẦN BẮT BUỘC: {headings_rule}
 3. SỔ CÁI LIÊN TỤC V4.0 (`CONTINUITY_LEDGER_V4`): {ledger_rule}
 4. ⚠️ CẤM TUYỆT ĐỐI RÒ RỈ TIÊU ĐỀ & METADATA: Ngoài các dòng nhãn phần độc lập (`[PART 1]`..`[PART 7]`), TUYỆT ĐỐI KHÔNG in lại dòng `CURRENT_FINAL_TITLE:`, `LOCKED_TITLE:`, `STAGE_A_COUNT_GATE:`, `LEDGER_A:`, `Escena 1:`, hay ghi chú đạo diễn vào trong văn bản truyện.
-5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự, mỗi Part trong Stage >= 8.500 ký tự).
-6. Triển khai chi tiết, sâu sắc từng cảnh (8–12 cảnh/Part theo Blueprint V4) bằng hành động cụ thể, đối thoại gia đình/pháp lý kịch tính, chi tiết văn bản công chứng/tài chính thực tế tại Mexico. TUYỆT ĐỐI KHÔNG tóm tắt, không nhảy cóc thời gian, không lặp lại cùng một câu cảm thán.
+5. MỤC TIÊU ĐỘ DÀI CỨNG CỦA STAGE {p_up}: {min_c:,}–{max_c:,} ký tự body (Đích an toàn: ~{target_c:,} ký tự, mỗi Part trong Stage >= 8.500 ký tự).{self._stage_length_budget_rule(p_up, min_c, max_c, target_c, "es")}
+6. Triển khai chi tiết, sâu sắc từng cảnh theo Blueprint V4 bằng hành động cụ thể, đối thoại gia đình/pháp lý kịch tính, chi tiết văn bản công chứng/tài chính thực tế tại Mexico. TUYỆT ĐỐI KHÔNG tóm tắt, không nhảy cóc thời gian, không lặp lại cùng một câu cảm thán.
 7. ⚠️ QUY TẮC TỐC ĐỘ & HIỂN THỊ: TUYỆT ĐỐI KHÔNG bật công cụ Python / Code Interpreter, KHÔNG đóng gói thành file tải về (.txt/.md/.docx). BẮT BUỘC in trực tiếp toàn bộ 100% văn bản kịch bản tiếng Tây Ban Nha (`es-MX`) ra khung chat ngay lập tức."""
 
     def _build_step4_part_continue_prompt(
@@ -9703,9 +9724,16 @@ YÊU CẦU:
         part_files: Dict[str, Path],
         max_rounds: int = 3,
     ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-        """Cân độ dài bằng cách biên tập lại đúng một Stage mỗi lượt, không bao giờ cắt đuôi."""
+        """Cân độ dài bằng cách biên tập lại đúng một Stage mỗi lượt, không bao giờ cắt đuôi.
+
+        Nhận cả bản rút gọn/mở rộng được một phần để lượt sau làm tiếp. Khi tổng độ dài lệch quá xa
+        (ví dụ ChatGPT viết gấp 2–3 lần), tự nới số lượt tối đa vì mỗi Stage có thể cần 2 lượt.
+        """
         stages = dict(stage_texts)
         gate = run_machine_script_gate(assemble_stages(stages), channel_key, self.root_dir)
+        profile = get_script_length_profile(channel_key)
+        if int(gate.get("chars") or 0) > int(profile["total_max"]) * 1.5:
+            max_rounds = max(max_rounds, 6)
         for round_no in range(1, max_rounds + 1):
             if gate["passed"] or self.should_stop:
                 break
@@ -9744,6 +9772,7 @@ YÊU CẦU:
                 stages[letter],
                 int(plan["target_chars"]),
                 extract_clean_japanese_narration,
+                previous_chars=len(normalize_script_text(stages[letter]).strip()),
             )
             if not revised:
                 log_warn(
@@ -11641,6 +11670,26 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
     # ==========================================================================
     # LUỒNG CHẠY TỰ ĐỘNG CHO 1 HOẶC NHIỀU DỰ ÁN
     # ==========================================================================
+    @staticmethod
+    def _stage_length_budget_rule(
+        stage: str, min_c: int, max_c: int, target_c: int, lang: str = "es"
+    ) -> str:
+        """Quy đổi mục tiêu ký tự sang số từ/Part vì model ước lượng số từ tốt hơn ký tự (ChatGPT từng viết vượt ~2,7 lần)."""
+        parts = {"A": 2, "B": 3, "C": 2}.get(str(stage).upper(), 2)
+        chars_per_word = 5.8 if lang == "es" else 5.6
+        word_unit = "palabras" if lang == "es" else "words"
+        per_part_c = int(round(target_c / parts, -2))
+        per_part_w = int(round(target_c / parts / chars_per_word, -1))
+        low_w = int(round(min_c / chars_per_word, -2))
+        high_w = int(round(max_c / chars_per_word, -2))
+        return (
+            f"\n   NGÂN SÁCH ĐỘ DÀI (BẮT BUỘC): cả Stage {low_w:,}–{high_w:,} {word_unit} "
+            f"(≈ {min_c:,}–{max_c:,} ký tự); mỗi Part khoảng {per_part_c:,} ký tự ≈ {per_part_w:,} {word_unit}. "
+            f"Dàn ý có nhiều cảnh thì viết gọn từng cảnh để cả Part vẫn nằm trong ngân sách này. "
+            f"TRẦN CỨNG {max_c:,} ký tự: bản vượt trần sẽ bị loại và phải viết lại toàn Stage, "
+            f"nên kể xong cảnh cuối của Part cuối thì DỪNG, không kể thêm."
+        )
+
     def _write_part_with_length_gate(
         self,
         session: ChatGPTWebSession,
@@ -12296,9 +12345,10 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             )
 
             if not session.open_session_tab():
-                raise RuntimeError(
+                raise ChatTabOpenError(
+                    session.acc_id,
                     f"Không mở được khung chat trên {session.cfg['label']} (Cổng {session.port}). "
-                    f"Hãy bấm mở {session.cfg['label']} trên thanh điều khiển để đăng nhập ChatGPT!"
+                    f"Hãy bấm mở {session.cfg['label']} trên thanh điều khiển để đăng nhập ChatGPT!",
                 )
 
             # ------------------------------------------------------------------
@@ -13089,6 +13139,16 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             ]
             has_all_thumbs_s7 = bool(preq_after_s7.get("ok"))
             missing_after_s7 = preq_after_s7.get("missing") or []
+            # Kịch bản trượt cổng kiểm định (ví dụ sai độ dài) thì không được báo "Hoàn tất".
+            qa_block_reason_s7 = ""
+            try:
+                rel_s7 = read_script_release_record(proj_dir) or {}
+                if rel_s7 and rel_s7.get("release_decision") != DECISION_READY:
+                    qa_block_reason_s7 = "; ".join(
+                        str(x) for x in (rel_s7.get("reasons") or [])[:2]
+                    ) or str(rel_s7.get("release_decision") or "")
+            except Exception:
+                qa_block_reason_s7 = ""
 
             self._update_idea_record(
                 ma_id,
@@ -13155,13 +13215,28 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     has_script=True,
                     has_thumbnail=has_all_thumbs_s7,
                     current_step=(
-                        f"📝 Đã xong Kịch bản ({total_pure:,} chữ) & {len(thumbnail_paths)}/{req_cnt_s7} Ảnh — Sẵn sàng Render MP4"
-                        if has_all_thumbs_s7
-                        else f"⛔ Đã xong Kịch bản nhưng thiếu {', '.join(missing_after_s7)} — Chưa thể Render MP4"
+                        f"⛔ Kịch bản chưa đạt kiểm định ({qa_block_reason_s7[:80]}) — Bấm Viết lại"
+                        if qa_block_reason_s7
+                        else (
+                            f"📝 Đã xong Kịch bản ({total_pure:,} chữ) & {len(thumbnail_paths)}/{req_cnt_s7} Ảnh — Sẵn sàng Render MP4"
+                            if has_all_thumbs_s7
+                            else f"⛔ Đã xong Kịch bản nhưng thiếu {', '.join(missing_after_s7)} — Chưa thể Render MP4"
+                        )
                     ),
                 )
 
-            if not video_triggered:
+            if qa_block_reason_s7 and not video_triggered:
+                self._emit(
+                    status="running" if self.is_running else "completed",
+                    current_ma_id=ma_id,
+                    current_step=f"⛔ {ma_id}: Kịch bản chưa đạt kiểm định",
+                    progress=98.0 if self.is_running else 100.0,
+                    message=(
+                        f"[{ma_id}] ⚠️ Đã có SEO + {len(thumbnail_paths)} Ảnh nhưng kịch bản ({total_pure:,} chữ) CHƯA ĐẠT kiểm định: "
+                        f"{qa_block_reason_s7} -> Không render. Hãy bấm Viết lại cho mã này."
+                    ),
+                )
+            elif not video_triggered:
                 self._emit(
                     status="running" if self.is_running else "completed",
                     current_ma_id=ma_id,
@@ -13891,13 +13966,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         retry_msg = (
                                             f"🔄 [{mid_item}] Tự động đẩy kịch bản sang tài khoản (nick) khác để làm lại từ đầu (Lần {attempt_idx}/{total_attempts - 1} — Đã tránh: {sorted(failed_accs_for_mid | unlogged_accs_for_mid)})..."
                                             if restart_from_scratch_on_other_acc
-                                            else f"🔄 [{mid_item}] Tự động Retry lần {attempt_idx}/{total_attempts - 1}..."
+                                            else f"🔄 [{mid_item}] Tự động Retry lần {attempt_idx}/{total_attempts - 1} — viết tiếp từ phần đã lưu (Đã tránh: {sorted(failed_accs_for_mid | unlogged_accs_for_mid)})..."
                                         )
                                         self._update_idea_record(
                                             mid_item,
                                             status="RUNNING",
                                             retry_count=attempt_idx,
-                                            current_step=f"🔄 Đang chuyển sang nick khác làm lại từ đầu ({attempt_idx}/{total_attempts - 1})...",
+                                            current_step=f"🔄 Đang chuyển sang nick khác viết tiếp ({attempt_idx}/{total_attempts - 1})...",
                                         )
                                         self._emit(
                                             status="running",
@@ -13991,7 +14066,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         mark_account_rate_limited(
                                             failed_acc,
                                             reason=f"[{mid_item}] {str(exc_try)[:120]}",
-                                            cooldown_sec=ACCOUNT_LIMIT_COOLDOWN_SEC,
+                                            cooldown_sec=(
+                                                CHAT_TAB_OPEN_COOLDOWN_SEC
+                                                if isinstance(exc_try, ChatTabOpenError)
+                                                else ACCOUNT_LIMIT_COOLDOWN_SEC
+                                            ),
                                         )
 
                                     # Nếu kịch bản 3 Part đã kịp viết xong trên ổ cứng -> Kiểm tra tạo bù Thumbnail trên nick khác rồi đẩy vào Render!
@@ -14052,8 +14131,9 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                         )
                                         raise
 
-                                    # Nếu kịch bản chưa xong mà nick bị limit/lỗi -> Đẩy kịch bản qua nick khác làm lại từ đầu!
-                                    restart_from_scratch_on_other_acc = True
+                                    # Nick bị limit/lỗi giữa chừng -> Chuyển sang nick khác VIẾT TIẾP từ phần đã lưu
+                                    # (dàn ý, part_a/b/c đã đạt chuẩn trên ổ cứng), không xóa để làm lại từ đầu.
+                                    restart_from_scratch_on_other_acc = False
 
                                     if attempt_idx < total_attempts - 1:
                                         # Kiểm tra xem còn nick ĐÃ ĐĂNG NHẬP nào đang rảnh (không bị khóa 30p) không
@@ -14086,7 +14166,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                                 mid_item,
                                                 status="RUNNING",
                                                 retry_count=attempt_idx + 1,
-                                                current_step=f"🔄 Đang chuyển sang {free_accs_now[0]} làm lại từ đầu...",
+                                                current_step=f"🔄 Đang chuyển sang {free_accs_now[0]} viết tiếp từ phần đã lưu...",
                                             )
                                             time.sleep(wait_s)
                                         elif logged_pool_now:
@@ -14187,9 +14267,18 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                                     if auto_produce_video
                                     else ""
                                 )
-                                self._emit(
-                                    message=f"✅ Đã hoàn thành kịch bản [{done_cnt}/{len(need_script_ids)}]: {mid_done}{suffix_ren}"
-                                )
+                                try:
+                                    rel_done = read_script_release_record(self.projects_dir / mid_done) or {}
+                                except Exception:
+                                    rel_done = {}
+                                if rel_done and rel_done.get("release_decision") != DECISION_READY:
+                                    self._emit(
+                                        message=f"⚠️ Kịch bản [{done_cnt}/{len(need_script_ids)}] {mid_done} đã viết xong nhưng CHƯA ĐẠT kiểm định ({'; '.join(str(x) for x in (rel_done.get('reasons') or [])[:1])}) -> Cần bấm Viết lại."
+                                    )
+                                else:
+                                    self._emit(
+                                        message=f"✅ Đã hoàn thành kịch bản [{done_cnt}/{len(need_script_ids)}]: {mid_done}{suffix_ren}"
+                                    )
                             except Exception as exc:
                                 log_error(
                                     "SCRIPT",
