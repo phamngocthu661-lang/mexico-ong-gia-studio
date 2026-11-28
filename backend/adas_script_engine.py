@@ -2004,7 +2004,12 @@ class ChatGPTWebSession:
         )
         return self.open_session_tab(force_new_chat=True)
 
-    def open_session_tab(self, force_new_chat: bool = True) -> bool:
+    def open_session_tab(
+        self,
+        force_new_chat: bool = True,
+        lock_thinking_medium: bool = True,
+        thinking_effort: str = "medium",
+    ) -> bool:
         """
         Cấp phát 1 Tab độc lập 100% cho `self.project_id` trên trình duyệt của `self.acc_id`.
         Sử dụng khóa `_ACC_TAB_LOCKS[self.acc_id]` để đảm bảo khi chạy 3 luồng song song,
@@ -2220,32 +2225,35 @@ class ChatGPTWebSession:
                             self.acc_id,
                             f"Tài khoản {self.cfg['label']} chưa đăng nhập ChatGPT ({auth_reason}) -> Khóa gửi lệnh!",
                         )
-                    self.ensure_thinking_effort_medium()
+                    if lock_thinking_medium:
+                        self.ensure_thinking_effort_medium(target_effort=thinking_effort)
                     return True
                 if st.get("blank") and tick in (0, 3, 8, 16):
                     _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=2.5)
-            time.sleep(0.5)
+            time.sleep(0.28)
         return False
 
-    def ensure_thinking_effort_medium(self) -> Dict[str, Any]:
+    def ensure_thinking_effort_medium(self, target_effort: str = "medium") -> Dict[str, Any]:
         """
-        BẮT BUỘC KHÓA MODEL VIẾT Ở CHẾ ĐỘ 'Thinking effort: Medium' (Mốc 1/2 trên thanh trượt Power Slider hoặc menu Medium),
-        TUYỆT ĐỐI KHÔNG ĐỂ NGẪU NHIÊN (Instant / Low / High):
-        1. Chờ nút 'Select ChatGPT model' (`button[aria-label="Select ChatGPT model"]` hoặc `form button[aria-haspopup="menu"]`)
-           tải xong trên thanh công cụ dưới ô chat (tối đa 5 giây sau khi trang mở).
-        2. Nếu nút đã hiện 'Medium' -> Giữ nguyên.
-        3. Nếu đang ở 'Instant', 'High', 'Low', 'Auto'... -> Bấm mở menu bằng chuỗi sự kiện Radix UI (`pointerdown` + `mousedown` + `click`),
-           sau đó điều khiển thanh trượt `[data-reasoning-slider="true"]` / `[role="slider"]` (hoặc menu item truyền thống)
-           về đúng nấc **Medium** (`aria-valuenow="1"`) rồi đóng menu.
+        Điều chỉnh chế độ Thinking effort trên ChatGPT Web:
+        - `target_effort="medium"` (mặc định): Khóa Medium (dùng cho Step 2 Tiêu đề, Step 3 Giàn ý,
+          lượt viết đầu các Stage A/B/C và Step 5 QA 2 vòng).
+        - `target_effort="fast"` / `"instant"`: Chuyển sang Instant / Fast / Standard để tăng tốc 3x–4x
+          khi viết nối tiếp, co giãn độ dài, tạo SEO Step 6 và tạo ảnh Thumbnail/Nền xanh Step 7.
         """
         if not self.ws_url:
             return {"ok": False, "reason": "NO_WS_URL"}
 
-        js_lock_medium = r"""
-        (async () => {
-            function dispatchMouseClickAt(el, x, y) {
+        eff_norm = str(target_effort or "medium").strip().lower()
+        want_fast = eff_norm in ("fast", "instant", "low", "quick", "auto", "standard")
+        js_mode_flag = "true" if want_fast else "false"
+
+        js_lock_medium = f"""
+        (async () => {{
+            const WANT_FAST = {js_mode_flag};
+            function dispatchMouseClickAt(el, x, y) {{
                 if (!el) return;
-                const opts = {
+                const opts = {{
                     bubbles: true,
                     cancelable: true,
                     view: window,
@@ -2256,22 +2264,16 @@ class ChatGPTWebSession:
                     pointerId: 1,
                     pointerType: 'mouse',
                     isPrimary: true
-                };
+                }};
                 el.dispatchEvent(new PointerEvent('pointerdown', opts));
                 el.dispatchEvent(new MouseEvent('mousedown', opts));
                 if (typeof el.focus === 'function') el.focus();
                 el.dispatchEvent(new PointerEvent('pointerup', opts));
                 el.dispatchEvent(new MouseEvent('mouseup', opts));
                 el.dispatchEvent(new MouseEvent('click', opts));
-            }
+            }}
 
-            function radixClick(el) {
-                if (!el) return;
-                const r = el.getBoundingClientRect();
-                dispatchMouseClickAt(el, r.left + r.width / 2, r.top + r.height / 2);
-            }
-
-            function findModelEffortBtn() {
+            function findModelEffortBtn() {{
                 return (
                     document.querySelector('button[aria-label="Select ChatGPT model"]')
                     || document.querySelector('button[aria-label*="Select ChatGPT model" i]')
@@ -2281,130 +2283,147 @@ class ChatGPTWebSession:
                     )
                     || document.querySelector('form button[aria-haspopup="menu"]')
                 );
-            }
+            }}
 
-            // Nếu tab bị chuyển về about:blank thì điều hướng ngay lại https://chatgpt.com/
-            if (!window.location.href || window.location.href.startsWith('about:blank')) {
+            function isTargetMatched(txt) {{
+                const low = (txt || '').toLowerCase();
+                if (!WANT_FAST) {{
+                    return low.includes('medium');
+                }}
+                return (
+                    low.includes('instant')
+                    || low.includes('fast')
+                    || low.includes('low')
+                    || (!low.includes('medium') && !low.includes('high') && !low.includes('heavy') && !low.includes('extended') && !low.includes('pro'))
+                );
+            }}
+
+            if (!window.location.href || window.location.href.startsWith('about:blank')) {{
                 window.location.replace('https://chatgpt.com/');
-                await new Promise(r => setTimeout(r, 2500));
-            }
+                await new Promise(r => setTimeout(r, 2000));
+            }}
 
-            // Chờ nút chọn Model / Thinking effort render xong (vì nút này tải sau #prompt-textarea khoảng 0.5s - 2.5s)
             let modelBtn = null;
-            for (let w = 0; w < 25; w++) {
+            for (let w = 0; w < 18; w++) {{
                 modelBtn = findModelEffortBtn();
                 if (modelBtn && (modelBtn.innerText || '').trim().length > 0) break;
-                await new Promise(r => setTimeout(r, 220));
-            }
-            if (!modelBtn) {
-                return { ok: false, reason: 'NO_MODEL_BTN' };
-            }
+                await new Promise(r => setTimeout(r, 180));
+            }}
+            if (!modelBtn) {{
+                return {{ ok: false, reason: 'NO_MODEL_BTN' }};
+            }}
 
             const initTxt = (modelBtn.innerText || '').trim();
-            if (initTxt.toLowerCase().includes('medium')) {
-                return { ok: true, before: initTxt, after: initTxt, alreadyMedium: true };
-            }
+            if (isTargetMatched(initTxt)) {{
+                return {{ ok: true, before: initTxt, after: initTxt, alreadyMatched: true, alreadyMedium: !WANT_FAST }};
+            }}
 
-            for (let attempt = 0; attempt < 3; attempt++) {
+            for (let attempt = 0; attempt < 3; attempt++) {{
                 const curBtn = findModelEffortBtn() || modelBtn;
-                if ((curBtn.innerText || '').toLowerCase().includes('medium')) {
+                if (isTargetMatched(curBtn.innerText)) {{
                     break;
-                }
+                }}
 
-                // Mở menu: Gọi .click() trước, chỉ dùng pointerdown nếu menu vẫn chưa mở (tránh toggle đóng ngược!)
                 let openMenuNow = document.querySelector('[role="menu"][data-state="open"], [data-reasoning-slider="true"], [role="slider"]');
-                if (!openMenuNow) {
+                if (!openMenuNow) {{
                     curBtn.click();
-                    await new Promise(r => setTimeout(r, 280));
+                    await new Promise(r => setTimeout(r, 220));
                     openMenuNow = document.querySelector('[role="menu"][data-state="open"], [data-reasoning-slider="true"], [role="slider"]');
-                }
-                if (!openMenuNow) {
+                }}
+                if (!openMenuNow) {{
                     const rect = curBtn.getBoundingClientRect();
-                    curBtn.dispatchEvent(new PointerEvent('pointerdown', {
+                    curBtn.dispatchEvent(new PointerEvent('pointerdown', {{
                         bubbles: true, cancelable: true, view: window, button: 0, buttons: 1,
                         clientX: rect.left + 10, clientY: rect.top + 10, pointerId: 1, pointerType: 'mouse', isPrimary: true
-                    }));
-                    await new Promise(r => setTimeout(r, 280));
-                }
+                    }}));
+                    await new Promise(r => setTimeout(r, 220));
+                }}
 
                 const reasoningRow = document.querySelector('[data-reasoning-slider="true"], [aria-label="Power"]');
                 const slider = document.querySelector('[role="slider"]');
-                if (reasoningRow || slider) {
+                if (reasoningRow || slider) {{
                     const keyTarget = reasoningRow || slider;
                     if (typeof keyTarget.focus === 'function') keyTarget.focus();
 
-                    // Bước 1: Đưa thanh trượt về mốc 0 (Instant / trái cùng) trước
-                    for (let i = 0; i < 4; i++) {
-                        keyTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true, cancelable: true }));
-                        keyTarget.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true, cancelable: true }));
-                        await new Promise(r => setTimeout(r, 85));
-                    }
+                    // Đưa thanh trượt về mốc 0 (Instant / trái cùng) trước
+                    for (let i = 0; i < 4; i++) {{
+                        keyTarget.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true, cancelable: true }}));
+                        keyTarget.dispatchEvent(new KeyboardEvent('keyup', {{ key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true, cancelable: true }}));
+                        await new Promise(r => setTimeout(r, 55));
+                    }}
 
-                    // Bước 2: Dịch từng nấc sang phải cho đến khi chữ trên nút đạt đúng "Medium" (mốc 1/2)
-                    for (let step = 0; step < 4; step++) {
-                        const nowTxt = ((findModelEffortBtn() || curBtn).innerText || '').toLowerCase();
-                        if (nowTxt.includes('medium')) break;
-                        keyTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }));
-                        keyTarget.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }));
-                        await new Promise(r => setTimeout(r, 120));
-                        if (((findModelEffortBtn() || curBtn).innerText || '').toLowerCase().includes('medium')) break;
-                    }
+                    if (!WANT_FAST) {{
+                        for (let step = 0; step < 4; step++) {{
+                            if (isTargetMatched((findModelEffortBtn() || curBtn).innerText)) break;
+                            keyTarget.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }}));
+                            keyTarget.dispatchEvent(new KeyboardEvent('keyup', {{ key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }}));
+                            await new Promise(r => setTimeout(r, 90));
+                            if (isTargetMatched((findModelEffortBtn() || curBtn).innerText)) break;
+                        }}
+                    }}
 
-                    // Bước 3 (Dự phòng): Nếu chưa sang Medium, click thẳng vào chính giữa (50%) thanh trượt Power Slider
-                    if (!((findModelEffortBtn() || curBtn).innerText || '').toLowerCase().includes('medium')) {
+                    if (!isTargetMatched((findModelEffortBtn() || curBtn).innerText)) {{
                         const track = document.querySelector('[data-model-picker-power-slider] [data-orientation="horizontal"]')
                             || document.querySelector('[data-model-picker-power-slider]')
                             || reasoningRow;
-                        if (track) {
+                        if (track) {{
                             const tr = track.getBoundingClientRect();
-                            if (tr.width > 10) {
-                                dispatchMouseClickAt(track, tr.left + tr.width * 0.5, tr.top + tr.height * 0.5);
-                                await new Promise(r => setTimeout(r, 180));
-                            }
-                        }
-                    }
-                } else {
-                    // Giao diện menu danh sách truyền thống
+                            if (tr.width > 10) {{
+                                const clickRatio = WANT_FAST ? 0.05 : 0.5;
+                                dispatchMouseClickAt(track, tr.left + tr.width * clickRatio, tr.top + tr.height * 0.5);
+                                await new Promise(r => setTimeout(r, 150));
+                            }}
+                        }}
+                    }}
+                }} else {{
                     const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]'));
-                    const medItem = items.find(x => (x.innerText || '').toLowerCase().includes('medium'));
-                    if (medItem) {
-                        medItem.click();
-                        await new Promise(r => setTimeout(r, 180));
-                    }
-                }
+                    const picked = WANT_FAST
+                        ? items.find(x => /instant|fast|low|standard|auto/i.test(x.innerText || ''))
+                        : items.find(x => (x.innerText || '').toLowerCase().includes('medium'));
+                    if (picked) {{
+                        picked.click();
+                        await new Promise(r => setTimeout(r, 150));
+                    }}
+                }}
 
-                // Đóng menu bằng phím Escape để không che khung soạn thảo
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
-                await new Promise(r => setTimeout(r, 140));
+                document.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }}));
+                await new Promise(r => setTimeout(r, 110));
 
-                if (((findModelEffortBtn() || curBtn).innerText || '').toLowerCase().includes('medium')) {
+                if (isTargetMatched((findModelEffortBtn() || curBtn).innerText)) {{
                     break;
-                }
-            }
+                }}
+            }}
 
             const finalBtn = findModelEffortBtn() || modelBtn;
             const finalTxt = (finalBtn.innerText || '').trim();
-            return {
-                ok: finalTxt.toLowerCase().includes('medium'),
+            return {{
+                ok: isTargetMatched(finalTxt),
                 before: initTxt,
-                after: finalTxt
-            };
-        })()
+                after: finalTxt,
+                effort: WANT_FAST ? 'fast' : 'medium'
+            }};
+        }})()
         """
         port_lock = _PORT_INJECT_LOCKS.setdefault(self.port, threading.Lock())
         with port_lock:
             res = _cdp_eval_js(
-                self.ws_url, js_lock_medium, await_promise=True, timeout=12.0
+                self.ws_url, js_lock_medium, await_promise=True, timeout=10.0
             )
         if isinstance(res, dict) and res.get("before") != res.get("after"):
+            target_lbl = "Fast/Instant" if want_fast else "Medium"
             log_info(
-                f"[{self.project_id}] 🎯 Đã tự động chuyển Model viết từ '{res.get('before', '').replace(chr(10), ' ')}' -> '{res.get('after', '').replace(chr(10), ' ')}' (Khóa cố định Medium)!",
+                f"[{self.project_id}] 🎯 Chuyển Model từ '{res.get('before', '').replace(chr(10), ' ')}' -> '{res.get('after', '').replace(chr(10), ' ')}' ({target_lbl})!",
                 category="CHROME",
                 project_id=self.project_id,
             )
         return res if isinstance(res, dict) else {"ok": False}
 
-    def start_fresh_chat(self, step_name: str = "") -> bool:
+    def start_fresh_chat(
+        self,
+        step_name: str = "",
+        lock_thinking_medium: bool = True,
+        thinking_effort: str = "medium",
+    ) -> bool:
         """
         Chuyển về ĐOẠN CHAT MỚI HOÀN TOÀN (New Chat) ngay trên Tab đang khóa của chính luồng này (`self.tab_id`),
         luôn duy trì chốt bảo vệ `#studio_login_guard` để không bao giờ bị tiến trình ngoài đóng Tab,
@@ -2482,8 +2501,9 @@ class ChatGPTWebSession:
             if isinstance(st, dict):
                 none_nav_ticks = 0
                 if st.get("ready"):
-                    time.sleep(0.4)
-                    self.ensure_thinking_effort_medium()
+                    time.sleep(0.2)
+                    if lock_thinking_medium:
+                        self.ensure_thinking_effort_medium(target_effort=thinking_effort)
                     return True
                 if not st.get("isFresh") and tick in (3, 10):
                     _cdp_navigate(self.ws_url, CHATGPT_GUARD_URL, timeout=2.5)
@@ -2501,8 +2521,12 @@ class ChatGPTWebSession:
                         _ACTIVE_JOBS_BY_ACC.get(self.acc_id, {}).pop(self.tab_id, None)
                     self.tab_id = None
                     self.ws_url = None
-                    return self.open_session_tab(force_new_chat=True)
-            time.sleep(0.5)
+                    return self.open_session_tab(
+                        force_new_chat=True,
+                        lock_thinking_medium=lock_thinking_medium,
+                        thinking_effort=thinking_effort,
+                    )
+            time.sleep(0.28)
         return False
 
     def close_session_tab(self, keep_open: bool = False):
@@ -2632,14 +2656,20 @@ class ChatGPTWebSession:
         timeout_sec: int = 900,
         progress_cb: Optional[Callable[[str, int], None]] = None,
         should_stop_cb: Optional[Callable[[], bool]] = None,
+        thinking_effort: str = "medium",
     ) -> str:
         """
-        Bơm prompt vào ô chat của ChatGPT Web, tự động khóa Thinking effort: Medium,
+        Bơm prompt vào ô chat của ChatGPT Web, tự động chọn Thinking effort (`medium` hoặc `fast`),
         bấm Gửi kèm xác nhận sentConfirmed, theo dõi streaming (chống ảo hóa DOM đa lượt)
         và thu hoạch 2 tầng (Backend API + DOM).
         """
+        eff_mode = str(thinking_effort or "medium").strip().lower()
+        want_medium_mode = eff_mode not in ("fast", "instant", "low", "quick", "auto", "standard")
         if not self.ws_url:
-            if not self.open_session_tab():
+            if not self.open_session_tab(
+                lock_thinking_medium=True,
+                thinking_effort="medium" if want_medium_mode else "fast",
+            ):
                 raise RuntimeError(
                     f"Không thể kết nối tới khung chat ChatGPT trên {self.cfg['label']}. "
                     f"Hãy bấm mở {self.cfg['label']} trên thanh điều khiển và đăng nhập ChatGPT trước!"
@@ -2728,8 +2758,10 @@ class ChatGPTWebSession:
                     self.acc_id,
                     f"Tài khoản {self.cfg['label']} đã mất phiên đăng nhập ChatGPT ({auth_send_reason}) -> Ngừng gửi lệnh!",
                 )
-            # BẮT BUỘC KHÓA MODEL VIẾT Ở CHẾ ĐỘ "Thinking effort: Medium" TRƯỚC MỖI LẦN GỬI LỆNH
-            self.ensure_thinking_effort_medium()
+            # Áp đúng mức Thinking effort theo bước (`medium` cho sáng tác/QA, `fast` cho resize/nối/SEO)
+            self.ensure_thinking_effort_medium(
+                target_effort="medium" if want_medium_mode else "fast"
+            )
 
             # Dùng ensure_ascii=True để mã hóa an toàn tuyệt đối mọi ký tự tiếng Nhật / Việt (\uXXXX)
             escaped_prompt_json = json.dumps(prompt_text, ensure_ascii=True)
@@ -2748,11 +2780,20 @@ class ChatGPTWebSession:
                         el.dispatchEvent(new MouseEvent('mouseup', opts));
                         el.dispatchEvent(new MouseEvent('click', opts));
                     }}
+                    const wantMediumMode = {"true" if want_medium_mode else "false"};
                     const modelBtn = document.querySelector('button[aria-label="Select ChatGPT model"]')
                         || document.querySelector('form button[aria-haspopup="menu"]');
-                    if (modelBtn && !(modelBtn.innerText || '').toLowerCase().includes('medium')) {{
+                    const curModTxt = modelBtn ? (modelBtn.innerText || '').toLowerCase() : '';
+                    const needSwitchModel = Boolean(
+                        modelBtn && (
+                            wantMediumMode
+                                ? !curModTxt.includes('medium')
+                                : (curModTxt.includes('medium') || curModTxt.includes('high') || curModTxt.includes('heavy') || curModTxt.includes('extended'))
+                        )
+                    );
+                    if (needSwitchModel) {{
                         modelBtn.click();
-                        await new Promise(res => setTimeout(res, 280));
+                        await new Promise(res => setTimeout(res, 220));
                         const reasoningRow = document.querySelector('[data-reasoning-slider="true"], [aria-label="Power"]');
                         const slider = document.querySelector('[role="slider"]');
                         if (reasoningRow || slider) {{
@@ -2760,20 +2801,24 @@ class ChatGPTWebSession:
                             if (typeof keyTarget.focus === 'function') keyTarget.focus();
                             for (let i = 0; i < 4; i++) {{
                                 keyTarget.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true, cancelable: true }}));
-                                await new Promise(res => setTimeout(res, 80));
+                                await new Promise(res => setTimeout(res, 55));
                             }}
-                            for (let step = 0; step < 4; step++) {{
-                                if ((modelBtn.innerText || '').toLowerCase().includes('medium')) break;
-                                keyTarget.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }}));
-                                await new Promise(res => setTimeout(res, 110));
+                            if (wantMediumMode) {{
+                                for (let step = 0; step < 4; step++) {{
+                                    if ((modelBtn.innerText || '').toLowerCase().includes('medium')) break;
+                                    keyTarget.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true }}));
+                                    await new Promise(res => setTimeout(res, 90));
+                                }}
                             }}
                         }} else {{
                             const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]'));
-                            const medItem = items.find(x => (x.innerText || '').toLowerCase().includes('medium'));
-                            if (medItem) medItem.click();
+                            const pickItem = wantMediumMode
+                                ? items.find(x => (x.innerText || '').toLowerCase().includes('medium'))
+                                : items.find(x => /instant|fast|low|standard|auto/i.test(x.innerText || ''));
+                            if (pickItem) pickItem.click();
                         }}
                         document.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }}));
-                        await new Promise(res => setTimeout(res, 120));
+                        await new Promise(res => setTimeout(res, 100));
                     }}
                 }} catch (e) {{}}
 
@@ -2838,8 +2883,8 @@ class ChatGPTWebSession:
 
                 // Vòng lặp xác nhận gửi thật sự (sentConfirmed - Master Blueprint V6.0)
                 let sentConfirmed = false;
-                for (let s = 0; s < 25; s++) {{
-                    await new Promise(r => setTimeout(r, 320));
+                for (let s = 0; s < 30; s++) {{
+                    await new Promise(r => setTimeout(r, 180));
                     const stopNow = document.querySelector('[data-testid="stop-button"], form button[aria-label*="Stop" i], button[aria-label*="Stop streaming" i]');
                     const curBox = document.querySelector('#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], main textarea');
                     const curTextLen = curBox ? ((curBox.tagName === 'TEXTAREA' ? curBox.value : curBox.innerText) || '').trim().length : 0;
@@ -2904,7 +2949,9 @@ class ChatGPTWebSession:
                         )
                         if has_box:
                             break
-                    self.ensure_thinking_effort_medium()
+                    self.ensure_thinking_effort_medium(
+                        target_effort="medium" if want_medium_mode else "fast"
+                    )
             if not isinstance(inj_res, dict) or not inj_res.get("ok"):
                 raise RuntimeError(
                     f"Không thể gửi lệnh vào ChatGPT ({self.cfg['label']}): {inj_res}"
@@ -2994,7 +3041,7 @@ class ChatGPTWebSession:
             if should_stop_cb and should_stop_cb():
                 raise RuntimeError("Đã dừng tiến trình theo yêu cầu người dùng.")
 
-            time.sleep(1.5)
+            time.sleep(0.85)
             state = _cdp_eval_js(self.ws_url, poll_js, await_promise=False, timeout=6.0)
             if not isinstance(state, dict):
                 none_poll_ticks += 1
@@ -3002,13 +3049,13 @@ class ChatGPTWebSession:
                 if len(last_text) >= 5000 and none_poll_ticks >= 3:
                     return last_text
                 # Kiểm tra sớm nếu tab Chrome bị đóng hoặc mất kết nối CDP để Failover ngay, không treo 15 phút
-                if none_poll_ticks >= 6:
+                if none_poll_ticks >= 8:
                     alive_tabs = _cdp_get_tabs(getattr(self, "port", 0), timeout=2.5)
                     tab_gone = alive_tabs is None or not any(
                         str(t.get("id", "")) == str(getattr(self, "tab_id", ""))
                         for t in (alive_tabs or [])
                     )
-                    if tab_gone or none_poll_ticks >= 12:
+                    if tab_gone or none_poll_ticks >= 15:
                         raise RuntimeError(
                             f"Tab Chrome trên {self.cfg['label']} bị đóng hoặc mất phản hồi CDP tại {step_label} -> Chuyển nick khác!"
                         )
@@ -3041,8 +3088,8 @@ class ChatGPTWebSession:
 
                 if curr_text == last_text and not is_streaming:
                     stable_ticks += 1
-                    # Khi nút Stop đã biến mất và văn bản đứng yên suốt 4.5 giây (3 nhịp) -> Thu hoạch Tầng 1 Backend API + Tầng 2 DOM!
-                    if stable_ticks >= 3:
+                    # Khi nút Stop đã biến mất và văn bản đứng yên suốt ~1.7 giây (2 nhịp) -> Thu hoạch Tầng 1 Backend API + Tầng 2 DOM!
+                    if stable_ticks >= 2:
                         backend_md = self._harvest_latest_turn_from_backend_api()
                         if backend_md and len(backend_md) >= int(len(curr_text) * 0.85):
                             return backend_md
@@ -3051,8 +3098,8 @@ class ChatGPTWebSession:
                     stable_ticks = 0
                     last_text = curr_text
             else:
-                # Dự phòng Tầng 1: Nếu không còn streaming sau 12s mà DOM chưa hiện node mới, kiểm tra thẳng Backend API
-                if not is_streaming and (time.time() - start_t) > 12:
+                # Dự phòng Tầng 1: Nếu không còn streaming sau 10s mà DOM chưa hiện node mới, kiểm tra thẳng Backend API
+                if not is_streaming and (time.time() - start_t) > 10:
                     backend_md = self._harvest_latest_turn_from_backend_api()
                     if (
                         backend_md
@@ -3229,6 +3276,11 @@ class ChatGPTWebSession:
                 self.acc_id,
                 f"Tài khoản {self.cfg['label']} chưa đăng nhập ChatGPT ({auth_img_reason}) -> Không gửi lệnh vẽ Thumbnail!",
             )
+        # Dùng chế độ Fast/Instant khi vẽ ảnh để ChatGPT gọi Image Tool ngay thay vì ngồi Thinking kéo dài hoặc trả lời văn bản.
+        try:
+            self.ensure_thinking_effort_medium(target_effort="fast")
+        except Exception:
+            pass
 
         ref_sig = self._prepare_ref_image_signature(reference_image_b64)
         img_stamp = f"img_seen_{int(time.time() * 1000)}"
@@ -3283,12 +3335,14 @@ class ChatGPTWebSession:
                     const file = new File([blob], refName, {{ type: 'image/png', lastModified: Date.now() }});
                     const dtImg = new DataTransfer();
                     dtImg.items.add(file);
-                    el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dtImg, bubbles: true, cancelable: true }}));
-                    await new Promise(r => setTimeout(r, 700));
-
                     const formEl = el.closest('form') || document.querySelector('main form') || document.body;
-                    const hasPreview = formEl.querySelectorAll('img, [data-testid*="attachment"], button[aria-label*="Remove" i]').length > 0;
-                    if (!hasPreview) {{
+                    const countFormAttach = () => formEl.querySelectorAll('img, [data-testid*="attachment"], button[aria-label*="Remove" i]').length;
+                    const preAttachCnt = countFormAttach();
+                    el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dtImg, bubbles: true, cancelable: true }}));
+                    await new Promise(r => setTimeout(r, 850));
+
+                    const hasNewPreview = countFormAttach() > preAttachCnt;
+                    if (!hasNewPreview) {{
                         const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
                         const targetInput = fileInputs.find(inp => !inp.accept || inp.accept.includes('image') || inp.accept.includes('*')) || fileInputs[0];
                         if (targetInput) {{
@@ -3296,14 +3350,16 @@ class ChatGPTWebSession:
                             dtIn.items.add(file);
                             targetInput.files = dtIn.files;
                             targetInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            targetInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         }}
                     }}
 
-                    // Chờ ảnh tham chiếu upload xong lên ChatGPT (tối đa ~6 giây)
-                    for (let w = 0; w < 20; w++) {{
+                    // Chờ ảnh tham chiếu upload xong lên ChatGPT (tối đa ~12 giây)
+                    for (let w = 0; w < 40; w++) {{
                         await new Promise(r => setTimeout(r, 300));
                         const uploading = formEl.querySelector('[role="progressbar"], [aria-busy="true"], svg.animate-spin');
-                        if (!uploading && w >= 5) break;
+                        const previewNow = countFormAttach() > preAttachCnt;
+                        if (previewNow && !uploading && w >= 4) break;
                     }}
                     // Đánh dấu mọi thẻ <img> của ảnh đính kèm để bộ thu hoạch không lấy nhầm ảnh tham chiếu
                     document.querySelectorAll('form img, [data-message-author-role="user"] img, article[data-turn="user"] img, div[data-turn="user"] img, [data-testid*="user"] img').forEach(im => {{
@@ -3358,7 +3414,7 @@ class ChatGPTWebSession:
 
             let sentConfirmed = false;
             for (let s = 0; s < 35; s++) {{
-                await new Promise(r => setTimeout(r, 320));
+                await new Promise(r => setTimeout(r, 180));
                 const stopNow = document.querySelector('[data-testid="stop-button"], form button[aria-label*="Stop" i], button[aria-label*="Stop streaming" i]');
                 const curBox = document.querySelector('#prompt-textarea, #mobile-composer-prompt, textarea[id*="prompt"], div.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], main textarea');
                 const curTextLen = curBox ? ((curBox.tagName === 'TEXTAREA' ? curBox.value : curBox.innerText) || '').trim().length : 0;
@@ -3412,8 +3468,8 @@ class ChatGPTWebSession:
                 const alt = (im.getAttribute('alt') || '').toLowerCase();
                 if (alt.includes('user') || alt.includes('profile') || alt.includes('avatar') || alt.includes('uploaded') || alt.includes('tải lên') || alt.includes('logo') || alt.includes('icon')) return false;
                 const cs = window.getComputedStyle(im);
-                if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.85) return false;
-                // Loại bỏ tuyệt đối ảnh loading shimmer/placeholder bị CSS làm mờ blur(...)
+                if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.25) return false;
+                // Loại bỏ ảnh loading shimmer/placeholder bị CSS làm mờ blur(...)
                 if ((cs.filter || '').toLowerCase().includes('blur')) return false;
                 if (im.getAttribute('aria-hidden') === 'true') return false;
                 if (im.closest('[aria-hidden="true"], [role="progressbar"], [aria-busy="true"], [class*="placeholder" i], [class*="shimmer" i], [class*="skeleton" i], [data-testid*="placeholder" i], [data-testid*="loading" i]')) return false;
@@ -3422,7 +3478,9 @@ class ChatGPTWebSession:
                 const nw = im.naturalWidth || 0;
                 const nh = im.naturalHeight || 0;
                 const rect = im.getBoundingClientRect();
-                return Boolean(im.complete && nw >= 256 && nh >= 256 && rect.width >= 100 && rect.height >= 100);
+                // Tab nền / bị thu nhỏ trên Windows có rect=0x0 -> chỉ loại nếu đang hiển thị quá nhỏ (<60px)
+                const sizeOk = (rect.width === 0 && rect.height === 0) || (rect.width >= 60 && rect.height >= 60);
+                return Boolean(im.complete && nw >= 256 && nh >= 256 && sizeOk);
             };
         """
 
@@ -3436,7 +3494,7 @@ class ChatGPTWebSession:
             const stopBtn = document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Dừng" i], .result-streaming');
             const isStreaming = Boolean(stopBtn || hasIncompleteTurn);
 
-            const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
+            const allImgs = Array.from(document.querySelectorAll('main img, article img, section img, [data-message-author-role="assistant"] img, [data-turn="assistant"] img'));
             const newImgs = allImgs.filter(isValidGeneratedDomImg);
 
             if (newImgs.length > 0) {
@@ -3509,8 +3567,18 @@ class ChatGPTWebSession:
                             const mapping = conv.mapping || {};
                             let cur = conv.current_node;
                             const seen = new Set();
-                            let foundPointer = '';
-                            let w = 1024, h = 1536;
+                            const apiCandidates = [];
+                            const pushCand = (ptr, wVal, hVal, directUrl) => {
+                                if (!ptr && !directUrl) return;
+                                const keyPtr = ptr || directUrl;
+                                if (rejectedSrcs.has(keyPtr)) return;
+                                apiCandidates.push({
+                                    ptr: ptr || '',
+                                    url: directUrl || '',
+                                    w: wVal || 1024,
+                                    h: hVal || 1536
+                                });
+                            };
                             while (cur && !seen.has(cur) && mapping[cur]) {
                                 seen.add(cur);
                                 const msg = mapping[cur].message;
@@ -3519,42 +3587,79 @@ class ChatGPTWebSession:
                                     // Tuyệt đối không quét ngược qua tin nhắn user để không bao giờ lấy nhầm ảnh tham chiếu
                                     break;
                                 }
-                                if (msg && msg.status !== 'in_progress' && (role === 'assistant' || role === 'tool') && msg.content && Array.isArray(msg.content.parts)) {
-                                    for (const pt of msg.content.parts) {
-                                        if (pt && typeof pt === 'object' && pt.asset_pointer) {
-                                            foundPointer = pt.asset_pointer;
-                                            w = pt.width || w;
-                                            h = pt.height || h;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (foundPointer) break;
-                                cur = mapping[cur].parent;
-                            }
-                            if (foundPointer && !rejectedSrcs.has(foundPointer)) {
-                                const fileId = foundPointer.replace('sediment://', '').replace('file-service://', '').trim();
-                                let downloadedBlob = null;
-                                try {
-                                    const dlResp = await fetch('/backend-api/files/download/' + fileId + '?inline=false', {
-                                        credentials: 'include',
-                                        headers: { 'Authorization': 'Bearer ' + window.__studioAccessToken }
-                                    });
-                                    if (dlResp.ok) {
-                                        const dlJson = await dlResp.json();
-                                        const dlUrl = dlJson.download_url || '';
-                                        if (dlUrl) {
-                                            const imgResp = await fetch(dlUrl);
-                                            if (imgResp.ok) {
-                                                const b = await imgResp.blob();
-                                                if (b && b.size > 4000 && !(b.type || '').includes('svg')) {
-                                                    downloadedBlob = b;
+                                if (msg && msg.status !== 'in_progress' && (role === 'assistant' || role === 'tool')) {
+                                    if (msg.content && Array.isArray(msg.content.parts)) {
+                                        for (const pt of msg.content.parts) {
+                                            if (pt && typeof pt === 'object') {
+                                                const ptrDirect = pt.asset_pointer || (pt.image_asset_pointer && pt.image_asset_pointer.asset_pointer) || '';
+                                                const imgW = pt.width || (pt.image_asset_pointer && pt.image_asset_pointer.width) || 1024;
+                                                const imgH = pt.height || (pt.image_asset_pointer && pt.image_asset_pointer.height) || 1536;
+                                                if (ptrDirect || pt.url) {
+                                                    pushCand(ptrDirect, imgW, imgH, pt.url || '');
                                                 }
                                             }
                                         }
                                     }
-                                } catch (eDl) {}
-                                if (!downloadedBlob) {
+                                    if (msg.metadata && Array.isArray(msg.metadata.attachments)) {
+                                        for (const att of msg.metadata.attachments) {
+                                            if (att && (att.id || att.file_id || att.url)) {
+                                                const mime = (att.mimeType || att.mime_type || '').toLowerCase();
+                                                if (!mime || mime.includes('image')) {
+                                                    pushCand(att.id || att.file_id || '', att.width || 1024, att.height || 1536, att.url || '');
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                cur = mapping[cur].parent;
+                            }
+                            for (const cand of apiCandidates) {
+                                const fileId = (cand.ptr || '').replace('sediment://', '').replace('file-service://', '').trim();
+                                let downloadedBlob = null;
+                                if (cand.url && !rejectedSrcs.has(cand.url)) {
+                                    try {
+                                        const uResp = await fetch(cand.url, { credentials: 'include' });
+                                        if (uResp.ok) {
+                                            const bu = await uResp.blob();
+                                            if (bu && bu.size > 4000 && !(bu.type || '').includes('svg')) downloadedBlob = bu;
+                                        }
+                                    } catch (eU) {}
+                                }
+                                if (!downloadedBlob && fileId) {
+                                    try {
+                                        const dlResp = await fetch('/backend-api/files/download/' + encodeURIComponent(fileId) + '?inline=false', {
+                                            credentials: 'include',
+                                            headers: { 'Authorization': 'Bearer ' + window.__studioAccessToken }
+                                        });
+                                        if (dlResp.ok) {
+                                            const dlJson = await dlResp.json();
+                                            const dlUrl = dlJson.download_url || '';
+                                            if (dlUrl) {
+                                                const imgResp = await fetch(dlUrl);
+                                                if (imgResp.ok) {
+                                                    const b = await imgResp.blob();
+                                                    if (b && b.size > 4000 && !(b.type || '').includes('svg')) downloadedBlob = b;
+                                                }
+                                            }
+                                        }
+                                    } catch (eDl) {}
+                                }
+                                if (!downloadedBlob && fileId) {
+                                    // Khớp các thẻ <img> estuary/oaiusercontent có sẵn chữ ký (?sig=...) trong DOM
+                                    const signedDom = Array.from(document.querySelectorAll('main img, article img, section img, [data-message-author-role="assistant"] img'))
+                                        .map(im => im.currentSrc || im.src || '')
+                                        .find(s => s && !rejectedSrcs.has(s) && s.includes(fileId));
+                                    if (signedDom) {
+                                        try {
+                                            const sResp = await fetch(signedDom, { credentials: 'include' });
+                                            if (sResp.ok) {
+                                                const bs = await sResp.blob();
+                                                if (bs && bs.size > 4000 && !(bs.type || '').includes('svg')) downloadedBlob = bs;
+                                            }
+                                        } catch (eSig) {}
+                                    }
+                                }
+                                if (!downloadedBlob && fileId) {
                                     try {
                                         const estResp = await fetch('/backend-api/estuary/content?id=' + encodeURIComponent(fileId), {
                                             credentials: 'include',
@@ -3562,16 +3667,14 @@ class ChatGPTWebSession:
                                         });
                                         if (estResp.ok) {
                                             const b2 = await estResp.blob();
-                                            if (b2 && b2.size > 4000 && !(b2.type || '').includes('svg')) {
-                                                downloadedBlob = b2;
-                                            }
+                                            if (b2 && b2.size > 4000 && !(b2.type || '').includes('svg')) downloadedBlob = b2;
                                         }
                                     } catch (eEst) {}
                                 }
                                 if (downloadedBlob) {
                                     const dUrl = await blobToDataUrl(downloadedBlob);
                                     if (dUrl && dUrl.includes('base64,')) {
-                                        return { ok: true, b64: dUrl.split('base64,')[1], width: w, height: h, source: 'backend_api', img_src: foundPointer };
+                                        return { ok: true, b64: dUrl.split('base64,')[1], width: cand.w, height: cand.h, source: 'backend_api', img_src: cand.ptr || cand.url };
                                     }
                                 }
                             }
@@ -3581,7 +3684,7 @@ class ChatGPTWebSession:
             } catch (e) {}
 
             // Tầng 2 (Fallback DOM): Chỉ nhận <img> đã qua lọc sạch SVG / oaistatic / CSS blur / spinner / userImgSrcs
-            const allImgs = Array.from(document.querySelectorAll('main img, article img, [data-message-author-role="assistant"] img'));
+            const allImgs = Array.from(document.querySelectorAll('main img, article img, section img, [data-message-author-role="assistant"] img, [data-turn="assistant"] img'));
             const newImgs = allImgs.filter(isValidGeneratedDomImg);
 
             if (newImgs.length > 0) {
@@ -3633,11 +3736,12 @@ class ChatGPTWebSession:
             except Exception:
                 pass
 
+        last_api_probe_t = 0.0
         while time.time() - start_t < timeout_sec:
             if should_stop_cb and should_stop_cb():
                 raise RuntimeError("Đã dừng tiến trình theo yêu cầu người dùng.")
 
-            time.sleep(2.5)
+            time.sleep(2.0)
             elapsed = int(time.time() - start_t)
             st = _cdp_eval_js(
                 self.ws_url, poll_img_js, await_promise=False, timeout=6.0
@@ -3673,9 +3777,14 @@ class ChatGPTWebSession:
             if progress_cb:
                 progress_cb(step_label, elapsed)
 
-            if new_img_count > 0 and not is_streaming:
-                # Chờ thêm 1.5s để ảnh render hoàn chỉnh độ phân giải cao nhất rồi thu hoạch NGAY
-                time.sleep(1.5)
+            # Chủ động thăm dò Backend API & DOM định kỳ từ giây 16 ngay cả khi tab bị che / is_creating_img còn kẹt
+            should_probe_now = (new_img_count > 0 and not is_streaming) or (
+                elapsed >= 16 and (time.time() - last_api_probe_t) >= 7.5
+            )
+            if should_probe_now:
+                if new_img_count > 0 and not is_streaming:
+                    time.sleep(1.0)
+                last_api_probe_t = time.time()
                 harv = _cdp_eval_js(
                     self.ws_url, harvest_img_js, await_promise=True, timeout=25.0
                 )
@@ -3731,7 +3840,7 @@ class ChatGPTWebSession:
                         idle_after_stream_ticks = 0
                         continue
                     if (
-                        idle_after_stream_ticks >= 6
+                        idle_after_stream_ticks >= 5
                         and latest_text
                         and not retried_text_nudge
                     ):
@@ -3764,7 +3873,7 @@ class ChatGPTWebSession:
                             timeout=10.0,
                         )
                         continue
-                    if idle_after_stream_ticks >= 10 and latest_text:
+                    if idle_after_stream_ticks >= 9 and latest_text:
                         return {
                             "success": False,
                             "acc_id": self.acc_id,
@@ -3815,6 +3924,7 @@ from .script_quality_gate import (
     build_pending_release_record,
     build_reference_block,
     build_runtime_adapter,
+    count_script_metrics,
     decide_script_release,
     evaluate_render_gate,
     extract_patch_ledger,
@@ -6612,6 +6722,18 @@ class ADASScriptEngine:
         if not proj_dir.exists() and not final_proj_dir.exists():
             return False, "", 0
 
+        ck_disk = self._get_idea_channel_key(ma_id=ma_id)
+        prof_disk = get_script_length_profile(ck_disk)
+        prof_min_part = min(
+            int(v.get("part_floor", prof_disk.get("min_part", 8500)))
+            for v in (prof_disk.get("stages") or {}).values()
+        ) if (prof_disk.get("stages") or {}) else int(prof_disk.get("min_part", 8500))
+        eff_min_part = (
+            min(min_part_chars, prof_min_part)
+            if min_part_chars == 9500
+            else min_part_chars
+        )
+
         pa, pb, pc = (
             proj_dir / "part_a.txt",
             proj_dir / "part_b.txt",
@@ -6622,7 +6744,7 @@ class ADASScriptEngine:
         has_any_part_file = pa.exists() or pb.exists() or pc.exists()
 
         if has_any_part_file:
-            prog = self.get_script_parts_progress(ma_id, min_part_chars=min_part_chars)
+            prog = self.get_script_parts_progress(ma_id, min_part_chars=eff_min_part)
             if prog["all_three_valid"]:
                 combined = "\n\n".join(
                     [
@@ -6663,24 +6785,23 @@ class ADASScriptEngine:
                         pass
                     return True, combined, cnt
 
-            # Nếu có file part nhưng chưa đủ cả 3 Part hợp lệ (VD: P16 mới có Part A, P17 mới có Part A+B):
-            for p_let in prog["missing_parts"]:
-                bad_pf = proj_dir / f"part_{p_let.lower()}.txt"
-                if bad_pf.exists():
-                    try:
-                        bad_pf.unlink()
-                    except Exception:
-                        pass
-            if script_file.exists():
-                try:
-                    sc_txt = script_file.read_text(encoding="utf-8").strip()
-                    if (
-                        pure_char_count(sc_txt) < min_pure_chars
-                        or not prog["all_three_valid"]
-                    ):
-                        script_file.unlink()
-                except Exception:
-                    pass
+            # Tuyệt đối KHÔNG xóa file part_a/b/c hoặc script_clean.txt trong hàm kiểm tra chỉ-đọc!
+            # Nếu đã có cả 3 file part hoặc file full hoàn chỉnh >= min_pure_chars -> cho phép khôi phục để sửa/cân thay vì phá hủy ổ đĩa.
+            pmx_full_f = proj_dir / "PMX_FULL_SCRIPT.txt"
+            if (pa.exists() and pb.exists() and pc.exists()) or (pmx_full_f.exists() and pmx_full_f.stat().st_size > 2000):
+                for full_cand in (pmx_full_f, script_file):
+                    if full_cand.exists():
+                        try:
+                            cand_txt, _ = self._sanitize_and_note_script_text(
+                                ma_id,
+                                full_cand.read_text(encoding="utf-8", errors="ignore"),
+                                source_label="recover_full_fallback",
+                            )
+                            cand_cnt = pure_char_count(cand_txt)
+                            if cand_cnt >= min_pure_chars:
+                                return True, cand_txt, cand_cnt
+                        except Exception:
+                            pass
             return False, "", prog["partial_chars"]
 
         # Trường hợp kịch bản nạp trực tiếp hoặc nằm ở final_video_dir:
@@ -7298,12 +7419,19 @@ class ADASScriptEngine:
         reconstructed["missing_parts"] = [] if has_sc else prog["missing_parts"]
         if has_mp4:
             reconstructed["status"] = "COMPLETED_VIDEO"
+            reconstructed["needs_script_fix"] = False
+            reconstructed["qa_ready"] = True
             reconstructed["current_step"] = f"✅ Đã xuất Video MP4 ({sc_chars:,} chữ)"
             reconstructed["video_mp4_path"] = str(mp4_f)
         elif has_sc:
+            needs_fix_rec = self._script_needs_reaudit(ma_id)
+            reconstructed["needs_script_fix"] = bool(needs_fix_rec)
+            reconstructed["qa_ready"] = not needs_fix_rec
             reconstructed["status"] = "SCRIPT_DONE"
             reconstructed["current_step"] = (
-                f"📝 Đã xong Kịch bản ({sc_chars:,} chữ) — Sẵn sàng Render MP4"
+                f"⛔ Kịch bản cần căn độ dài / QA lại ({sc_chars:,} chữ) — Bấm Chạy Lại"
+                if needs_fix_rec
+                else f"📝 Đã xong Kịch bản ({sc_chars:,} chữ) — Sẵn sàng Render MP4"
             )
         else:
             miss_str = ", ".join(prog["missing_parts"])
@@ -7493,6 +7621,7 @@ class ADASScriptEngine:
                     and not (
                         it.get("has_video_mp4") and mid not in self._mp4_valid_cache
                     )
+                    and ("needs_script_fix" in it or not it.get("has_script"))
                 ):
                     continue
                 if (
@@ -7579,8 +7708,14 @@ class ADASScriptEngine:
 
                 curr_st = str(it.get("status") or "")
                 if has_mp4:
-                    if curr_st != "COMPLETED_VIDEO":
+                    if (
+                        curr_st != "COMPLETED_VIDEO"
+                        or it.get("needs_script_fix") is not False
+                        or it.get("qa_ready") is not True
+                    ):
                         it["status"] = "COMPLETED_VIDEO"
+                        it["needs_script_fix"] = False
+                        it["qa_ready"] = True
                         it["current_step"] = (
                             f"✅ Đã xuất Video MP4 ({effective_chars:,} chữ)"
                         )
@@ -7648,6 +7783,16 @@ class ADASScriptEngine:
                             pass
                         else:
                             has_v_disk, v_dur_disk = self.has_valid_voice_on_disk(mid)
+                            needs_fix_sync = self._script_needs_reaudit(mid)
+                            qa_ready_sync = not needs_fix_sync
+                            if bool(it.get("needs_script_fix")) != bool(needs_fix_sync):
+                                it["needs_script_fix"] = bool(needs_fix_sync)
+                                changed = True
+                                item_changed = True
+                            if it.get("qa_ready") is not qa_ready_sync:
+                                it["qa_ready"] = qa_ready_sync
+                                changed = True
+                                item_changed = True
                             if bool(it.get("has_voice")) != bool(has_v_disk):
                                 it["has_voice"] = bool(has_v_disk)
                                 changed = True
@@ -7673,6 +7818,28 @@ class ADASScriptEngine:
 
                             if curr_st == "VOICE_QUEUED" and is_in_vp_queue:
                                 pass
+                            elif needs_fix_sync and curr_st in (
+                                "",
+                                "SAVED_READY",
+                                "CHƯA_CHẠY_STEP2",
+                                "ERROR",
+                                "ERROR_VIDEO",
+                                "RUNNING",
+                                "PARTIAL_SCRIPT",
+                                "COMPLETED_HANDOFF",
+                                "VIDEO_QUEUED",
+                                "VOICE_QUEUED",
+                                "SCRIPT_DONE",
+                                "VOICE_DONE",
+                            ):
+                                expected_fix_step = (
+                                    f"⛔ Kịch bản cần căn độ dài / QA lại ({effective_chars:,} chữ) — Bấm Chạy Lại"
+                                )
+                                if curr_st != "SCRIPT_DONE" or it.get("current_step") != expected_fix_step:
+                                    it["status"] = "SCRIPT_DONE"
+                                    it["current_step"] = expected_fix_step
+                                    changed = True
+                                    item_changed = True
                             elif (
                                 has_v_disk
                                 and has_thumb
@@ -9133,13 +9300,30 @@ class ADASScriptEngine:
         chỉ có `script_clean.txt` không kèm hồ sơ ADAS (`part_a/b/c.txt`, `PMX_FULL_SCRIPT.txt`, `step3_architecture.txt`).
         """
         record, record_dir = self._read_project_release_record(ma_id)
+        proj_dir = record_dir or self._get_effective_project_dir(ma_id)
+        ch_key = self._get_idea_channel_key(ma_id=ma_id)
+        prof = get_script_length_profile(ch_key)
+        sc_f = proj_dir / "script_clean.txt"
+        pmx_f = proj_dir / "PMX_FULL_SCRIPT.txt"
         if record is not None:
             if isinstance(record.get("human_override"), dict):
                 return False
-            return record.get("release_decision") in (DECISION_PENDING, DECISION_NOT_READY)
+            if record.get("release_decision") != DECISION_READY:
+                return True
+            if sc_f.exists() and sc_f.stat().st_size > 200:
+                try:
+                    sc_raw_chk = sc_f.read_text(encoding="utf-8", errors="ignore")
+                    fp_now = script_fingerprint(sc_raw_chk)
+                    if record.get("script_fingerprint") and fp_now != record.get("script_fingerprint"):
+                        return True
+                    sc_cnt_chk = pure_char_count(sc_raw_chk)
+                    if not (int(prof["total_min"]) <= sc_cnt_chk <= int(prof["total_max"])):
+                        return True
+                except Exception:
+                    return True
+            return False
 
         # Kiểm tra các dự án ADAS cũ bị kẹt/lỗi trước khi kịp xuất QA_RELEASE.json
-        proj_dir = record_dir or self._get_effective_project_dir(ma_id)
         if not proj_dir.exists():
             return False
         has_adas_markers = any(
@@ -9156,22 +9340,19 @@ class ADASScriptEngine:
         if not has_adas_markers:
             return False
 
-        ch_key = self._get_idea_channel_key(ma_id=ma_id)
-        pmx_f = proj_dir / "PMX_FULL_SCRIPT.txt"
-        sc_f = proj_dir / "script_clean.txt"
         if pmx_f.exists() and pmx_f.stat().st_size > 1000:
-            gate = run_machine_script_gate(
-                pmx_f.read_text(encoding="utf-8", errors="ignore"), ch_key, self.root_dir
-            )
-            if not gate.get("passed"):
+            pmx_raw = pmx_f.read_text(encoding="utf-8", errors="ignore")
+            m_fast = count_script_metrics(pmx_raw)
+            c_fast = m_fast["visible_chars"] if str(ch_key).lower() == "mafia" else m_fast["body_chars"]
+            if (
+                m_fast["headings"] != list(range(1, 8))
+                or not (int(prof["total_min"]) <= c_fast <= int(prof["total_max"]))
+                or any(c < int(prof["min_part"]) for c in (m_fast["part_chars"] or {}).values())
+            ):
                 return True
+            # Thiếu QA_RELEASE.json của dự án cũ -> cần điền/kiểm định 2 vòng trước khi render
+            return True
         elif sc_f.exists() and sc_f.stat().st_size > 1000:
-            # Nếu thiếu PMX_FULL_SCRIPT.txt hoặc độ dài nằm ngoài chuẩn kênh -> cần khôi phục & kiểm định QA 2 vòng
-            sc_raw = sc_f.read_text(encoding="utf-8", errors="ignore")
-            prof = get_script_length_profile(ch_key)
-            sc_cnt = pure_char_count(sc_raw)
-            if not (int(prof["total_min"]) <= sc_cnt <= int(prof["total_max"])):
-                return True
             return True
         return False
 
@@ -10308,7 +10489,7 @@ YÊU CẦU BẮT BUỘC:
         part_files: Dict[str, Path],
         max_rounds: int = 3,
     ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-        """Cân độ dài thông minh từng `[PART]` rồi mới đến từng Stage; tuyệt đối không cắt cơ học cụt đuôi."""
+        """Cân độ dài thông minh: ưu tiên cấp Stage (1 lượt/Stage + Thinking Fast) khi lệch lớn/nhiều Part, rồi mới chỉnh lẻ từng [PART]."""
         stages = {
             k: ensure_part_headings_for_stage(v, k) for k, v in stage_texts.items()
         }
@@ -10324,8 +10505,21 @@ YÊU CẦU BẮT BUỘC:
         for round_no in range(1, max_rounds + 1):
             if gate["passed"] or self.should_stop:
                 break
+
+            # Kiểm tra trước: nếu chênh lệch tổng > 12.000 chữ HOẶC có >= 2 Part cùng lệch trong một Stage -> sửa cấp Stage 1 lượt cho siêu nhanh!
+            stage_plan_first = plan_stage_resize(stages, channel_key, gate)
             part_plan = plan_part_resize(stages, channel_key, gate)
-            if part_plan:
+            use_stage_first = False
+            if stage_plan_first:
+                st_info = inspect_stage_part_lengths(
+                    stages[stage_plan_first["stage"]], stage_plan_first["stage"], channel_key
+                )
+                bad_cnt_in_stage = len(st_info.get("need_adjust") or [])
+                total_gap = abs(int(gate.get("chars") or 0) - int(profile["total_target"]))
+                if bad_cnt_in_stage >= 2 or total_gap > 12000 or not part_plan:
+                    use_stage_first = True
+
+            if part_plan and not use_stage_first:
                 letter = part_plan["stage"]
                 pnum = int(part_plan["part_num"])
                 part_cur = part_plan["part_text"]
@@ -10334,10 +10528,14 @@ YÊU CẦU BẮT BUỘC:
                 self._emit(
                     message=(
                         f"[{ma_id}] ✂️ Tổng {gate['chars']:,} chữ — `[PART {pnum}]` ({cur_p_chars:,} chữ) "
-                        f"đang {'vượt' if part_plan['action'] == 'condense' else 'thiếu'} chuẩn -> Cân về ~{t_chars:,} chữ (lượt {round_no}/{max_rounds})..."
+                        f"đang {'vượt' if part_plan['action'] == 'condense' else 'thiếu'} chuẩn -> Cân nhanh về ~{t_chars:,} chữ (lượt {round_no}/{max_rounds})..."
                     )
                 )
-                session.start_fresh_chat(f"PART_RESIZE_{pnum}_{round_no}")
+                session.start_fresh_chat(
+                    f"PART_RESIZE_{pnum}_{round_no}",
+                    lock_thinking_medium=True,
+                    thinking_effort="fast",
+                )
                 response = session.send_prompt_and_wait(
                     self._build_part_resize_prompt(
                         ma_id=ma_id,
@@ -10350,11 +10548,12 @@ YÊU CẦU BẮT BUỘC:
                         step3_context=step3_context,
                     ),
                     step_label=f"PART_RESIZE_{pnum}_{round_no}",
-                    timeout_sec=720,
+                    timeout_sec=600,
                     progress_cb=lambda st, ch, pn=pnum: self._emit(
-                        message=f"[{ma_id}] Đang cân lại [PART {pn}] ({ch:,} ký tự)..."
+                        message=f"[{ma_id}] Đang cân nhanh [PART {pn}] ({ch:,} ký tự)..."
                     ),
                     should_stop_cb=lambda: self.should_stop,
+                    thinking_effort="fast",
                 )
                 revised_part, reason = extract_resized_stage(
                     response,
@@ -10377,21 +10576,25 @@ YÊU CẦU BẮT BUỘC:
                     continue
                 log_warn(
                     "SCRIPT",
-                    f"[{ma_id}] Bản cân [PART {pnum}] bị từ chối: {reason} -> Thử cấp Stage nếu cần.",
+                    f"[{ma_id}] Bản cân [PART {pnum}] bị từ chối: {reason} -> Chuyển ngay sang cấp Stage.",
                     project_id=ma_id,
                 )
 
-            plan = plan_stage_resize(stages, channel_key, gate)
+            plan = stage_plan_first or plan_stage_resize(stages, channel_key, gate)
             if not plan:
                 break
             letter = plan["stage"]
             self._emit(
                 message=(
-                    f"[{ma_id}] ✂️ Độ dài {gate['chars']:,} ký tự chưa đạt -> "
-                    f"Biên tập lại STAGE {letter} về ~{plan['target_chars']:,} ký tự (lượt {round_no}/{max_rounds})..."
+                    f"[{ma_id}] ⚡ Độ dài {gate['chars']:,} chữ lệch lớn -> "
+                    f"Cân trọn STAGE {letter} về ~{plan['target_chars']:,} chữ trong 1 lượt (lượt {round_no}/{max_rounds})..."
                 )
             )
-            session.start_fresh_chat(f"STAGE_RESIZE_{letter}_{round_no}")
+            session.start_fresh_chat(
+                f"STAGE_RESIZE_{letter}_{round_no}",
+                lock_thinking_medium=True,
+                thinking_effort="fast",
+            )
             response = session.send_prompt_and_wait(
                 self._build_stage_resize_prompt(
                     ma_id,
@@ -10404,11 +10607,12 @@ YÊU CẦU BẮT BUỘC:
                     step3_context,
                 ),
                 step_label=f"STAGE_RESIZE_{letter}_{round_no}",
-                timeout_sec=900,
+                timeout_sec=720,
                 progress_cb=lambda st, ch: self._emit(
-                    message=f"[{ma_id}] Đang biên tập STAGE {letter} ({ch:,} ký tự)..."
+                    message=f"[{ma_id}] Đang cân trọn STAGE {letter} ({ch:,} ký tự)..."
                 ),
                 should_stop_cb=lambda: self.should_stop,
+                thinking_effort="fast",
             )
             revised, reason = extract_resized_stage(
                 response,
@@ -11258,7 +11462,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 self._emit(
                     message=f"[{ma_id}] 🔄 Mở tab ChatGPT mới (Lượt {g_try}/{max_green_tries}) trên {acc_lbl} để vẽ 1 Ảnh Nền Xanh 9:16 (Chế độ Chỉ Nền Xanh)..."
                 )
-                session.start_fresh_chat(f"STEP7_GREEN_SOLO_TRY_{g_try}")
+                session.start_fresh_chat(
+                    f"STEP7_GREEN_SOLO_TRY_{g_try}",
+                    lock_thinking_medium=True,
+                    thinking_effort="fast",
+                )
 
             self._update_idea_record(
                 ma_id,
@@ -11407,7 +11615,11 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 self._emit(
                     message=f"[{ma_id}] 🔄 Mở tab ChatGPT mới (Lượt {g_try}/{max_green_tries}) trên {acc_lbl} kèm ảnh tham chiếu để vẽ 1 Ảnh Nền Xanh 9:16..."
                 )
-                session.start_fresh_chat(f"STEP7_GREEN_9_16_TRY_{g_try}")
+                session.start_fresh_chat(
+                    f"STEP7_GREEN_9_16_TRY_{g_try}",
+                    lock_thinking_medium=True,
+                    thinking_effort="fast",
+                )
 
             self._update_idea_record(
                 ma_id,
@@ -11625,7 +11837,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         import base64
 
         with self._get_project_thumb_lock(ma_id):
-            self._thumb_session_attempted_ids.add(ma_id)
             proj_dir.mkdir(parents=True, exist_ok=True)
             prompts_list = self._extract_three_thumbnail_prompts(
                 step6_out, step2_out, locked_title, idea
@@ -11692,6 +11903,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         thumb_mode="green_only",
                         thumbnail_path=str(green_file),
                     )
+                    self._thumb_session_attempted_ids.add(ma_id)
                     return [str(green_file)]
                 self._update_idea_record(
                     ma_id,
@@ -11809,6 +12021,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 )
                 has_req_thumbs = is_homeless_proj or len(saved_paths) > 1
                 self._update_idea_record(ma_id, has_thumbnail=has_req_thumbs)
+                if has_req_thumbs:
+                    self._thumb_session_attempted_ids.add(ma_id)
                 self._emit(
                     message=f"[{ma_id}] ♻️ Đã có sẵn {target_file.name} -> giữ nguyên không vẽ thừa ({len(saved_paths)} ảnh)!"
                 )
@@ -11839,9 +12053,13 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     message=f"[{ma_id}] 🎨 [New Chat #4] Đang vẽ {step_desc} trên {acc_lbl} (Lượt {attempt}/{max_attempts})...",
                 )
 
-                # Lượt 1: Nếu đang đứng sẵn ở New Chat #4 thì vẽ trực tiếp; lượt 2 mới mở chat sạch
+                # Lượt 1: Nếu đang đứng sẵn ở New Chat #4 thì vẽ trực tiếp; lượt 2 mới mở chat sạch (Fast mode cho tạo ảnh)
                 if not (attempt == 1 and reuse_current_chat):
-                    session.start_fresh_chat(f"STEP7_THUMB_1_TRY_{attempt}")
+                    session.start_fresh_chat(
+                        f"STEP7_THUMB_1_TRY_{attempt}",
+                        lock_thinking_medium=True,
+                        thinking_effort="fast",
+                    )
 
                 prompt_to_send = prompts_list[min(attempt - 1, len(prompts_list) - 1)]
                 if attempt > 1 and not is_homeless_proj:
@@ -11938,6 +12156,8 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 )
                 has_pair_ok = len(saved_paths) > 1
                 self._update_idea_record(ma_id, has_thumbnail=has_pair_ok)
+                if has_pair_ok:
+                    self._thumb_session_attempted_ids.add(ma_id)
                 self._emit(
                     message=f"[{ma_id}] ✅ Đã hoàn tất cặp 1 ảnh THUMBNAIL.png + {1 if len(saved_paths) > 1 else 0} ảnh THUMBNAIL-NENXANH.png -> Lưu vào {proj_dir}!"
                 )
@@ -11965,7 +12185,6 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         )
 
         with self._get_project_thumb_lock(ma_id):
-            self._thumb_session_attempted_ids.add(ma_id)
             proj_dir = self.projects_dir / ma_id
             proj_dir.mkdir(parents=True, exist_ok=True)
             renders_dir = proj_dir / "renders"
@@ -12179,6 +12398,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             f"[{ma_id}] 🟩 Đã tạo thành công THUMBNAIL-NENXANH.png (Chỉ Nền Xanh) trên {sess.cfg['label']}",
                             project_id=ma_id,
                         )
+                        self._thumb_session_attempted_ids.add(ma_id)
                         return [str(target_green)]
                     if (
                         not is_green_only_proj
@@ -12192,6 +12412,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                             f"[{ma_id}] ✅ Đã tạo thành công Thumbnail trên {sess.cfg['label']}: {target_thumb.name}",
                             project_id=ma_id,
                         )
+                        self._thumb_session_attempted_ids.add(ma_id)
                         return _current_thumb_result()
                 except AccountNotLoggedInError as e_no_auth:
                     if getattr(e_no_auth, "acc_id", ""):
@@ -12223,6 +12444,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                         except Exception:
                             pass
 
+            self._thumb_session_attempted_ids.add(ma_id)
             if is_green_only_proj and _is_green_plate_clean_and_large(target_green):
                 self._update_idea_record(
                     ma_id,
@@ -12337,24 +12559,20 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
         cpw = 5.8 if lang == "es" else 5.6
         current = ensure_part_headings_for_stage(stage_text, letter_u)
 
-        # Bước 1: Kiểm tra & cân riêng từng [PART N] vượt trần hoặc thiếu sàn ngay khi vừa viết xong
+        # Bước 1: Chỉ chỉnh lẻ từng [PART N] khi CHỈ CÓ ĐÚNG 1 PART lệch trong cả Stage;
+        # nếu >= 2 Part cùng lệch -> bỏ qua vòng lẻ, gom chỉnh cả Stage trong 1 lượt ở Bước 2 cho nhanh x3!
         stage_part_cnt = {"A": 2, "B": 3, "C": 2}.get(letter_u, 2)
-        part_ceiling = int(round(max_c / stage_part_cnt * 1.15))
+        part_ceiling = int(round(max_c / stage_part_cnt * 1.18))
         part_floor = int(cfg.get("part_floor", 8500))
-        for _pass in range(stage_part_cnt):
-            if self.should_stop:
-                break
-            part_info = inspect_stage_part_lengths(current, letter_u, channel_key)
-            bad_items = [
-                it
-                for it in (part_info.get("parts") or [])
-                if int(it["chars"]) > max(part_ceiling, int(it["target"]) + 2000)
-                or int(it["chars"]) < part_floor
-            ]
-            bad_items.sort(key=lambda x: abs(int(x["chars"]) - int(x["target"])), reverse=True)
-            bad_item = bad_items[0] if bad_items else None
-            if not bad_item:
-                break
+        part_info_pre = inspect_stage_part_lengths(current, letter_u, channel_key)
+        bad_items_pre = [
+            it
+            for it in (part_info_pre.get("parts") or [])
+            if int(it["chars"]) > max(part_ceiling, int(it["target"]) + 2400)
+            or int(it["chars"]) < part_floor
+        ]
+        if len(bad_items_pre) == 1:
+            bad_item = bad_items_pre[0]
             pnum = int(bad_item["part_num"])
             cur_chars = int(bad_item["chars"])
             t_chars = int(bad_item["target"])
@@ -12364,7 +12582,7 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                 message=(
                     f"[{ma_id}] 📐 [Tự kiểm PART {pnum}] {cur_chars:,} ký tự "
                     f"({'vượt' if action == 'condense' else 'thiếu'} chuẩn ~{t_chars:,}) -> "
-                    f"Chỉnh ngay `[PART {pnum}]` trong Writer Chat..."
+                    f"Chỉnh nhanh `[PART {pnum}]` trong Writer Chat..."
                 )
             )
             p_prompt = self._build_part_resize_prompt(
@@ -12380,11 +12598,12 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
             p_resp = session.send_prompt_and_wait(
                 p_prompt,
                 step_label=f"WRITER_PART_CALIBRATE_{pnum}",
-                timeout_sec=720,
+                timeout_sec=540,
                 progress_cb=lambda st, ch, pn=pnum: self._emit(
-                    message=f"[{ma_id}] Đang cân chỉnh [PART {pn}] ({ch:,} ký tự)..."
+                    message=f"[{ma_id}] Đang cân nhanh [PART {pn}] ({ch:,} ký tự)..."
                 ),
                 should_stop_cb=lambda: self.should_stop,
+                thinking_effort="fast",
             )
             rev_p, reason_p = extract_resized_stage(
                 p_resp,
@@ -12406,18 +12625,17 @@ BẮT BUỘC xuất trực tiếp ra khung chat trọn bộ GÓI ĐĂNG TẢI YO
                     f"[{ma_id}] Chỉnh tự kiểm [PART {pnum}] chưa đạt ({reason_p}) -> Chuyển kiểm cấp Stage.",
                     project_id=ma_id,
                 )
-                break
 
-        # Bước 2: Nếu tổng Stage vẫn vượt trần (+5%) -> viết gọn cấp Stage
+        # Bước 2: Nếu tổng Stage vẫn vượt trần (> +8%) -> viết gọn cả Stage trong 1 lượt (Fast mode)
         for try_no in range(1, max_tries + 1):
             size = pure_char_count(current)
-            if size <= int(max_c * 1.05) or self.should_stop:
+            if size <= int(max_c * 1.08) or self.should_stop:
                 break
             words = int(round(target_c / cpw, -2))
             parts = {"A": (1, 2), "B": (3, 4, 5), "C": (6, 7)}[letter_u]
             labels = ", ".join(f"[PART {n}]" for n in parts)
             self._emit(
-                message=f"[{ma_id}] ✂️ STAGE {letter_u} dài {size:,} ký tự (trần {max_c:,}) -> Viết lại gọn ngay trong đoạn chat viết (lượt {try_no}/{max_tries})..."
+                message=f"[{ma_id}] ⚡ STAGE {letter_u} dài {size:,} ký tự (trần {max_c:,}) -> Rút gọn toàn Stage trong 1 lượt (lượt {try_no}/{max_tries})..."
             )
             prompt = f"""VIẾT LẠI GỌN STAGE {letter_u} — BẢN VỪA VIẾT DÀI {size:,} KÝ TỰ, VƯỢT TRẦN {max_c:,}.
 Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn khoảng {target_c:,} ký tự (≈ {words:,} {word_unit}), sai số tối đa 5%.
@@ -12431,11 +12649,12 @@ Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn kho�
             response = session.send_prompt_and_wait(
                 prompt,
                 step_label=f"STAGE_CONDENSE_{letter_u}_{try_no}",
-                timeout_sec=900,
+                timeout_sec=720,
                 progress_cb=lambda st, ch: self._emit(
-                    message=f"[{ma_id}] Đang viết lại gọn STAGE {letter_u} ({ch:,} ký tự)..."
+                    message=f"[{ma_id}] Đang rút gọn STAGE {letter_u} ({ch:,} ký tự)..."
                 ),
                 should_stop_cb=lambda: self.should_stop,
+                thinking_effort="fast",
             )
             revised, reason = extract_resized_stage(
                 response,
@@ -12575,7 +12794,9 @@ Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn kho�
             )
             if need_fresh_recovery:
                 session.start_fresh_chat(
-                    f"STEP_4_RECOVERY_PART_{part_letter}_T{turn_idx}"
+                    f"STEP_4_RECOVERY_PART_{part_letter}_T{turn_idx}",
+                    lock_thinking_medium=True,
+                    thinking_effort="fast" if curr_pure > 0 else "medium",
                 )
                 self._emit(
                     message=f"[{ma_id}] 🔄 Mở đoạn chat cứu hộ cho STAGE {part_letter} (Lượt {turn_idx}, hiện có {curr_pure:,} chữ)..."
@@ -12609,11 +12830,12 @@ Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn kho�
             cont_resp = session.send_prompt_and_wait(
                 p_cont,
                 step_label=f"STEP4_PART_{part_letter}_{turn_idx}",
-                timeout_sec=900,
+                timeout_sec=720 if curr_pure > 0 else 900,
                 progress_cb=lambda st, ch, t=turn_idx: self._emit(
                     message=f"[{ma_id}] Đang viết tiếp PART {part_letter} (Lượt {t}: +{ch:,} ký tự)..."
                 ),
                 should_stop_cb=lambda: self.should_stop,
+                thinking_effort="fast" if curr_pure > 0 else "medium",
             )
             stage_complete = bool(
                 re.search(r"(?m)^\s*`?STAGE_COMPLETE`?\s*$", cont_resp or "")
@@ -13214,6 +13436,19 @@ Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn kho�
                         script_part_files,
                         max_rounds=8,
                     )
+                    if not machine_gate["passed"]:
+                        prof_leg = get_script_length_profile(channel_key_legacy)
+                        if int(prof_leg.get("hard_floor", 55000)) <= int(machine_gate.get("chars") or 0) <= int(int(prof_leg.get("total_max", 80000)) * 1.18):
+                            stage_texts, machine_gate = self._enforce_script_length(
+                                session_leg,
+                                ma_id,
+                                channel_key_legacy,
+                                locked_title,
+                                stage_texts,
+                                step3_out,
+                                script_part_files,
+                                max_rounds=4,
+                            )
 
                     r1_file = proj_dir / "PMX_QA_ROUND1_LOGIC.md"
                     r2_file = proj_dir / "PMX_QA_ROUND2_QUALITY.md"
@@ -13377,8 +13612,12 @@ Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn kho�
                         status="SCRIPT_DONE",
                         current_step=(
                             f"✅ Đã sửa xong kịch bản cũ ({total_pure:,} chữ) & ĐẠT QA 2 vòng"
-                            if is_ready_leg
-                            else f"⛔ Sửa kịch bản cũ chưa đạt QA: {'; '.join((release_record.get('reasons') or [])[:1])}"
+                            if (is_ready_leg and has_th_leg)
+                            else (
+                                f"⛔ Đã sửa xong QA ({total_pure:,} chữ) nhưng thiếu Thumbnail/Nền Xanh — Chưa thể Render MP4"
+                                if is_ready_leg
+                                else f"⛔ Sửa kịch bản cũ chưa đạt QA: {'; '.join((release_record.get('reasons') or [])[:1])}"
+                            )
                         ),
                     )
                     video_triggered_leg = False
@@ -14104,7 +14343,11 @@ Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn kho�
                         message=f"[{ma_id}] ♻️ Khôi phục gói SEO Skill 05 có sẵn ({len(step6_out):,} ký tự)...",
                     )
                 else:
-                    session.start_fresh_chat("NEW_CHAT_4_SKILL_05_SEO_AND_THUMB")
+                    session.start_fresh_chat(
+                        "NEW_CHAT_4_SKILL_05_SEO_AND_THUMB",
+                        lock_thinking_medium=True,
+                        thinking_effort="fast",
+                    )
                     chat4_seo_thumb_opened = True
                     self._update_idea_record(
                         ma_id,
@@ -14134,11 +14377,12 @@ Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn kho�
                     step6_out = session.send_prompt_and_wait(
                         step6_prompt,
                         step_label="STEP_6",
-                        timeout_sec=420,
+                        timeout_sec=360,
                         progress_cb=lambda st, ch: self._emit(
                             message=f"[{ma_id}] [New Chat #4 — Skill 05] Đang tạo gói SEO es-MX & Prompt Thumbnail ({ch:,} ký tự)..."
                         ),
                         should_stop_cb=lambda: self.should_stop,
+                        thinking_effort="fast",
                     )
                     step6_file.write_text(step6_out, encoding="utf-8")
                     pmx_seo_file.write_text(step6_out, encoding="utf-8")
@@ -14239,7 +14483,7 @@ Viết lại TOÀN BỘ Stage {letter_u} (đúng các nhãn {labels}) còn kho�
                     ma_id=ma_id,
                     preferred_acc_id=None,
                     exclude_accs={getattr(session, "acc_id", "")},
-                    max_failover_rounds=1,
+                    max_failover_rounds=2,
                     thumb_mode=job_tm_s7,
                 )
                 preq_after_s7 = check_render_thumbnail_prerequisites(

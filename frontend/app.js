@@ -2716,7 +2716,10 @@ document.addEventListener("DOMContentLoaded", () => {
           if (!ok) return;
         }
         appendInstantLogToUI(`🔁 Kích hoạt VIẾT LẠI THỦ CÔNG cho mã [${mid}] (Tự động Retry tối đa 3 lần nếu lỗi)...`, "SCRIPT", "INFO", mid);
-        await triggerRunADAS([mid], null, true);
+        const modeVal = (document.getElementById("adas-output-mode-select") || {}).value || "full_video";
+        const forceVideo = modeVal !== "script_seo_thumb_only";
+        const forceVoiceOnly = modeVal === "script_seo_thumb_voice_only";
+        await triggerRunADAS([mid], forceVideo, true, forceVoiceOnly);
       });
     });
 
@@ -4375,21 +4378,38 @@ document.addEventListener("DOMContentLoaded", () => {
         const data = await res.json();
         const errOrIncompleteIds = (data.ideas || [])
           .filter((it) => {
+            if (!it || !it.ma_id || isVideoTrulyCompleted(it)) return false;
             const hasFullScript = !!it.has_script && (it.pure_char_count || 0) >= 35000;
             const isErr = it.status === "ERROR" || it.status === "ERROR_VIDEO" || it.status === "PARTIAL_SCRIPT";
-            return isErr || !hasFullScript;
+            const curStepLow = String(it.current_step || "").toLowerCase();
+            const needsFixOrQa = Boolean(it.needs_script_fix) || it.qa_ready === false || curStepLow.includes("⛔") || curStepLow.includes("chưa đạt qa") || curStepLow.includes("chặn render") || curStepLow.includes("cần căn độ dài");
+            const missingThumb = hasFullScript && !it.has_thumbnail;
+            return isErr || !hasFullScript || needsFixOrQa || missingThumb;
           })
           .map((it) => it.ma_id);
         if (errOrIncompleteIds.length === 0) {
-          alert("✅ Tuyệt vời! Không có kịch bản nào bị lỗi hay thiếu Part trong kho (Tất cả đã hoàn thành đủ 3 Part >= 35,000 chữ).\n\n👉 Nếu bạn muốn viết lại từ đầu cho một mã cụ thể, hãy bấm nút '🔁 Viết Lại' ngay trên dòng của mã đó!");
+          alert("✅ Tuyệt vời! Không có kịch bản nào bị lỗi, lệch độ dài/QA hay thiếu Thumbnail trong kho.\n\n👉 Nếu bạn muốn viết lại từ đầu cho một mã cụ thể, hãy bấm nút '🔁 Viết Lại' ngay trên dòng của mã đó!");
+          return;
+        }
+        const modeVal = outputModeSel ? outputModeSel.value : "full_video";
+        const forceVoiceOnly = modeVal === "script_seo_thumb_voice_only";
+        const forceVideo = modeVal !== "script_seo_thumb_only";
+        const actionDesc = !forceVideo
+          ? "Chế độ Chỉ Viết/Sửa KB + SEO + Thumbnail (Không Render)"
+          : (forceVoiceOnly ? "Sửa/Viết lại -> Bù Ảnh -> Tạo Voice GPU" : "Sửa/Viết lại -> Bù Ảnh -> Tự động Render MP4 khi đạt chuẩn");
+        if (!confirm(
+          `🔁 CHẠY LẠI ${errOrIncompleteIds.length} MÃ LỖI / LỆCH ĐỘ DÀI / THIẾU ẢNH:\n\n` +
+          `• Chế độ sau khi sửa xong: ${actionDesc}\n` +
+          `• Các mã: ${errOrIncompleteIds.join(", ")}\n\nBắt đầu xử lý?`
+        )) {
           return;
         }
         appendInstantLogToUI(
-          `🔁 Kích hoạt viết lại / chạy bù cho ${errOrIncompleteIds.length} mã lỗi/thiếu: ${errOrIncompleteIds.join(", ")} (Tự động Retry tối đa 3 lần)...`,
+          `🔁 Kích hoạt sửa / chạy bù (${actionDesc}) cho ${errOrIncompleteIds.length} mã: ${errOrIncompleteIds.join(", ")} (Tự động Retry tối đa 3 lần)...`,
           "SCRIPT",
           "INFO"
         );
-        await triggerRunADAS(errOrIncompleteIds, null, false);
+        await triggerRunADAS(errOrIncompleteIds, forceVideo, false, forceVoiceOnly);
       });
     }
 
