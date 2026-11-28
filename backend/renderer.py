@@ -1,6 +1,7 @@
 import sys
 
 sys.modules["backend.visual_cue_director"] = sys.modules[__name__]
+import hashlib
 import json
 import math
 import os
@@ -3211,6 +3212,166 @@ def discard_green_composite_raw_cache(raw_path: Optional[str]) -> None:
         pass
 
 
+_BAKED_STOCK_CACHE_LOCK = threading.Lock()
+_BAKED_STOCK_KEY_LOCKS: Dict[str, threading.Lock] = {}
+
+
+def _cleanup_stale_baked_stock_caches(
+    cache_dir: Path, keep_name: str, max_keep: int = 4
+) -> None:
+    """Giữ tối đa max_keep file stock cache mới nhất để không phình ổ cứng."""
+    try:
+        candidates = [
+            p
+            for p in cache_dir.iterdir()
+            if p.is_file()
+            and p.name.startswith("baked_stock_")
+            and p.suffix == ".mp4"
+            and ".tmp" not in p.name
+            and p.name != keep_name
+        ]
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for old_p in candidates[max(0, max_keep - 1) :]:
+            try:
+                old_p.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def build_or_get_baked_stock_cache(
+    stock_video_path: str,
+    target_w: int = 1920,
+    target_h: int = 1080,
+    work_fps: int = 12,
+    stock_speed: float = 1.0,
+    flip_horizontal: bool = False,
+    brightness: float = 0.0,
+    contrast: float = 1.0,
+    saturation: float = 1.0,
+    root_dir: Optional[Path] = None,
+    use_nvenc: bool = True,
+) -> Optional[str]:
+    """
+    Pre-bake file video Stock nền (đã áp setpts, fps, hflip, scale, crop, eq brightness/contrast/saturation)
+    vào cache/baked_stock_cache để khi render video dài 2-3 giờ không phải tính lại filter CPU trên 100k+ frame.
+    """
+    try:
+        src_p = Path(stock_video_path)
+        if not src_p.exists() or not src_p.is_file():
+            return None
+        stat = src_p.stat()
+        safe_speed = max(0.1, min(4.0, float(stock_speed or 1.0)))
+        pts_factor = round(1.0 / safe_speed, 4)
+
+        sig_payload = {
+            "v": 1,
+            "src": str(src_p.resolve()).lower(),
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "w": int(target_w),
+            "h": int(target_h),
+            "fps": int(work_fps),
+            "pts_factor": pts_factor,
+            "flip": bool(flip_horizontal),
+            "brightness": round(float(brightness), 2),
+            "contrast": round(float(contrast), 2),
+            "saturation": round(float(saturation), 2),
+        }
+        sig_hash = hashlib.sha256(
+            json.dumps(sig_payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+
+        root = Path(root_dir) if root_dir else get_root_dir()
+        cache_dir = root / "cache" / "baked_stock_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        out_path = cache_dir / f"baked_stock_{sig_hash}.mp4"
+
+        if out_path.exists() and out_path.stat().st_size > 8192:
+            if get_audio_duration(str(out_path)) > 0.2:
+                return str(out_path)
+
+        with _BAKED_STOCK_CACHE_LOCK:
+            key_lock = _BAKED_STOCK_KEY_LOCKS.setdefault(sig_hash, threading.Lock())
+
+        with key_lock:
+            if out_path.exists() and out_path.stat().st_size > 8192:
+                if get_audio_duration(str(out_path)) > 0.2:
+                    return str(out_path)
+
+            flip_filter = "hflip," if flip_horizontal else ""
+            vf_chain = (
+                f"setpts={pts_factor}*PTS,fps={int(work_fps)},{flip_filter}"
+                f"scale={int(target_w)}:{int(target_h)}:force_original_aspect_ratio=increase:flags=fast_bilinear,"
+                f"crop={int(target_w)}:{int(target_h)},setsar=1,"
+                f"eq=brightness={float(brightness):.2f}:contrast={float(contrast):.2f}:saturation={float(saturation):.2f},"
+                f"format=yuv420p"
+            )
+
+            tmp_path = cache_dir / (
+                f"baked_stock_{sig_hash}.{os.getpid()}.{threading.get_ident()}.tmp.mp4"
+            )
+            encoder_attempts: List[List[str]] = []
+            if use_nvenc and check_nvenc_available():
+                encoder_attempts.append(
+                    ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "16"]
+                )
+            encoder_attempts.append(
+                ["-c:v", "libx264", "-preset", "veryfast", "-crf", "15"]
+            )
+
+            flags = 0x08000000 if os.name == "nt" else 0
+            for enc_args in encoder_attempts:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                    cmd = [
+                        _FFMPEG_BIN,
+                        "-y",
+                        "-i",
+                        str(src_p),
+                        "-an",
+                        "-vf",
+                        vf_chain,
+                        *enc_args,
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-movflags",
+                        "+faststart",
+                        str(tmp_path),
+                    ]
+                    res = subprocess.run(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=600,
+                        creationflags=flags,
+                    )
+                    if (
+                        res.returncode == 0
+                        and tmp_path.exists()
+                        and tmp_path.stat().st_size > 8192
+                        and get_audio_duration(str(tmp_path)) > 0.2
+                    ):
+                        os.replace(str(tmp_path), str(out_path))
+                        _cleanup_stale_baked_stock_caches(
+                            cache_dir, out_path.name, max_keep=4
+                        )
+                        return str(out_path)
+                except Exception:
+                    pass
+                finally:
+                    if tmp_path.exists():
+                        try:
+                            tmp_path.unlink()
+                        except OSError:
+                            pass
+    except Exception as e:
+        print(f"[Renderer] ⚠️ Lỗi pre-bake stock cache -> dùng filter gốc: {e}")
+    return None
+
+
 # ==============================================================================
 # CƠ CHẾ SSD STAGING & CHECKPOINT RESUME
 # ==============================================================================
@@ -3344,6 +3505,7 @@ def render_drama_nhat_video(
     visual_cues_path: Optional[str] = None,
     channel_key: Optional[str] = None,
     _encode_attempt_state: Optional[Dict[str, Any]] = None,
+    use_baked_stock_cache: bool = True,
 ) -> Dict[str, Any]:
     render_call_args = dict(locals())
     perf_state: Dict[str, Any] = _encode_attempt_state or {
@@ -3679,29 +3841,63 @@ def render_drama_nhat_video(
         base_inputs_cmd: List[str] = [_FFMPEG_BIN, "-y"]
         input_idx = 0
 
-        # LỚP #4 (ĐÁY): Video Stock có sẵn — Chỉ làm tối nhẹ
+        # LỚP #4 (ĐÁY): Ưu tiên Pre-bake Stock đã scale/eq/pts/hflip sẵn -> không tính lại trên 260.000 frame CPU
+        baked_stock_path: Optional[str] = None
+        if use_baked_stock_cache and not perf_state.get("force_cpu"):
+            baked_stock_path = build_or_get_baked_stock_cache(
+                stock_video_path=stock_video_path,
+                target_w=target_w,
+                target_h=target_h,
+                work_fps=work_fps,
+                stock_speed=eff_stock_speed,
+                flip_horizontal=flip_horizontal,
+                brightness=eff_brightness,
+                contrast=eff_contrast,
+                saturation=eff_saturation,
+                root_dir=root_dir,
+                use_nvenc=use_nvenc,
+            )
+
+        effective_stock_input = baked_stock_path or stock_video_path
+        effective_stock_dur = (
+            get_audio_duration(baked_stock_path)
+            if baked_stock_path
+            else (stock_dur * pts_factor if stock_dur > 0 else 0.0)
+        )
         stock_seek_raw = (
-            round((completed_sec / pts_factor) % max(1.0, stock_dur), 2)
-            if (completed_sec > 0 and stock_dur > 0)
-            else 0.0
+            round(completed_sec % max(1.0, effective_stock_dur), 2)
+            if baked_stock_path and completed_sec > 0 and effective_stock_dur > 0
+            else (
+                round((completed_sec / pts_factor) % max(1.0, stock_dur), 2)
+                if (completed_sec > 0 and stock_dur > 0)
+                else 0.0
+            )
         )
         stock_seek_args = (
             ["-ss", f"{stock_seek_raw:.2f}"] if stock_seek_raw > 0.1 else []
         )
+        hwaccel_args = (
+            ["-hwaccel", "cuda"]
+            if (baked_stock_path and use_nvenc and not perf_state.get("disable_cuda_decode"))
+            else []
+        )
         base_inputs_cmd.extend(
-            ["-stream_loop", "-1", *stock_seek_args, "-i", stock_video_path]
+            [*hwaccel_args, "-stream_loop", "-1", *stock_seek_args, "-i", effective_stock_input]
         )
         stock_in_idx = input_idx
         input_idx += 1
 
-        flip_filter = "hflip," if flip_horizontal else ""
-        filters.append(
-            f"[{stock_in_idx}:v]setpts={pts_factor}*PTS,fps={work_fps},{flip_filter}"
-            f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:flags=fast_bilinear,"
-            f"crop={target_w}:{target_h},setsar=1,"
-            f"eq=brightness={eff_brightness:.2f}:contrast={eff_contrast:.2f}:saturation={eff_saturation:.2f},"
-            f"format=yuv420p[v_bg]"
-        )
+        if baked_stock_path:
+            filters.append(f"[{stock_in_idx}:v]setsar=1,format=yuv420p[v_bg]")
+        else:
+            flip_filter = "hflip," if flip_horizontal else ""
+            filters.append(
+                f"[{stock_in_idx}:v]setpts={pts_factor}*PTS,fps={work_fps},{flip_filter}"
+                f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:flags=fast_bilinear,"
+                f"crop={target_w}:{target_h},setsar=1,"
+                f"eq=brightness={eff_brightness:.2f}:contrast={eff_contrast:.2f}:saturation={eff_saturation:.2f},"
+                f"format=yuv420p[v_bg]"
+            )
         current_v = "[v_bg]"
 
         # LỚP #3 + #2 GỘP SẴN: cache green KHÔNG NÉN đã chứa ảnh nhân vật -> 1 lần overlay, không giải nén FFV1.
@@ -4024,6 +4220,9 @@ def render_drama_nhat_video(
 
                 fail_reason = stalled_reason or f"mã {rc}"
                 perf_state["events"].append(fail_reason[:160])
+                # Nếu vừa thử decode CUDA trên file stock bị kẹt/lỗi driver -> tự tắt hwaccel decode ở lần thử lại
+                if not perf_state.get("disable_cuda_decode"):
+                    perf_state["disable_cuda_decode"] = True
                 retry_args = dict(render_call_args)
                 retry_args["_encode_attempt_state"] = perf_state
                 if perf_state["nvenc_retries"] < _NVENC_MAX_RENDER_RETRIES:

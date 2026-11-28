@@ -175,12 +175,15 @@ class HardwareResourceBalancer:
             return dict(self._last_metrics)
 
     def has_headroom_for_parallel_task(
-        self, current_active_tasks: int, max_concurrent: Optional[int] = None
+        self,
+        current_active_tasks: int,
+        max_concurrent: Optional[int] = None,
+        active_voice_jobs: int = 0,
     ) -> bool:
         """
         Kiểm tra xem máy còn khoảng trống tài nguyên (CPU, RAM, GPU Core/NVENC và VRAM)
         để đẩy thêm luồng chạy song song mà không bị tràn VRAM gây treo máy:
-        - Tự động giới hạn trần song song an toàn theo dung lượng VRAM thực tế của GPU (<=6.5GB tối đa 2 luồng, <=9GB tối đa 3 luồng).
+        - Tự động giới hạn trần song song an toàn theo dung lượng VRAM thực tế của GPU (<=6.5GB tối đa 2 luồng; nếu đang chạy TTS GPU thì chỉ mở tối đa 1 luồng FFmpeg NVENC gối đầu).
         - Chế độ Full 100% (`full_100`): ngưỡng CPU/GPU < 90%, RAM < 92%, VRAM < 86%, dư tối thiểu 850MB VRAM.
         - Chế độ 70% (`work_70`): Tối đa 3 luồng, ngưỡng CPU/GPU < 70%, RAM < 84%, VRAM < 76%, dư tối thiểu 1000MB VRAM.
         """
@@ -197,7 +200,8 @@ class HardwareResourceBalancer:
         vram_tot = float(m.get("vram_total_mb", 0.0) or 0.0)
         if vram_tot > 0:
             if vram_tot <= 6500:
-                eff_max = min(eff_max, 2)
+                # Card 6GB (RTX 2060 / GTX 1060): tối đa 1 TTS + 1 Render hoặc 2 Render độc lập (khi đã xả model TTS)
+                eff_max = min(eff_max, 2 if active_voice_jobs <= 0 else 1)
             elif vram_tot <= 9000:
                 eff_max = min(eff_max, 3)
         if current_active_tasks >= eff_max:
@@ -764,6 +768,8 @@ class ProductionPipeline:
             self.should_stop = False
             self.pending_jobs = list(jobs)
             self.active_projects.clear()
+            run_id = int(getattr(self, "_batch_run_id", 0)) + 1
+            self._batch_run_id = run_id
 
             save_base = (
                 Path(output_dir)
@@ -807,6 +813,7 @@ class ProductionPipeline:
                 delete_used_stocks,
                 auto_ensure_stock_hours,
                 target_stock_hours,
+                run_id,
             ),
             daemon=True,
         )
@@ -1059,6 +1066,7 @@ class ProductionPipeline:
         delete_used_stocks: bool = False,
         auto_ensure_stock_hours: bool = False,
         target_stock_hours: float = 30.0,
+        batch_run_id: Optional[int] = None,
     ):
         completed_results: List[Dict[str, Any]] = []
         failed_projects: List[str] = []
@@ -1890,9 +1898,17 @@ class ProductionPipeline:
                             raise InterruptedError("PERF_DOWNSCALE_YIELD")
                         with self.lock:
                             curr_ff = self.active_ffmpeg_jobs
-                        if self.resource_balancer.has_headroom_for_parallel_task(
-                            curr_ff
-                        ):
+                            curr_voice = self.active_voice_jobs
+                        try:
+                            headroom_ok = self.resource_balancer.has_headroom_for_parallel_task(
+                                curr_ff,
+                                active_voice_jobs=curr_voice,
+                            )
+                        except TypeError:
+                            headroom_ok = self.resource_balancer.has_headroom_for_parallel_task(
+                                curr_ff
+                            )
+                        if headroom_ok:
                             break
                         self._set_project_live_detail(
                             proj_name=proj_name,
@@ -1909,6 +1925,24 @@ class ProductionPipeline:
                             "⏳ Đã tạo xong Voice! Đang đợi khoảng trống GPU/CPU (<90%) để ghép MP4 đa luồng...",
                         )
                         time.sleep(1.5)
+
+                    # Trước khi khởi chạy FFmpeg NVENC / DeepLabV3 trên card <=7GB VRAM:
+                    # Nếu không có job khác đang tổng hợp Voice GPU hoặc đang chờ đọc Voice -> xả sạch model TTS để nhường trọn 6GB VRAM!
+                    try:
+                        hw_pre_render = self.resource_balancer.get_metrics(force_refresh=False)
+                        vram_tot_mb = float(hw_pre_render.get("vram_total_mb", 0.0) or 0.0)
+                        if 0 < vram_tot_mb <= 7500 and hasattr(self.voice_service, "unload_engine"):
+                            with self.lock:
+                                has_voice_waiting = bool(self.pending_jobs) or self.active_voice_jobs > 0
+                            if not has_voice_waiting and not self.voice_synth_lock.locked():
+                                if self.voice_service.unload_engine(clear_prompt_cache=True):
+                                    log_info(
+                                        f"🧹 [{proj_name}] Đã xả sạch Model TTS khỏi VRAM trước khi chạy FFmpeg NVENC.",
+                                        category="VOICE",
+                                        project_id=proj_name,
+                                    )
+                    except Exception:
+                        pass
 
                     if self.should_stop:
                         raise InterruptedError("Đã dừng tiến trình Render theo yêu cầu")
@@ -2681,7 +2715,6 @@ class ProductionPipeline:
                                     f"{failed_projects[0] if failed_projects else ''}"
                                 )
                             self.state["results"] = completed_results
-                            self.is_running = False
                             break
                         else:
                             # Có kịch bản mới vừa được AI viết xong và đẩy vào đúng lúc video trước hoàn tất -> chạy tiếp ngay!
@@ -2787,13 +2820,32 @@ class ProductionPipeline:
             for t in active_threads:
                 t.join(timeout=12.0 if self.should_stop else None)
 
+            # Xả sạch Model TTS khỏi VRAM khi kết thúc lô chạy (nhẹ VRAM cho Windows / chạy Render lẻ sau đó)
+            is_owner = True
             with self.lock:
-                if self.should_stop and self.state.get("status") not in ("completed", "error"):
-                    self.state["status"] = "stopped"
-                    self.state["message"] = "🛑 Đã dừng dây chuyền sản xuất Video."
-                self.is_running = False
+                cur_run_id = getattr(self, "_batch_run_id", None)
+                if batch_run_id is not None and cur_run_id is not None and batch_run_id != cur_run_id:
+                    is_owner = False
+                has_more_pending = bool(self.pending_jobs)
+            if is_owner and not has_more_pending:
+                try:
+                    if hasattr(self.voice_service, "unload_engine"):
+                        self.voice_service.unload_engine(clear_prompt_cache=False)
+                except Exception:
+                    pass
 
-            self._notify()
+            should_notify = False
+            with self.lock:
+                cur_run_id = getattr(self, "_batch_run_id", None)
+                if batch_run_id is None or cur_run_id is None or batch_run_id == cur_run_id:
+                    if self.should_stop and self.state.get("status") not in ("completed", "error"):
+                        self.state["status"] = "stopped"
+                        self.state["message"] = "🛑 Đã dừng dây chuyền sản xuất Video."
+                    self.is_running = False
+                    should_notify = True
+
+            if should_notify:
+                self._notify()
 
         except Exception as e:
             log_error(
@@ -2801,12 +2853,17 @@ class ProductionPipeline:
                 category="RENDER",
                 exc=e,
             )
+            should_notify_err = False
             with self.lock:
-                self.state["status"] = "error"
-                self.state["error"] = str(e)
-                self.state["message"] = f"❌ Lỗi hệ thống Render: {str(e)}"
-                self.is_running = False
-            self._notify()
+                cur_run_id = getattr(self, "_batch_run_id", None)
+                if batch_run_id is None or cur_run_id is None or batch_run_id == cur_run_id:
+                    self.state["status"] = "error"
+                    self.state["error"] = str(e)
+                    self.state["message"] = f"❌ Lỗi hệ thống Render: {str(e)}"
+                    self.is_running = False
+                    should_notify_err = True
+            if should_notify_err:
+                self._notify()
 
 
 def _auto_patch_live_instances_on_reload():

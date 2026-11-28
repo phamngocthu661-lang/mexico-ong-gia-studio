@@ -1851,6 +1851,140 @@ def split_waveform_for_group(wav_tensor, group_texts: List[str], sample_rate: in
     ]
 
 
+def _build_grouped_sentence_batches(
+    sentences: List[str],
+    indices_to_run: List[int],
+    target_chars: int = 210,
+    max_chars: int = 260,
+    max_group_size: int = 3,
+) -> List[List[int]]:
+    """Gom các câu ngắn liền kề thành cụm 180-260 ký tự để giảm số lượt forward GPU mà vẫn chẻ lại 1-to-1 được."""
+    if not indices_to_run:
+        return []
+    ordered = sorted(set(int(i) for i in indices_to_run if 0 <= int(i) < len(sentences)))
+    groups: List[List[int]] = []
+    cur_grp: List[int] = []
+    cur_chars = 0
+
+    for idx in ordered:
+        s_txt = (sentences[idx] or "").strip()
+        s_len = len(s_txt)
+        if not cur_grp:
+            cur_grp = [idx]
+            cur_chars = s_len
+            continue
+
+        is_contiguous = idx == (cur_grp[-1] + 1)
+        projected = cur_chars + 1 + s_len
+        if (
+            is_contiguous
+            and len(cur_grp) < max_group_size
+            and projected <= max_chars
+            and (cur_chars < target_chars or s_len < 110)
+        ):
+            cur_grp.append(idx)
+            cur_chars = projected
+        else:
+            groups.append(cur_grp)
+            cur_grp = [idx]
+            cur_chars = s_len
+
+    if cur_grp:
+        groups.append(cur_grp)
+    return groups
+
+
+def _stream_merge_wav_files(
+    audio_parts: List[str], out_wav_path: Path, frame_chunk: int = 65536
+) -> bool:
+    """Nối trực tiếp luồng PCM các file WAV ra đĩa (<10MB RAM), fallback FFmpeg nếu lệch định dạng."""
+    if not audio_parts:
+        return False
+    out_p = Path(out_wav_path)
+    tmp_p = out_p.with_suffix(".stream_tmp.wav")
+    base_sig = None
+    out_wf = None
+    try:
+        for wav_str in audio_parts:
+            if not wav_str or not os.path.exists(wav_str):
+                return False
+            with wave.open(wav_str, "rb") as wf:
+                sig = (
+                    wf.getnchannels(),
+                    wf.getsampwidth(),
+                    wf.getframerate(),
+                    wf.getcomptype(),
+                )
+                if sig[3] != "NONE":
+                    return False
+                if base_sig is None:
+                    base_sig = sig
+                    out_wf = wave.open(str(tmp_p), "wb")
+                    out_wf.setnchannels(sig[0])
+                    out_wf.setsampwidth(sig[1])
+                    out_wf.setframerate(sig[2])
+                elif sig != base_sig:
+                    return False
+                while True:
+                    chunk = wf.readframes(frame_chunk)
+                    if not chunk:
+                        break
+                    out_wf.writeframesraw(chunk)
+        if out_wf is not None:
+            out_wf.close()
+            out_wf = None
+        if not tmp_p.exists() or tmp_p.stat().st_size <= 44:
+            return False
+        os.replace(str(tmp_p), str(out_p))
+        return True
+    except Exception:
+        return False
+    finally:
+        if out_wf is not None:
+            try:
+                out_wf.close()
+            except Exception:
+                pass
+        if tmp_p.exists():
+            try:
+                tmp_p.unlink()
+            except Exception:
+                pass
+
+
+def _save_tensor_to_wav_safe(wav_path: Path, wav_cpu, sample_rate: int) -> None:
+    """Lưu tensor audio ra file WAV (ưu tiên torchaudio.save, tự fallback PCM16 nếu thiếu torchcodec)."""
+    import torchaudio
+
+    try:
+        torchaudio.save(str(wav_path), wav_cpu, sample_rate)
+        return
+    except Exception:
+        pass
+
+    arr = wav_cpu.detach().cpu().numpy()
+    if arr.ndim == 2:
+        # torchaudio shape [C, T] -> [T, C]
+        arr_tc = arr.T
+    else:
+        arr_tc = arr.reshape(-1, 1)
+
+    try:
+        import soundfile as sf
+
+        sf.write(str(wav_path), arr_tc, int(sample_rate), subtype="PCM_16")
+        return
+    except Exception:
+        pass
+
+    pcm = (np.clip(arr_tc, -1.0, 1.0) * 32767.0).astype("<i2")
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(int(pcm.shape[1]) if pcm.ndim > 1 else 1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(pcm.tobytes())
+
+
 def _apply_omnivoice_torch_compat_patch():
     """
     Đảm bảo tương thích tuyệt đối giữa PyTorch 2.5.x+cu121 / 2.8.x và Transformers >= 5.15
@@ -2796,6 +2930,50 @@ class VoiceStudioService:
             )
         return VoiceStudioService._prompt_cache[cache_key]
 
+    @classmethod
+    def unload_vram_model(cls, clear_prompt_cache: bool = True) -> bool:
+        """Giải phóng hoàn toàn model TTS & prompt cache khỏi VRAM để nhường GPU cho FFmpeg NVENC / DeepLabV3."""
+        import gc
+
+        released = False
+        if cls._engine_lock is None:
+            import threading
+
+            cls._engine_lock = threading.RLock()
+        with cls._engine_lock:
+            if cls._model is not None:
+                try:
+                    if hasattr(cls._model, "to"):
+                        cls._model.to("cpu")
+                except Exception:
+                    pass
+                cls._model = None
+                released = True
+            if clear_prompt_cache and cls._prompt_cache:
+                cls._prompt_cache.clear()
+            if cls._instance is not None:
+                cls._instance.model = None
+                cls._instance.engine = None
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+        except Exception:
+            pass
+        return released
+
+    def unload_engine(self, clear_prompt_cache: bool = True) -> bool:
+        """Gỡ model TTS đang giữ trong instance và lớp để thu hồi sạch VRAM trên card 6GB."""
+        self.model = None
+        self.engine = None
+        return VoiceStudioService.unload_vram_model(
+            clear_prompt_cache=clear_prompt_cache
+        )
+
     def generate_full_voice_and_subtitles(
         self,
         script_text: str,
@@ -2914,6 +3092,7 @@ class VoiceStudioService:
             indices_to_run: List[int],
             step_count: int = 12,
             tag_prefix: str = "⚡ GPU 1-to-1",
+            enable_group_chunking: bool = False,
         ):
             if not indices_to_run:
                 return
@@ -2921,6 +3100,92 @@ class VoiceStudioService:
             win_sz = batch_sz * 6
             done_in_pass = 0
             total_in_pass = len(indices_to_run)
+
+            def _save_single_sentence_wav(s_idx: int, wav_cpu):
+                if wav_cpu.dim() == 1:
+                    wav_cpu = wav_cpu.unsqueeze(0)
+                fname = f"sentence_{s_idx + 1:04d}.wav"
+                part_wav = sentences_dir / fname
+                _save_tensor_to_wav_safe(part_wav, wav_cpu, sample_rate)
+                cached_durations[s_idx] = float(wav_cpu.shape[-1]) / float(sample_rate)
+                strict_map[fname] = True
+
+            if enable_group_chunking:
+                groups = _build_grouped_sentence_batches(sentences, indices_to_run)
+                for b_start in range(0, len(groups), batch_sz):
+                    b_groups = groups[b_start : b_start + batch_sz]
+                    b_texts = [" ".join(sentences[i] for i in grp) for grp in b_groups]
+                    if progress_callback:
+                        overall_done = len(cached_durations)
+                        pct = round((overall_done / max(1, total_sentences)) * 90.0, 1)
+                        progress_callback(
+                            pct,
+                            f"{tag_prefix} đang tạo cụm ({min(total_in_pass, done_in_pass + 1)}/{total_in_pass}): {b_texts[0][:22]}...",
+                        )
+                    try:
+                        audios = self.model.generate(
+                            text=b_texts,
+                            language=lang_code,
+                            voice_clone_prompt=clone_prompt,
+                            num_step=step_count,
+                        )
+                    except RuntimeError as e:
+                        if "out of memory" in str(e).lower() and torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            audios = []
+                            for bt in b_texts:
+                                a = self.model.generate(
+                                    text=bt,
+                                    language=lang_code,
+                                    voice_clone_prompt=clone_prompt,
+                                    num_step=step_count,
+                                )
+                                audios.append(a[0])
+                        else:
+                            raise
+
+                    fallback_indices: List[int] = []
+                    for grp, wav_out in zip(b_groups, audios):
+                        wav_cpu = wav_out.detach().cpu()
+                        if wav_cpu.dim() == 1:
+                            wav_cpu = wav_cpu.unsqueeze(0)
+                        if len(grp) == 1:
+                            _save_single_sentence_wav(grp[0], wav_cpu)
+                            done_in_pass += 1
+                            continue
+                        try:
+                            grp_texts = [sentences[i] for i in grp]
+                            pieces = split_waveform_for_group(
+                                wav_cpu, grp_texts, sample_rate
+                            )
+                            if len(pieces) != len(grp):
+                                fallback_indices.extend(grp)
+                            else:
+                                for s_idx, piece_wav in zip(grp, pieces):
+                                    _save_single_sentence_wav(s_idx, piece_wav)
+                                    done_in_pass += 1
+                        except Exception:
+                            fallback_indices.extend(grp)
+
+                    if fallback_indices:
+                        _synthesize_sentence_indices_1to1(
+                            fallback_indices,
+                            step_count=step_count,
+                            tag_prefix=tag_prefix,
+                            enable_group_chunking=False,
+                        )
+                        done_in_pass += len(fallback_indices)
+
+                    try:
+                        manifest_path.write_text(
+                            json.dumps(strict_map, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                    except Exception:
+                        pass
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                return
 
             for w_start in range(0, total_in_pass, win_sz):
                 win_indices = indices_to_run[w_start : w_start + win_sz]
@@ -2969,15 +3234,7 @@ class VoiceStudioService:
 
                     for s_idx, wav_out in zip(b_indices, audios):
                         wav_cpu = wav_out.detach().cpu()
-                        if wav_cpu.dim() == 1:
-                            wav_cpu = wav_cpu.unsqueeze(0)
-                        fname = f"sentence_{s_idx + 1:04d}.wav"
-                        part_wav = sentences_dir / fname
-                        torchaudio.save(str(part_wav), wav_cpu, sample_rate)
-                        cached_durations[s_idx] = float(wav_cpu.shape[-1]) / float(
-                            sample_rate
-                        )
-                        strict_map[fname] = True
+                        _save_single_sentence_wav(s_idx, wav_cpu)
                         done_in_pass += 1
 
                 try:
@@ -3001,11 +3258,14 @@ class VoiceStudioService:
 
         if missing_indices:
             print(
-                f"[VoiceStudioService] ⚡ Chế độ Khớp Tuyệt Đối (1 Câu = 1 File Voice): "
+                f"[VoiceStudioService] ⚡ Chế độ Khớp Tuyệt Đối (Gộp cụm câu ngắn + tách 1-to-1): "
                 f"Đã có {len(cached_durations)}/{total_sentences} câu, đang tạo {len(missing_indices)} câu mới..."
             )
             _synthesize_sentence_indices_1to1(
-                missing_indices, step_count=12, tag_prefix="⚡ GPU 1-to-1"
+                missing_indices,
+                step_count=12,
+                tag_prefix="⚡ GPU Batch",
+                enable_group_chunking=True,
             )
 
         # 2. BƯỚC KIỂM ĐỊNH ĐỘ KHỚP SUB & VOICE TỰ ĐỘNG + LÀM LẠI CÁC CÂU LỆCH (TỐI ĐA 3 VÒNG)
@@ -3088,44 +3348,46 @@ class VoiceStudioService:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # Ghép master_voice.wav không nén qua FFmpeg concat
+        # Ghép master_voice.wav bằng stream-write PCM trực tiếp (<10MB RAM), tự fallback FFmpeg concat nếu khác định dạng
         if progress_callback:
-            progress_callback(96.0, "Đang ghép nối audio master bằng FFmpeg...")
-
-        concat_list = output_dir / "concat_list.txt"
-        with open(concat_list, "w", encoding="utf-8") as f:
-            for p in audio_parts:
-                clean_p = p.replace("\\", "/").replace("'", "'\\''")
-                f.write(f"file '{clean_p}'\n")
+            progress_callback(96.0, "Đang ghép nối audio master (Stream PCM siêu nhẹ)...")
 
         master_wav = output_dir / "master_voice.wav"
-        import shutil as _shutil
+        merged_pcm_ok = _stream_merge_wav_files(audio_parts, master_wav)
+        if not merged_pcm_ok:
+            concat_list = output_dir / "concat_list.txt"
+            with open(concat_list, "w", encoding="utf-8") as f:
+                for p in audio_parts:
+                    clean_p = p.replace("\\", "/").replace("'", "'\\''")
+                    f.write(f"file '{clean_p}'\n")
 
-        local_ffmpeg = self.root_dir / "bin" / "ffmpeg.exe"
-        ffmpeg_exe = (
-            str(local_ffmpeg)
-            if local_ffmpeg.exists()
-            else (_shutil.which("ffmpeg") or "ffmpeg")
-        )
-        cmd = [
-            ffmpeg_exe,
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_list),
-            "-c:a",
-            "pcm_s16le",
-            str(master_wav),
-        ]
-        subprocess.run(
-            cmd,
-            check=True,
-            timeout=600,
-            creationflags=0x08000000 if os.name == "nt" else 0,
-        )
+            import shutil as _shutil
+
+            local_ffmpeg = self.root_dir / "bin" / "ffmpeg.exe"
+            ffmpeg_exe = (
+                str(local_ffmpeg)
+                if local_ffmpeg.exists()
+                else (_shutil.which("ffmpeg") or "ffmpeg")
+            )
+            cmd = [
+                ffmpeg_exe,
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_list),
+                "-c:a",
+                "pcm_s16le",
+                str(master_wav),
+            ]
+            subprocess.run(
+                cmd,
+                check=True,
+                timeout=600,
+                creationflags=0x08000000 if os.name == "nt" else 0,
+            )
 
         # Xuất subtitles.srt (Đảm bảo tối đa 3 dòng / khung phụ đề, tự động tách câu dài tại đúng điểm nghỉ trong WAV)
         srt_file = output_dir / "subtitles.srt"

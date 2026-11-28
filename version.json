@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.10",
-  "build_number": 230,
-  "released_at": "2026-11-28 08:44:39",
+  "version": "V2.2.11",
+  "build_number": 231,
+  "released_at": "2026-11-28 21:59:29",
   "repo": "phamngocthu661-lang/mexico-ong-gia-studio",
   "branch": "main",
-  "changelog": "V2.2.10 (Build #230): Sua khong render sau khi sua/viet lai KB loi (#btn-adas-retry-errors + fingerprint/has_valid_script_on_disk); sua treo 260s khi ve Thumbnail & Nen xanh ChatGPT tren tab nen (rect 0x0 + API probe 16s + Fast effort); tang toc viet kich ban x3-x4 (Stage-first resize + Thinking Fast cho turn phu + poll 0.85s)."
+  "changelog": "V2.2.11 (Build #231): Toi uu hieu nang GPU 6GB — gom cum TTS 1-to-1 + fallback ghi WAV PCM16; stream-merge master_voice.wav tiet kiem RAM; Pre-bake Stock Cache + CUDA decode an toan; tu dong xa VRAM TTS truoc FFmpeg NVENC & gioi han luong theo VRAM; sua race condition batch_run_id cuoi lo."
 }
